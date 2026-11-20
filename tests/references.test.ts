@@ -4,6 +4,7 @@ import { addReferenceValue,createReference,moveReferenceValue,referenceChoices,r
 import { mergeReferences } from '../src/references-import';
 import { blankSheet,clone,createDemo,key,setInput,uid,type Workbook } from '../src/model';
 import { validateBook } from '../src/storage';
+import { dropdownCatalog,seedDropdownCatalog } from '../src/dropdown-catalog';
 
 function source(){
   const dropdowns=blankSheet('Dropdowns',90,6),convert=blankSheet('Convert',12,6),meals=blankSheet('Meals',12,6),derived=blankSheet('MealDD',8,3);
@@ -20,6 +21,26 @@ function source(){
   b.names.push({id:uid(),name:'MealDD',context:derived.id,original,formula:compile(original,b,derived.id,derived.rows[0].id,derived.columns[0].id)},{id:uid(),name:'MealDD',sheet:meals.id,context:meals.id,original,formula:compile(original,b,meals.id,meals.rows[0].id,meals.columns[0].id)});
   return b;
 }
+it('later original supporting import reuses bundled catalogs and keeps edited/archived exact row bindings intact',()=>{
+  const incoming=source(),dropdowns=incoming.sheets.find(s=>s.name==='Dropdowns')!;
+  dropdowns.cells={};
+  for(const list of dropdownCatalog.lists){
+    const t=incoming.tables.find(t=>t.name===list.name)!,at=Number(list.range.split(':')[0].slice(1))-1;
+    t.header=dropdowns.rows[at].id;t.rows=list.values.map((_,i)=>dropdowns.rows[at+i+1].id);t.columns[0].name=list.field;
+    dropdowns.cells[key(t.header,t.columns[0].column)]={value:list.field};
+    list.values.forEach((value,i)=>dropdowns.cells[key(t.rows[i],t.columns[0].column)]={value});
+  }
+  const before=seedDropdownCatalog(createDemo()).book,ref=before.references!.find(r=>r.name==='IngredientType')!,choice=referenceChoices(before,ref)[0];
+  renameReferenceValue(before,ref,choice.row,'Edited category');ref.archivedRows.push(choice.row);
+  const log=before.sheets[0];log.cells[key(log.rows[2].id,log.columns[0].id)]={binding:choice.binding};
+  const copied=clone(before),merged=mergeReferences(before,incoming,'original-package').book;
+  expect(merged.references).toHaveLength(10);
+  expect(merged.references!.find(r=>r.id===ref.id)?.archivedRows).toEqual([choice.row]);
+  expect(new Engine(merged).cell(log.id,log.rows[2].id,log.columns[0].id)).toBe('Edited category');
+  for(const t of copied.tables)expect(merged.tables.find(table=>table.id===t.id)).toEqual(t);
+  for(const s of copied.sheets)expect(merged.sheets.find(sheet=>sheet.id===s.id)?.cells).toMatchObject(s.cells);
+  expect(mergeReferences(merged,incoming,'original-package').changed).toBe(false);
+});
 it('imports auxiliary records only, hides supporting presentation, preserves missing original Meals rather than relinking demo, and is idempotent',()=>{
   const before=createDemo(),original=clone(before),incoming=source(),merged=mergeReferences(before,incoming,'invented-original'),b=merged.book;
   expect(before).toEqual(original);expect(merged.counts.map(t=>t.rows)).toEqual([2,2,2,2,2,2,2,1]);expect(merged.derivedUnavailable).toBe(true);

@@ -11,6 +11,7 @@ import { defaultHeaderFormula,groupBlockToTop,positionalBlock } from './meal-blo
 import { columnCalculations,quantityDiagnostic,restoreCalculation } from './calculation';
 import { openReferenceManager } from './reference-ui';
 import { referenceChoices,referenceFormula,validationReference } from './references';
+import { dropdownCatalog,seedDropdownCatalog,verifiedCatalogOrigins } from './dropdown-catalog';
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
@@ -1049,7 +1050,19 @@ async function start():Promise<void> {
   root.innerHTML='<main class="startup"><p>Opening your local workbook...</p></main>';
   try{
     store=await Store.open();const loaded=await store.load();
-    if(loaded){state=loaded;book=clone(state.book);}else{book=createDemo();state=await store.save(book,0,'Create synthetic starter workbook');}
+    if(loaded){
+      state=loaded;book=clone(state.book);
+      if(!book.catalogMigrations?.includes(dropdownCatalog.id)){
+        const before=await store.backup(state),result=seedDropdownCatalog(book,await verifiedCatalogOrigins(before));
+        if(result.changed){
+          state=await store.save(result.book,state.version,'Add original Dropdowns catalogs',true,undefined,{recoveryArchive:stringifyArchive(before)});
+          book=clone(state.book);
+          // Undo also records the user's choice not to seed these catalogs again.
+          undo.push({book:{...clone(before.state.book),catalogMigrations:book.catalogMigrations}});
+          channel?.postMessage({version:state.version});
+        }
+      }
+    }else{book=seedDropdownCatalog(createDemo()).book;state=await store.save(book,0,'Create starter workbook with original Dropdowns catalogs');}
     let remembered:string|null=null;try{remembered=sessionStorage.getItem('fnt-current-sheet');}catch(e){error=`Selected-tab preference unavailable: ${String(e)}`;}
     engine=new Engine(book);sheetId=book.sheets.some(s=>s.id===remembered)?remembered!:book.sheets[0].id;status=state.sync?`Saved locally - ${state.pending.length} pending changes`:'Saved in this browser';render();
     if('serviceWorker'in navigator&&import.meta.env.PROD)void navigator.serviceWorker.register('./sw.js').catch(e=>{flash(`Offline app cache failed: ${String(e)}`);});

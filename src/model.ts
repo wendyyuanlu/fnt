@@ -25,6 +25,7 @@ export interface ReferenceSource {
   id:string;name:string;kind:'list'|'units'|'conversions'|'derived';table?:string;column?:string;
   archived?:boolean;archivedRows:string[];
   origin?:{original:string;table?:string;definition?:string};
+  catalog?:{id:string;table:string;rows?:string[]};
   derived?:{table:string;column:string;filter?:{column:string;value:Scalar}};
   conversion?:{from:string;to:string;factor:string};
   anchor?:{sheet:string;row:string;column:string};nameId?:string;
@@ -39,6 +40,7 @@ export interface Workbook {
   schema: 1; id: string; title: string; revision: number; sheets: Sheet[]; tables: Table[]; names: Named[];
   pickerSources: Record<string, string>;
   references?:ReferenceSource[];
+  catalogMigrations?:string[];
   importReport?: { entries: string[]; formulaCount: number; unsupported: Record<string, number>; originalId: string };
 }
 export const uid = () => crypto.randomUUID();

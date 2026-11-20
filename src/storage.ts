@@ -34,6 +34,7 @@ export function validateBook(value: unknown): asserts value is Workbook {
   if (!value || typeof value !== 'object') throw Error('Not a workbook.');
   const b = value as Partial<Workbook>;
   if (b.schema !== 1 || typeof b.id !== 'string' || typeof b.title !== 'string' || !Number.isInteger(b.revision) || !Array.isArray(b.sheets) || !b.sheets.length || !Array.isArray(b.tables) || !Array.isArray(b.names) || !b.pickerSources) throw Error('Invalid or unsupported workbook format.');
+  if(b.catalogMigrations!==undefined&&(!Array.isArray(b.catalogMigrations)||b.catalogMigrations.some(id=>typeof id!=='string'||!/^[a-zA-Z0-9_.-]{1,128}$/.test(id))||new Set(b.catalogMigrations).size!==b.catalogMigrations.length))throw Error('Invalid catalog migration history.');
   const ids = new Set<string>();
   const checked=new WeakSet<object>();
   const ast=(v:unknown,depth=0):void=>{
@@ -91,6 +92,7 @@ export function validateBook(value: unknown): asserts value is Workbook {
     for(const source of b.references){
       id(source.id);
       if(typeof source.name!=='string'||!['list','units','conversions','derived'].includes(source.kind)||!Array.isArray(source.archivedRows)||source.archivedRows.some(row=>!safeId(row)))throw Error('Invalid supporting source metadata.');
+      if(source.catalog&&(!safeId(source.catalog.id)||!safeId(source.catalog.table)||source.catalog.rows!==undefined&&(!Array.isArray(source.catalog.rows)||source.catalog.rows.some(r=>!safeId(r))||new Set(source.catalog.rows).size!==source.catalog.rows.length)))throw Error('Invalid bundled catalog provenance.');
       for(const identity of[source.table,source.column,source.nameId,source.origin?.original,source.derived?.table,source.derived?.column,...Object.values(source.conversion??{}),...Object.values(source.anchor??{})])if(identity!==undefined&&!safeId(identity))throw Error('Invalid supporting source binding.');
       if(source.derived?.filter&&!safeId(source.derived.filter.column))throw Error('Invalid derived filter binding.');
       if(source.deferredNames)for(const n of source.deferredNames){id(n.id);ast(n.formula);}

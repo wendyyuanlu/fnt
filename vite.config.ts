@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 export default defineConfig({
-  base: './', server: { host: '127.0.0.1' },
+  base: process.env.FNT_BASE_PATH ?? './', server: { host: '127.0.0.1' },
   plugins:[{
     name:'fnt-offline-shell',
     generateBundle(_options,bundle){

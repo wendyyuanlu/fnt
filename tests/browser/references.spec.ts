@@ -36,7 +36,7 @@ test('editable lists keep exact duplicate-label links, preserve manual text, arc
   await page.getByRole('button',{name:'Choose source',exact:true}).click();
   await page.locator('.validation-values [data-choice="1"]').click();
   await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Same');
-  await manager(page);await page.getByRole('textbox',{name:'List value 2',exact:true}).fill('Renamed');await page.getByRole('textbox',{name:'List value 2',exact:true}).press('Tab');
+  await manager(page);await page.locator('#reference-source').selectOption({label:'Invented types'});await page.getByRole('textbox',{name:'List value 2',exact:true}).fill('Renamed');await page.getByRole('textbox',{name:'List value 2',exact:true}).press('Tab');
   await expect(page.getByRole('textbox',{name:'List value 2',exact:true})).toHaveValue('Renamed');
   await page.getByRole('button',{name:'Move option 2 earlier',exact:true}).click();
   await expect(page.getByRole('textbox',{name:'List value 1',exact:true})).toHaveValue('Renamed');
@@ -46,12 +46,12 @@ test('editable lists keep exact duplicate-label links, preserve manual text, arc
   await expect(page.locator('.validation-values [data-choice]')).toHaveCount(1);await expect(page.locator('.validation-values')).not.toContainText('Renamed');
   await close(page);await saved(page);await page.reload();
   await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Renamed');
-  await manager(page);await page.locator('.reference-option').first().getByRole('button',{name:'Remove',exact:true}).click();
+  await manager(page);await page.locator('#reference-source').selectOption({label:'Invented types'});await page.locator('.reference-option').first().getByRole('button',{name:'Remove',exact:true}).click();
   await expect(page.getByRole('dialog')).toContainText('1 linked cells');
   await page.locator('#replacement').selectOption({index:1});await page.locator('#delete-option').click();await expect(page.locator('.reference-option')).toHaveCount(1);
   await close(page);await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Same');
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Renamed');
-  await manager(page);await expect(page.locator('.reference-option')).toHaveCount(2);
+  await manager(page);await page.locator('#reference-source').selectOption({label:'Invented types'});await expect(page.locator('.reference-option')).toHaveCount(2);
   await page.getByRole('textbox',{name:'List value 2',exact:true}).focus();await page.keyboard.press('Delete');await expect(page.locator('.reference-option')).toHaveCount(2);
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });
@@ -66,11 +66,16 @@ test('derived lists use explicit live table/field/filter connections and exact r
   await page.locator('.validation-values [data-choice="0"]').click();await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Example breakfast');
   await page.getByRole('button',{name:'Meals',exact:true}).click();await page.locator('td[data-r="1"][data-c="0"]').click();await edit(page,'Renamed invented meal');
   await page.getByRole('button',{name:'Notebook',exact:true}).click();await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Renamed invented meal');
-  await saved(page);await page.reload();await manager(page);await expect(page.locator('#derived-status')).toHaveText('Live: 1 choices.');
+  await saved(page);await page.reload();await manager(page);await page.locator('#reference-source').selectOption({label:'Meal choices'});await expect(page.locator('#derived-status')).toHaveText('Live: 1 choices.');
 });
 
 test('supporting Excel import preserves logs, archives all prior state, leaves absent original Meals unavailable and survives native roundtrip',async({page})=>{
   await page.goto('/');await saved(page);
+  await page.evaluate(async()=>{
+    const path='/src/',{Store}=await import(path+'storage.ts') as typeof import('../../src/storage'),{createDemo}=await import(path+'model.ts') as typeof import('../../src/model'),store=await Store.open();
+    try{const state=(await store.load())!,book=createDemo();book.catalogMigrations=['original-dropdowns-v1'];await store.save(book,state.version,'Synthetic pre-catalog import fixture');}finally{store.close();}
+  });
+  await page.reload();await saved(page);
   const fixture=await page.evaluate(async()=>{
     const path='/src/',dependency='/node_modules/fflate/esm/browser.js';
     const {createDemo,blankSheet,setInput,uid}=await import(path+'model.ts') as typeof import('../../src/model'),{exportXlsx}=await import(path+'xlsx-export.ts') as typeof import('../../src/xlsx-export'),{unzipSync,zipSync}=await import(dependency) as typeof import('fflate');

@@ -2,6 +2,7 @@ import { compile,type Ast } from './formula';
 import { clone,key,mapAst,uid,type Named,type ReferenceSource,type Sheet,type Workbook } from './model';
 import { addReferenceValue,referenceChoices,unitsSource } from './references';
 import { validateBook } from './storage';
+import { dropdownCatalog,matchesDropdownCatalog } from './dropdown-catalog';
 
 const auxiliary=(s:Sheet)=>['dropdowns','convert','mealdd'].includes(s.name.toLowerCase());
 const sourceNames=['IngredientType','Period','AnimalType','Table14','SnackCountry','SnackFlavour','SnackCategory','Convert'];
@@ -27,6 +28,16 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
     for(const c of incomingIngredient.columns){const target=existingIngredient[0].columns.find(x=>x.name===c.name);if(target){ids.set(c.id,target.id);ids.set(c.column,target.column);}}
   }
   const destination=new Map<string,Sheet>(),reused=new Set<string>();
+  const catalogs=new Map<string,ReferenceSource>(),catalogCells=new Map<string,{sheet:string;row:string;column:string}>();
+  if(matchesDropdownCatalog(source))for(const t of expected){
+    const ref=book.references.find(r=>r.catalog?.id===dropdownCatalog.id&&r.catalog.table===t.name&&r.catalog.rows?.length===t.rows.length);
+    if(!ref)continue;
+    const target=book.tables.find(table=>table.id===ref.table);
+    if(!target||!target.columns.some(c=>c.id===ref.column))throw Error('A bundled catalog backing table was removed. Restore it or resolve the import explicitly.');
+    const column=target.columns.find(c=>c.id===ref.column)!;
+    catalogs.set(t.id,ref);reused.add(t.id);ids.set(t.id,target.id);ids.set(t.columns[0].id,column.id);
+    for(const[row,to]of [[t.header,target.header],...t.rows.map((row,i)=>[row,ref.catalog!.rows![i]])])catalogCells.set(key(row,t.columns[0].column),{sheet:target.sheet,row:to,column:column.column});
+  }
   for(const s of source.sheets.filter(auxiliary)){
     const matches=book.sheets.filter(x=>x.name.toLowerCase()===s.name.toLowerCase());
     if(matches.length>1)throw Error('Ambiguous supporting sheet name. Resolve it explicitly before import.');
@@ -40,6 +51,7 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
     }
   }
   for(const t of expected){
+    if(catalogs.has(t.id))continue;
     const matches=book.tables.filter(x=>x.name.toLowerCase()===t.name.toLowerCase()),target=matches[0],s=source.sheets.find(s=>s.id===t.sheet)!,to=destination.get(t.sheet)!;
     if(matches.length>1)throw Error('Ambiguous reference table name. Resolve it explicitly.');
     if(target){
@@ -57,7 +69,10 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
   }
   const remap=(id:string)=>ids.get(id)??id;
   const remapAst=(ast:Ast):Ast=>mapAst(ast,n=>{
-    if(n.kind==='ref')return{...n,sheet:remap(n.sheet),row:remap(n.row),column:remap(n.column)};
+    if(n.kind==='ref'){
+      const cell=catalogCells.get(key(n.row,n.column));
+      return cell?{...n,...cell}:{...n,sheet:remap(n.sheet),row:remap(n.row),column:remap(n.column)};
+    }
     if(n.kind==='structured')return{...n,table:remap(n.table),columns:n.columns.map(remap)};
     if(n.kind==='name')return{...n,id:remap(n.id)};
     return n;
@@ -77,6 +92,8 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
     }
   }
   for(const t of expected){
+    const catalog=catalogs.get(t.id);
+    if(catalog){catalog.origin={original,table:t.name};continue;}
     const copied={...clone(t),id:remap(t.id),sheet:remap(t.sheet),header:remap(t.header),rows:t.rows.map(remap),columns:t.columns.map(c=>({...c,id:remap(c.id),column:remap(c.column)}))};
     if(!reused.has(t.id))book.tables.push(copied);
     const s=source.sheets.find(s=>s.id===t.sheet)!,to=destination.get(t.sheet)!;

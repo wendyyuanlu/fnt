@@ -1,6 +1,7 @@
 import { compile, displayFormula, supportedFunctions, type Ast } from './formula';
-import { clone, key, mapAst, translate, uid, type Cell, type Sheet, type Table, type Workbook } from './model';
+import { clone, key, mapAst, translate, uid, uniqueName, type Cell, type Sheet, type Table, type Workbook } from './model';
 import { validateBook } from './storage';
+import { dropdownCatalog,matchesDropdownCatalog } from './dropdown-catalog';
 
 const aliases: Record<string,string> = { Ingredient:'Ingredients', 'Calories per g':'Calories2' };
 export interface IngredientsImport {
@@ -78,16 +79,30 @@ export function mergeIngredients(current:Workbook,source:Workbook):IngredientsIm
   if(sheet.columns.length>512)throw Error('Import would exceed the safe 512-column limit. Existing data was not changed.');
   target.columns=[...mappedColumns,...extras];target.rows=[...root.rows,...oldRows];
   const dependencySheets=new Map<string,Sheet>();
+  const catalogTables=new Set<string>(),originalCatalog=matchesDropdownCatalog(source),separateSources:string[]=[];
   for(const t of tables.values()){
     if(t.id===root.id)continue;
-    if(book.tables.some(existing=>existing.name.toLowerCase()===t.name.toLowerCase()))throw Error(`Dropdown table "${t.name}" already exists. Resolve the name collision before importing; it will not be silently relinked.`);
+    const catalog=originalCatalog?book.references?.find(r=>r.catalog?.id===dropdownCatalog.id&&r.catalog.table===t.name&&r.catalog.rows?.length===t.rows.length):undefined;
+    if(catalog){
+      const target=book.tables.find(table=>table.id===catalog.table),column=target?.columns.find(c=>c.id===catalog.column);
+      if(!target||!column)throw Error('A bundled catalog backing table was removed. Restore it before importing Ingredients.');
+      ids.set(t.id,target.id);ids.set(t.sheet,target.sheet);ids.set(t.header,target.header);ids.set(t.columns[0].id,column.id);ids.set(t.columns[0].column,column.column);
+      t.rows.forEach((row,i)=>ids.set(row,catalog.catalog!.rows![i]));catalogTables.add(t.id);continue;
+    }
+    const collision=book.tables.find(existing=>existing.name.toLowerCase()===t.name.toLowerCase());
+    let copiedTable=clone(t);
+    if(collision){
+      if(!book.references?.some(r=>r.table===collision.id&&r.catalog?.id===dropdownCatalog.id))throw Error(`Dropdown table "${t.name}" already exists. Resolve the name collision before importing; it will not be silently relinked.`);
+      copiedTable.name=uniqueName(book.tables.map(table=>table.name),t.name);
+      separateSources.push(`Different imported source ${t.name} retained separately as ${copiedTable.name}; no catalog links were guessed.`);
+    }
     if(!dependencySheets.has(t.sheet)){
       const original=source.sheets.find(s=>s.id===t.sheet)!;
       if(book.sheets.some(s=>s.name.toLowerCase()===original.name.toLowerCase()))throw Error('A Dropdowns sheet already exists. Resolve that collision before importing; its contents will not be overwritten.');
       const copied={...clone(original),cells:{},groups:[],validations:[]} as Sheet;
       dependencySheets.set(t.sheet,copied);book.sheets.push(copied);
     }
-    book.tables.push(clone(t));
+    book.tables.push(copiedTable);
   }
   const remap=(id:string)=>ids.get(id)??id;
   const remapAst=(ast:Ast):Ast=>mapAst(ast,node=>{
@@ -109,6 +124,7 @@ export function mergeIngredients(current:Workbook,source:Workbook):IngredientsIm
     return copied;
   };
   for(const t of tables.values()){
+    if(catalogTables.has(t.id))continue;
     const from=source.sheets.find(s=>s.id===t.sheet)!,to=t.id===root.id?sheet:dependencySheets.get(t.sheet)!;
     const rows=owned(t),columns=new Set(t.columns.map(c=>c.column));
     for(const r of rows)for(const c of columns){
@@ -161,7 +177,7 @@ export function mergeIngredients(current:Workbook,source:Workbook):IngredientsIm
     }).length,0);
   },0);
   book.importReport={originalId:source.importReport?.originalId??'',formulaCount,unsupported,
-    entries:[...new Set([...(book.importReport?.entries??[]),...(source.importReport?.entries??[]),
+    entries:[...new Set([...(book.importReport?.entries??[]),...(source.importReport?.entries??[]),...separateSources,
       `Imported ${root.rows.length} Ingredients records and ${tables.size-1} referenced Dropdowns tables. Existing records and all other sheets were retained.`,
       'Imported validation references bind their original source IDs; original dropdown expressions are retained. Same-named existing tables are never substituted.',
       ...(unresolved.size?[`${unresolved.size} source dependency/dependencies outside Ingredients/Dropdowns were not imported. Those references remain explicit #REF! errors, not links to example tables.`]:[])])]};

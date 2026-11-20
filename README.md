@@ -110,6 +110,17 @@ Static hosting must contain only the built application, never nutrition data.
   recalculate historical records and show an impact confirmation, not a freeze.
   Supporting sheets stay out of ordinary tabs; **Backing sheet** remains available.
 - **DD > Import attached Excel sources** reads the original already saved in
+  this browser. The seven original Dropdowns catalogs are also bundled with the
+  app: IngredientType, Period, AnimalType, Table14, SnackCountry, SnackFlavour,
+  and SnackCategory (28 records, including the original blank and space-only
+  entry). They appear automatically in DD and the source picker for new and old
+  browsers; no file chooser is needed for these catalogs. Save before reloading
+  an already-open older tab. Startup preserves a full pre-update recovery archive
+  and all pending edits. Verified original imports retain their edited options,
+  archived identities and links; unrelated same-named sources remain separate.
+  Removed catalogs do not reappear on every reload. No personal records, meals,
+  Ingredients or workbook package are included in this bundled catalog.
+- Importing additional supporting Excel data reads the original already saved in
   this browser, or select the original local XLSX in the manager. This targeted
   import retains Ingredients/logs, imports the seven Dropdowns lists and Convert,
   preserves a full pre-import archive, and disconnects sync. Reimporting the
@@ -139,6 +150,16 @@ Static hosting must contain only the built application, never nutrition data.
   non-first or multi-column selections; pinning changes only the temporary view.
 
 ## Reference integrity
+
+The public app is served at `https://wendyyuanlu.github.io/fnt/`. GitHub Actions
+publishes only the website build from `website`, with `FNT_BASE_PATH=/fnt/`;
+local development and production preview keep their existing root URLs.
+The manifest, icon and offline cache use project-relative URLs. The deployed
+origin has separate browser storage from either local preview; this publication
+includes only the approved generic Dropdowns catalogs, not personal workbooks.
+`scripts/check-dropdown-catalog.mjs` compares the bundled catalog with a read-only
+local XLSX supplied through `FNT_REFERENCE`, in an isolated browser with
+non-local network blocked. It prints only aggregate results.
 
 Sheets, physical columns, row records, table columns, tables, and names have
 independent stable IDs. Formulas are parsed into a serializable AST, never

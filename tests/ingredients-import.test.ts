@@ -2,6 +2,8 @@ import { describe,it,expect } from 'vitest';
 import { blankSheet,createDemo,key,setInput,uid,type Table,type Workbook } from '../src/model';
 import { compile,Engine } from '../src/formula';
 import { mergeIngredients } from '../src/ingredients-import';
+import { dropdownCatalog,seedDropdownCatalog } from '../src/dropdown-catalog';
+import { referenceChoices,renameReferenceValue } from '../src/references';
 
 function fixture():Workbook {
   const ingredients=blankSheet('Ingredients',12,10),dropdowns=blankSheet('Dropdowns',8,4),mealList=blankSheet('MealDD',4,2);
@@ -22,6 +24,26 @@ function fixture():Workbook {
   return book;
 }
 describe('targeted Ingredients import',()=>{
+  it('connects verified original validation to the bundled catalog without replacing edited options or identities',()=>{
+    const source=fixture(),old=source.sheets.find(s=>s.name==='Dropdowns')!,dropdowns=blankSheet('Dropdowns',60,4);
+    dropdowns.id=old.id;source.sheets[source.sheets.indexOf(old)]=dropdowns;
+    for(const spec of dropdownCatalog.lists){
+      const at=Number(spec.range.split(':')[0].slice(1))-1;
+      const table=source.tables.find(t=>t.name===spec.name)??{id:uid(),sheet:dropdowns.id,name:spec.name,header:'',rows:[],columns:[{id:uid(),column:dropdowns.columns[0].id,name:spec.field}]};
+      if(!source.tables.includes(table))source.tables.push(table);
+      table.header=dropdowns.rows[at].id;table.rows=spec.values.map((_,i)=>dropdowns.rows[at+i+1].id);table.columns[0].column=dropdowns.columns[0].id;
+      dropdowns.cells[key(table.header,table.columns[0].column)]={value:spec.field};
+      spec.values.forEach((value,i)=>dropdowns.cells[key(table.rows[i],table.columns[0].column)]={value});
+    }
+    const current=seedDropdownCatalog(createDemo()).book,catalog=current.references![0],choice=referenceChoices(current,catalog)[0];
+    renameReferenceValue(current,catalog,choice.row,'Edited category');catalog.archivedRows.push(choice.row);
+    const merged=mergeIngredients(current,source),ingredients=merged.book.tables.find(t=>t.name==='Ingredients')!,sheet=merged.book.sheets.find(s=>s.id===ingredients.sheet)!;
+    expect(merged.book.tables.filter(t=>t.name==='IngredientType')).toHaveLength(1);
+    const validation=sheet.validations.find(v=>v.originalSource?.includes('IngredientType'))!;
+    expect(validation.source).toContain(catalog.table!);
+    expect(merged.book.references![0].archivedRows).toEqual([choice.row]);
+    expect(referenceChoices(merged.book,merged.book.references![0],true)[0].value).toBe('Edited category');
+  });
   it('preserves current identities, records, freeform edits and other sheets while remapping source formulas and dropdowns',()=>{
     const current=createDemo(),source=fixture(),sourceBefore=JSON.stringify(source);
     const old=current.tables.find(t=>t.name==='Ingredients')!,notebook=current.sheets.find(s=>s.name==='Notebook')!;
