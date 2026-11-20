@@ -151,9 +151,11 @@ Static hosting must contain only the built application, never nutrition data.
 
 ## Reference integrity
 
-The public app is served at `https://wendyyuanlu.github.io/fnt/`. GitHub Actions
-publishes only the website build from `website`, with `FNT_BASE_PATH=/fnt/`;
-local development and production preview keep their existing root URLs.
+The public app is served at `https://wendyyuanlu.github.io/fnt/`. GitHub Pages
+publishes the `docs` build from `website`. Run `npm run build:pages` before
+pushing app updates; this builds `/fnt/` assets without changing local `dist`.
+Branch publishing avoids requiring an OAuth workflow scope. Local development
+and production preview keep their existing root URLs.
 The manifest, icon and offline cache use project-relative URLs. The deployed
 origin has separate browser storage from either local preview; this publication
 includes only the approved generic Dropdowns catalogs, not personal workbooks.
