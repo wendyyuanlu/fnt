@@ -113,7 +113,7 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
     book.references.push(ref);to.supporting=true;
     const owned=new Set([t.header,...t.rows]),columns=new Set(t.columns.map(c=>c.column));
     for(const v of s.validations)if(v.rows.some(r=>owned.has(r))&&v.columns.some(c=>columns.has(c)))to.validations.push({...clone(v),id:uid(),sheet:to.id,rows:v.rows.filter(r=>owned.has(r)).map(remap),columns:v.columns.filter(c=>columns.has(c)).map(remap),source:v.source.startsWith('{')?JSON.stringify(remapAst(JSON.parse(v.source) as Ast)):v.source});
-    for(const g of s.groups){const members=g.members.filter(id=>g.axis==='row'?owned.has(id):columns.has(id)).map(remap);if(members.length&&!to.groups.some(old=>old.id===g.id))to.groups.push({...clone(g),members});}
+    for(const g of s.groups){if(g.kind==='summary'&&!(g.axis==='row'?owned:columns).has(g.members[0]))continue;const members=g.members.filter(id=>g.axis==='row'?owned.has(id):columns.has(id)).map(remap);if((g.kind==='summary'?members.length>1:members.length)&&!to.groups.some(old=>old.id===g.id))to.groups.push({...clone(g),members});}
   }
   for(const n of globals)if(!book.names.some(old=>old.id===remap(n.id)))book.names.push({...clone(n),id:remap(n.id),context:remap(n.context),formula:remapAst(n.formula)});
   const meal=source.sheets.find(s=>s.name.toLowerCase()==='mealdd');

@@ -62,13 +62,15 @@ export function validateBook(value: unknown): asserts value is Workbook {
   for (const s of b.sheets) {
     id(s.id);
     if (typeof s.name !== 'string' || !Array.isArray(s.rows) || !s.rows.length || s.rows.length>100000 || !Array.isArray(s.columns) || !s.columns.length || s.columns.length>512 || !s.cells || !Array.isArray(s.groups) || !Array.isArray(s.validations)) throw Error('Invalid or oversized sheet.');
+    if(s.outlineView!==undefined&&(!s.outlineView||typeof s.outlineView!=='object'||Array.isArray(s.outlineView)||Object.entries(s.outlineView).some(([k,v])=>!['tree','plainGroupHints'].includes(k)||typeof v!=='boolean')))throw Error('Invalid sheet outline preferences.');
     s.rows.forEach(r => id(r.id)); s.columns.forEach(c => id(c.id));
     for(const item of [...s.groups,...s.validations])if(!safeId(item.id))throw Error('Invalid layout/source identity.');
     for(const r of s.rows)if(r.height!==undefined&&(!Number.isFinite(r.height)||r.height<=0||r.height>409.5))throw Error('Invalid row height.');
-    for(const g of s.groups)if(!['row','column'].includes(g.axis)||!Array.isArray(g.members)||g.members.some(m=>!safeId(m)))throw Error('Invalid outline group.');
+    for(const g of s.groups)if(!['row','column'].includes(g.axis)||!Array.isArray(g.members)||g.members.some(m=>!safeId(m))||g.kind!==undefined&&!['summary','range'].includes(g.kind)||g.kind==='summary'&&g.members.length<2)throw Error('Invalid outline group.');
     if(!/^#[0-9a-f]{6}$/i.test(s.color))throw Error('Invalid tab color.');
     for(const c of s.columns)if(typeof c.label!=='string'||(c.width!==undefined&&(!Number.isFinite(c.width)||c.width<40||c.width>1000)))throw Error('Invalid column layout.');
     const rows = new Set(s.rows.map(r => r.id)), columns = new Set(s.columns.map(c => c.id));
+    for(const g of s.groups)if(g.kind==='summary'&&(new Set(g.members).size!==g.members.length||g.members.some(id=>!(g.axis==='row'?rows:columns).has(id))))throw Error('A summary group has missing or duplicate members.');
     for (const [k,c] of Object.entries(s.cells)) {
       const [r,col] = k.split(':'); if (!rows.has(r) || !columns.has(col) || !c || typeof c !== 'object') throw Error('Invalid cell address.');
       if(c.formula)ast(c.formula);
@@ -92,6 +94,7 @@ export function validateBook(value: unknown): asserts value is Workbook {
     for(const source of b.references){
       id(source.id);
       if(typeof source.name!=='string'||!['list','units','conversions','derived'].includes(source.kind)||!Array.isArray(source.archivedRows)||source.archivedRows.some(row=>!safeId(row)))throw Error('Invalid supporting source metadata.');
+      for(const label of[source.label,source.group])if(label!==undefined&&(typeof label!=='string'||!label.trim()))throw Error('Invalid dropdown display name or group.');
       if(source.catalog&&(!safeId(source.catalog.id)||!safeId(source.catalog.table)||source.catalog.rows!==undefined&&(!Array.isArray(source.catalog.rows)||source.catalog.rows.some(r=>!safeId(r))||new Set(source.catalog.rows).size!==source.catalog.rows.length)))throw Error('Invalid bundled catalog provenance.');
       for(const identity of[source.table,source.column,source.nameId,source.origin?.original,source.derived?.table,source.derived?.column,...Object.values(source.conversion??{}),...Object.values(source.anchor??{})])if(identity!==undefined&&!safeId(identity))throw Error('Invalid supporting source binding.');
       if(source.derived?.filter&&!safeId(source.derived.filter.column))throw Error('Invalid derived filter binding.');

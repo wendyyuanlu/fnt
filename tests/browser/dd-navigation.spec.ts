@@ -1,0 +1,116 @@
+import {expect,test,type Page} from '@playwright/test';
+
+async function seedNavigation(page:Page){
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const result=await page.evaluate(async()=>{
+    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{createReference,setReferencePresentation}=await import(p+'references.ts') as typeof import('../../src/references'),{addRow,setInput}=await import(p+'model.ts') as typeof import('../../src/model'),store=await Store.open();
+    try{
+      const state=(await store.load())!,b=state.book,a=createReference(b,'Alpha'),z=createReference(b,'Beta'),c=createReference(b,'Gamma'),d=createReference(b,'Delta'),convert=createReference(b,'Convert','conversions');
+      setReferencePresentation(b,z,'Beta','Other / Child');z.archived=true;setReferencePresentation(b,d,'Delta','Destination');
+      const table=b.tables.find(t=>t.id===convert.table)!,sheet=b.sheets.find(s=>s.id===table.sheet)!;sheet.supporting=true;
+      const row=addRow(b,sheet,1,table);['tbsp','tsp','3'].forEach((value,i)=>setInput(b,sheet,row.id,table.columns[i].column,value));const notebook=b.sheets.find(s=>s.name==='Notebook')!;
+      setInput(b,notebook,notebook.rows[1].id,notebook.columns[0].id,'=XLOOKUP("tbsp",Convert[From Unit],Convert[Conversion Factor],"")');
+      await store.save(b,state.version,'Synthetic tab controls');
+      return{a:a.id,z:z.id,c:c.id,d:d.id,convert:sheet.id,records:JSON.stringify([b.tables,b.sheets.map(s=>s.cells)])};
+    }finally{store.close();}
+  });
+  await page.reload();await expect(page.locator('#save-state')).toContainText(/^Saved/);return result;
+}
+async function persisted(page:Page){
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  return page.evaluate(async()=>{const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),store=await Store.open();try{return(await store.load())!.book;}finally{store.close();}});
+}
+const sourceTab=(page:Page,id:string)=>page.locator(`[data-reference="${id}"]:not([data-reference-group])`);
+
+test('Chrome DD pills nest tightly with one short trailing divider and keep surrounding controls unchanged',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await page.evaluate(async()=>{
+    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{setReferencePresentation}=await import(p+'references.ts') as typeof import('../../src/references'),store=await Store.open();
+    try{const state=(await store.load())!;for(const source of state.book.references??[])if(source.catalog?.table.startsWith('Snack'))setReferencePresentation(state.book,source,source.label??source.name,'Snack / Chocolate / Imported');await store.save(state.book,state.version,'Synthetic three-level DD');}finally{store.close();}
+  });
+  await page.reload();await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await page.locator('[data-action="references"]').click();
+  const chrome=page.locator('.reference-group-depth-1').filter({has:page.locator('[data-reference-group="Snack"]')});
+  await chrome.locator('[data-reference]:not([data-reference-group])').filter({hasText:/^Country$/}).click();
+  const surrounding=await page.locator('.app-header,.toolbar,.formula-bar,.grid-shell,.tabs>[data-reference]:not([data-reference-group])').evaluateAll(elements=>elements.map(el=>({className:el.className,background:getComputedStyle(el).backgroundColor,padding:getComputedStyle(el).padding,font:getComputedStyle(el).fontSize})));
+  await expect(chrome.locator('[data-reference-group]')).toHaveCount(3);
+  const styles=await chrome.evaluate(el=>({
+    outer:{height:getComputedStyle(el,'::after').height,width:getComputedStyle(el,'::after').width,color:getComputedStyle(el,'::after').backgroundColor,right:getComputedStyle(el,'::after').right},
+    inner:[...el.querySelectorAll('.reference-tab-group')].map(group=>getComputedStyle(group,'::after').content),
+    gaps:[el,...el.querySelectorAll('.reference-tab-group,.reference-group-members')].map(group=>getComputedStyle(group).gap)
+  }));
+  expect(styles.outer).toEqual({height:'12px',width:'1px',color:'rgb(218, 220, 224)',right:'0px'});expect(styles.inner.every(c=>c==='none')).toBe(true);expect(styles.gaps.every(g=>g==='2px')).toBe(true);
+  const imported=chrome.locator('[data-reference-group="Snack / Chocolate / Imported"]');
+  await imported.click();await expect(chrome.locator('.reference-group-depth-3>.reference-group-members')).toBeHidden();await imported.click();
+  await chrome.locator('[data-reference]:not([data-reference-group])').filter({hasText:/^Country$/}).click();
+  await expect(page.locator('body')).toHaveClass(/dd-mode/);await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await expect(chrome.locator('.reference-group-depth-3>.reference-group-members')).toBeVisible();
+  expect(await page.locator('.app-header,.toolbar,.formula-bar,.grid-shell,.tabs>[data-reference]:not([data-reference-group])').evaluateAll(elements=>elements.map(el=>({className:el.className,background:getComputedStyle(el).backgroundColor,padding:getComputedStyle(el).padding,font:getComputedStyle(el).fontSize})))).toEqual(surrounding);
+  await imported.click();await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.reload();
+  await expect(page.locator('body')).toHaveClass(/dd-mode/);await expect(page.locator('[data-reference-group="Snack / Chocolate / Imported"]')).toHaveAttribute('aria-expanded','false');
+  const root=page.locator('.reference-group-depth-1').filter({has:page.locator('[data-reference-group="Snack"]')});
+  expect(await root.evaluate(el=>getComputedStyle(el,'::after').display)).not.toBe('none');
+  await page.locator('[data-reference-group="Snack"]').click();
+  expect(await root.evaluate(el=>getComputedStyle(el,'::after').display)).toBe('none');
+  await page.locator('[data-reference-group="Snack"]').click();
+  expect(await root.evaluate(el=>getComputedStyle(el,'::after').display)).not.toBe('none');
+});
+
+test('Convert is an ordinary sheet and Shift-click selects sheet tabs without editing workbook records',async({page})=>{
+  const seed=await seedNavigation(page),convert=page.locator(`[data-sheet="${seed.convert}"]`);
+  await expect(convert).toHaveText('Convert');await convert.click();await expect(page.locator('body')).not.toHaveClass(/dd-mode/);await expect(page.locator('[data-action="structure"]')).toBeVisible();await expect(page.locator('.toolbar [data-action="groups"]')).toHaveCount(0);expect(await page.locator('.toolbar button').evaluateAll(buttons=>buttons.slice(-2).map(button=>button.getAttribute('data-action')))).toEqual(['tables','block']);
+  await page.locator('[data-sheet]').first().click();await convert.click({modifiers:['Shift']});
+  expect(await page.locator('[data-sheet].tab-multi-selected').count()).toBeGreaterThan(1);
+  await page.locator('[data-action="references"]').click();await expect(sourceTab(page,seed.a)).toBeVisible();await expect(page.locator('[data-reference]').filter({hasText:/^Convert$/})).toHaveCount(0);
+  const b=await persisted(page);expect(JSON.stringify([b.tables,b.sheets.map(s=>s.cells)])).toBe(seed.records);
+});
+test('creates nested categories inside the group dropdown and duplicates selected DD tabs from either entry point',async({page})=>{
+  const seed=await seedNavigation(page);await page.locator('[data-action="references"]').click();await sourceTab(page,seed.a).click();await page.locator('[data-action="reference-settings"]').click();
+  await page.getByRole('combobox',{name:'Group'}).click();await expect(page.getByRole('button',{name:'Custom',exact:true})).toBeVisible();await page.getByRole('button',{name:'New category',exact:true}).click();
+  const path=page.getByRole('textbox',{name:'New category path'});await path.fill('Fresh / Child / Leaf / Fourth');await page.getByRole('button',{name:'Create category',exact:true}).click();await expect(page.locator('.reference-category-create [role="alert"]')).toContainText('three');
+  await path.fill('Destination');await path.press('Enter');await expect(page.locator('.reference-category-create [role="alert"]')).toContainText('already exists');
+  await path.fill('Fresh / Child / Leaf');await path.press('Enter');await expect(page.getByRole('combobox',{name:'Group'})).toHaveText('Fresh / Child / Leaf');
+  await page.getByRole('button',{name:'Duplicate',exact:true}).click();let b=await persisted(page),copy=b.references!.find(s=>s.name==='Alpha copy')!;
+  expect(copy.group).toBe('Fresh / Child / Leaf');expect(copy.table).not.toBe(b.references!.find(s=>s.id===seed.a)?.table);await expect(sourceTab(page,copy.id)).toHaveClass(/current/);
+  await sourceTab(page,copy.id).click({button:'right'});await page.getByRole('menuitem',{name:'Duplicate',exact:true}).click();b=await persisted(page);
+  const second=b.references!.find(s=>s.name==='Alpha copy copy')!;expect(second.table).not.toBe(copy.table);await expect(sourceTab(page,second.id)).toHaveClass(/current/);
+  await page.reload();await expect(sourceTab(page,second.id)).toBeVisible();await expect(page.locator('[data-reference-group="Fresh / Child / Leaf"]')).toBeVisible();
+});
+
+test('bulk DD settings show selected tabs, preserve mixed values and apply nested groups atomically',async({page})=>{
+  const seed=await seedNavigation(page);await page.locator('[data-action="references"]').click();await sourceTab(page,seed.a).click();await sourceTab(page,seed.z).click({modifiers:['Shift']});
+  await expect(sourceTab(page,seed.a)).toHaveClass(/tab-multi-selected/);await expect(sourceTab(page,seed.z)).toHaveClass(/tab-multi-selected/);
+  await page.locator('[data-action="reference-settings"]').click();
+  await expect(page.locator('.reference-selected-tabs legend')).toHaveText('Selected tabs (2)');await expect(page.locator('.reference-selected-tabs')).toContainText('Other / Child / Beta');
+  await expect(page.getByRole('combobox',{name:'Group'})).toHaveText('Mixed groups');
+  expect(await page.locator('#reference-available').evaluate(el=>(el as HTMLInputElement).indeterminate)).toBe(true);
+  await expect(page.locator('datalist,.reference-help')).toHaveCount(0);await expect(page.locator('.reference-availability')).toHaveText('Show in DD picker');
+  await page.getByRole('combobox',{name:'Group'}).click();await page.getByRole('button',{name:'Custom',exact:true}).click();await page.locator('#reference-group').fill('Cancelled');await page.locator('#reference-group').press('Escape');
+  await expect(page.getByRole('combobox',{name:'Group'})).toHaveText('Mixed groups');await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+  let b=await persisted(page);expect(b.references!.find(s=>s.id===seed.a)?.group).toBeUndefined();expect(b.references!.find(s=>s.id===seed.z)?.group).toBe('Other / Child');expect(b.references!.find(s=>s.id===seed.z)?.archived).toBe(true);
+  await page.locator('[data-action="reference-settings"]').click();await page.getByRole('combobox',{name:'Group'}).click();await page.getByRole('button',{name:'Custom',exact:true}).click();
+  await page.locator('#reference-group').fill('New / Child / Leaf / Fourth');await page.locator('#reference-group').press('Enter');await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+  await expect(page.locator('#reference-settings-error')).toContainText('three');expect((await persisted(page)).references!.find(s=>s.id===seed.a)?.group).toBeUndefined();
+  await page.getByRole('combobox',{name:'Group'}).click();await page.getByRole('button',{name:'Custom',exact:true}).click();await page.locator('#reference-group').fill('New / Child / Leaf');await page.locator('#reference-group').press('Enter');
+  await page.locator('#reference-available').check();await page.locator('#reference-available').uncheck();await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+  b=await persisted(page);for(const id of [seed.a,seed.z])expect(b.references!.find(s=>s.id===id)).toMatchObject({group:'New / Child / Leaf',archived:true});
+  expect(b.references!.find(s=>s.id===seed.c)?.group).toBeUndefined();expect(JSON.stringify([b.tables,b.sheets.map(s=>s.cells)])).toBe(seed.records);
+  await page.reload();await expect(page.locator('[data-reference-group="New / Child / Leaf"]')).toBeVisible();
+});
+
+test('group picker shares searchable keyboard options and drag nesting supports multi-selected DDs',async({page})=>{
+  const seed=await seedNavigation(page);await page.locator('[data-action="references"]').click();await sourceTab(page,seed.a).click();await page.locator('[data-action="reference-settings"]').click();
+  await page.getByRole('combobox',{name:'Group'}).click();
+  expect(await page.locator('.reference-group-dropdown').evaluate(el=>{const r=el.getBoundingClientRect();return !!el.closest('dialog[open]')&&r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight;})).toBe(true);
+  await page.getByRole('searchbox',{name:'Search groups'}).fill('Destination');await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');await expect(page.getByRole('combobox',{name:'Group'})).toHaveText('Destination');
+  await page.getByRole('combobox',{name:'Group'}).click();await page.getByRole('option',{name:'Standalone',exact:true}).click();await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+  await sourceTab(page,seed.a).click();await sourceTab(page,seed.c).click({modifiers:['Shift']});
+  const moving=sourceTab(page,seed.a),target=page.locator('[data-reference-group="Destination"]');
+  const transfer=await page.evaluateHandle(()=>new DataTransfer());await moving.dispatchEvent('dragstart',{dataTransfer:transfer});
+  const rect=await target.boundingBox();await target.dispatchEvent('dragover',{dataTransfer:transfer,clientX:rect!.x+rect!.width/2});await target.dispatchEvent('drop',{dataTransfer:transfer,clientX:rect!.x+rect!.width/2});await transfer.dispose();
+  let b=await persisted(page);for(const id of [seed.a,seed.c])expect(b.references!.find(s=>s.id===id)?.group).toBe('Destination');expect(b.references!.find(s=>s.id===seed.z)?.group).toBe('Destination / Other / Child');
+  expect(JSON.stringify([b.tables,b.sheets.map(s=>s.cells)])).toBe(seed.records);
+  const category=page.locator('[data-reference-group="Destination"]');
+  await expect(category).toBeVisible();
+  await page.getByRole('button',{name:'Undo',exact:true}).click();b=await persisted(page);expect(b.references!.find(s=>s.id===seed.a)?.group).toBeUndefined();expect(b.references!.find(s=>s.id===seed.z)?.group).toBe('Other / Child');
+});

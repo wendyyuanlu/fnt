@@ -1,10 +1,32 @@
 import { expect,it } from 'vitest';
-import { columnCalculations,quantityDiagnostic,restoreCalculation } from '../src/calculation';
+import { applyTableColumnFormula,columnCalculations,quantityDiagnostic,restoreCalculation,tableColumnFormulas } from '../src/calculation';
 import { compile,displayFormula,Engine } from '../src/formula';
 import { cutCells } from '../src/cell-operations';
 import { createDemo,fillCells,getCell,key,move,renameColumn,setInput } from '../src/model';
 import { validateBook } from '../src/storage';
 
+it('edits a column formula pattern without replacing overrides or unrelated formulas',()=>{
+  const b=createDemo(),s=b.sheets[1],t=b.tables[0],column=t.columns[5].column,source=getCell(s,t.rows[0],column).formula!;
+  setInput(b,s,t.rows[1],column,'999');setInput(b,s,t.rows[2],column,'=7');
+  expect(tableColumnFormulas(b,t,column)).toHaveLength(2);
+  const replacement=compile('=2',b,s.id,t.rows[0],column);
+  applyTableColumnFormula(b,t,column,replacement,'matching',source);
+  expect(new Engine(b).cell(s.id,t.rows[0],column)).toBe(2);
+  expect(new Engine(b).cell(s.id,t.rows[1],column)).toBe(999);
+  expect(getCell(s,t.rows[1],column).calculation).toEqual(replacement);
+  expect(new Engine(b).cell(s.id,t.rows[2],column)).toBe(7);
+});
+it('adds column formulas only to calculated or empty cells unless replacing manual values is explicit',()=>{
+  const b=createDemo(),s=b.sheets[1],t=b.tables[0],column=t.columns[4].column;
+  setInput(b,s,t.rows[0],column,'');setInput(b,s,t.rows[1],column,'123');
+  const formula=compile('=A2',b,s.id,t.rows[0],column),manual=getCell(s,t.rows[1],column);
+  applyTableColumnFormula(b,t,column,formula,'calculated');
+  expect(getCell(s,t.rows[0],column).formula).toEqual(formula);
+  expect(getCell(s,t.rows[1],column)).toEqual(manual);
+  applyTableColumnFormula(b,t,column,formula,'all');
+  expect(displayFormula(getCell(s,t.rows[1],column).formula!,b)).toBe('=A3');
+  expect(getCell(s,t.header,column).formula).toBeUndefined();
+});
 it('retains the exact overridden calculation through rename, column movement, filling, reload and explicit restoration',()=>{
   const b=createDemo(),s=b.sheets[1],t=b.tables[0],row=t.rows[0],column=t.columns[5].column,original=getCell(s,row,column).formula!;
   setInput(b,s,row,column,'777');expect(getCell(s,row,column).calculation).toEqual(original);expect(new Engine(b).cell(s.id,row,column)).toBe(777);

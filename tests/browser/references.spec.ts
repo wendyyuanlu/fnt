@@ -1,131 +1,72 @@
 import { expect,test,type Page } from '@playwright/test';
+const rows=(p:Page)=>p.locator('.grid tbody tr[data-row]:has(td:not(.table-header))');
+const saved=(p:Page)=>expect(p.locator('#save-state')).toContainText(/^Saved/);
+const dd=async(p:Page,name?:string)=>{await p.locator('[data-action="references"]').click();if(name)await p.locator('[data-reference]').filter({hasText:new RegExp('^'+name+'$')}).click();};
+async function edit(p:Page,text:string){await p.locator('#formula').fill(text);await p.getByRole('button',{name:'Apply',exact:true}).click();}
+async function snapshot(p:Page){await saved(p);return p.evaluate(async()=>{const path='/src/',{Store}=await import(path+'storage.ts') as typeof import('../../src/storage'),s=await Store.open();try{return await s.backup((await s.load())!);}finally{s.close();}});}
 
-const saved=async(page:Page)=>{await expect(page.locator('#save-state')).toContainText('Saved');};
-const manager=async(page:Page)=>{await page.getByRole('button',{name:'Lists & conversions',exact:true}).click();};
-const close=async(page:Page)=>{await page.getByRole('button',{name:'Close dialog',exact:true}).click();};
-const edit=async(page:Page,text:string)=>{await page.locator('#formula').fill(text);await page.getByRole('button',{name:'Apply',exact:true}).click();};
-const snapshot=async(page:Page)=>{await saved(page);return page.evaluate(async()=>{const path='/src/',{Store}=await import(path+'storage.ts') as typeof import('../../src/storage'),s=await Store.open();try{const state=await s.load();if(!state)throw Error('Missing local test workbook');return await s.backup(state);}finally{s.close();}});};
-
-test('DD stays independently at bottom right while a long sheet-tab strip scrolls',async({page,isMobile})=>{
-  await page.goto('/');await saved(page);
-  await page.evaluate(async()=>{
-    const path='/src/',{Store}=await import(path+'storage.ts') as typeof import('../../src/storage'),{blankSheet}=await import(path+'model.ts') as typeof import('../../src/model'),store=await Store.open();
-    try{const state=await store.load();if(!state)throw Error('Missing local test workbook');for(let i=1;i<=12;i++)state.book.sheets.push(blankSheet('Invented extra tab '+i,10,4));await store.save(state.book,state.version,'Synthetic tab overflow');}finally{store.close();}
-  });
-  await page.reload();const dd=page.getByRole('button',{name:'Lists & conversions',exact:true});
-  await expect(dd).toHaveText('DD');await expect(dd).toHaveAttribute('title','Dropdown lists & conversions');
-  const position=()=>page.evaluate(()=>{
-    const button=document.querySelector('.reference-manager')!,tabs=document.querySelector<HTMLElement>('.tabs')!,b=button.getBoundingClientRect(),t=tabs.getBoundingClientRect();
-    return{x:b.x,y:b.y,width:b.width,height:b.height,right:b.right,bottom:b.bottom,tabsRight:t.right,viewportWidth:innerWidth,viewportHeight:innerHeight,overflows:tabs.scrollWidth>tabs.clientWidth,reachable:document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)?.closest('.reference-manager')===button};
-  });
-  const before=await position();expect(before.overflows).toBe(true);expect(before.right).toBeGreaterThanOrEqual(before.viewportWidth-9);expect(before.bottom).toBeGreaterThanOrEqual(before.viewportHeight-5);
-  expect(before.x).toBeGreaterThanOrEqual(before.tabsRight);expect(before.width).toBeGreaterThanOrEqual(44);if(isMobile)expect(before.height).toBeGreaterThanOrEqual(44);
-  await page.locator('.tabs').evaluate(el=>{el.scrollLeft=el.scrollWidth;});
-  const after=await position();expect(after.x).toBe(before.x);expect(after.y).toBe(before.y);expect(after.reachable).toBe(true);
-  await dd.click();await expect(page.getByRole('dialog').getByRole('heading')).toHaveText('Lists & conversions');
-});
-
-test('editable lists keep exact duplicate-label links, preserve manual text, archive new choices, and undo persisted changes',async({page})=>{
-  await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();
-  await page.locator('td[data-r="1"][data-c="0"]').click();await edit(page,'Same');
-  await page.locator('td[data-r="1"][data-c="1"]').click();await manager(page);
-  await page.locator('#new-list').click();await page.locator('#answer').fill('Invented types');await page.getByRole('dialog').getByRole('button',{name:'Apply',exact:true}).click();
-  for(let i=0;i<2;i++){await page.getByRole('textbox',{name:'New list value',exact:true}).fill('Same');await page.getByRole('button',{name:'Add value',exact:true}).click();}
-  await expect(page.locator('.reference-option')).toHaveCount(2);
-  await page.locator('#reference-bind').click();await close(page);
-  await page.getByRole('button',{name:'Choose source',exact:true}).click();
-  await page.locator('.validation-values [data-choice="1"]').click();
-  await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Same');
-  await manager(page);await page.locator('#reference-source').selectOption({label:'Invented types'});await page.getByRole('textbox',{name:'List value 2',exact:true}).fill('Renamed');await page.getByRole('textbox',{name:'List value 2',exact:true}).press('Tab');
-  await expect(page.getByRole('textbox',{name:'List value 2',exact:true})).toHaveValue('Renamed');
-  await page.getByRole('button',{name:'Move option 2 earlier',exact:true}).click();
-  await expect(page.getByRole('textbox',{name:'List value 1',exact:true})).toHaveValue('Renamed');
-  await page.locator('.reference-option').first().getByRole('button',{name:'Archive',exact:true}).click();
-  await close(page);await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Renamed');await expect(page.locator('td[data-r="1"][data-c="0"]')).toHaveText('Same');
-  await page.getByRole('button',{name:'Choose source',exact:true}).click();
-  await expect(page.locator('.validation-values [data-choice]')).toHaveCount(1);await expect(page.locator('.validation-values')).not.toContainText('Renamed');
-  await close(page);await saved(page);await page.reload();
-  await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Renamed');
-  await manager(page);await page.locator('#reference-source').selectOption({label:'Invented types'});await page.locator('.reference-option').first().getByRole('button',{name:'Remove',exact:true}).click();
-  await expect(page.getByRole('dialog')).toContainText('1 linked cells');
-  await page.locator('#replacement').selectOption({index:1});await page.locator('#delete-option').click();await expect(page.locator('.reference-option')).toHaveCount(1);
-  await close(page);await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Same');
-  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Renamed');
-  await manager(page);await page.locator('#reference-source').selectOption({label:'Invented types'});await expect(page.locator('.reference-option')).toHaveCount(2);
-  await page.getByRole('textbox',{name:'List value 2',exact:true}).focus();await page.keyboard.press('Delete');await expect(page.locator('.reference-option')).toHaveCount(2);
-  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-});
-
-test('derived lists use explicit live table/field/filter connections and exact row choices',async({page})=>{
+test('DD uses the same grid, maintains duplicate identities and formats across row movement, archive, undo and reload',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();await page.locator('td[data-r="1"][data-c="1"]').click();
-  await manager(page);await page.locator('#new-derived').click();await page.locator('#answer').fill('Meal choices');await page.getByRole('dialog').getByRole('button',{name:'Apply',exact:true}).click();
-  await expect(page.locator('#derived-status')).toContainText('unavailable');
-  await page.locator('#derived-table').selectOption({label:'Meals'});await page.locator('#derived-column').selectOption({label:'Meal'});await page.locator('#derived-filter').selectOption({label:'Ingredient'});await page.locator('#derived-equals').fill('Example oats');
-  await page.getByRole('button',{name:'Save connection',exact:true}).click();await expect(page.locator('#derived-status')).toHaveText('Live: 1 choices.');
-  await page.locator('#reference-bind').click();await close(page);await page.getByRole('button',{name:'Choose source',exact:true}).click();
-  await page.locator('.validation-values [data-choice="0"]').click();await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Example breakfast');
-  await page.getByRole('button',{name:'Meals',exact:true}).click();await page.locator('td[data-r="1"][data-c="0"]').click();await edit(page,'Renamed invented meal');
-  await page.getByRole('button',{name:'Notebook',exact:true}).click();await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Renamed invented meal');
-  await saved(page);await page.reload();await manager(page);await page.locator('#reference-source').selectOption({label:'Meal choices'});await expect(page.locator('#derived-status')).toHaveText('Live: 1 choices.');
+  await dd(page);await page.locator('[data-action="new-reference"]').click();await page.locator('#answer').fill('Invented types');await page.getByRole('button',{name:'Create',exact:true}).click();
+  for(let i=0;i<2;i++){await page.locator('[data-action="quick-add"]').click();await edit(page,'Same');}
+  await expect(rows(page)).toHaveCount(2);await rows(page).last().locator('td').click();
+  await page.locator('[data-action="bold"]').click();await page.locator('[data-action="format"]').click();await page.locator('#text-color').fill('#cc1122');await page.locator('#bg-color').fill('#ddeeff');await page.getByRole('button',{name:'Apply to selection'}).click();
+  await page.locator('[data-action="reference-settings"]').click();await page.locator('#reference-bind').click();
+  await page.locator('td[data-r="1"][data-c="1"]').click();await page.locator('.cell-dropdown').getByRole('option').nth(1).click();await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Same');
+  await dd(page,'Invented types');await rows(page).last().locator('td').click();await edit(page,'Renamed');
+  await rows(page).last().locator('th').hover();await rows(page).last().locator('[data-move-row]').click();await rows(page).first().locator('th').hover();
+  const destination=await rows(page).first().getAttribute('data-row');await rows(page).first().locator(`[data-insert-row="${destination}"]`).click();
+  await expect(rows(page).first().locator('td')).toHaveText('Renamed');
+  await expect(rows(page).first().locator('td')).toHaveCSS('color','rgb(204, 17, 34)');
+  await expect(rows(page).first().locator('td')).toHaveCSS('background-color','rgb(221, 238, 255)');
+  await rows(page).first().locator('th').click();await page.locator('[data-action="archive-options"]').click();
+  await page.getByRole('button',{name:'Close lists & conversions',exact:true}).click();await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('Renamed');
+  await page.locator('td[data-r="1"][data-c="1"]').click();await expect(page.locator('.cell-dropdown').getByRole('option')).toHaveCount(1);await page.keyboard.press('Escape');
+  await saved(page);const before=await snapshot(page);await page.reload();await dd(page,'Invented types');await expect(rows(page).first()).toHaveClass(/archived/);
+  await rows(page).first().locator('th').click();await page.keyboard.press('Delete');await expect(page.getByRole('dialog')).toContainText('linked cells');
+  await page.locator('#replacement').selectOption({index:1});await page.locator('#delete-option').click();await expect(rows(page)).toHaveCount(1);
+  await page.locator('[data-action="undo"]').click();await expect(rows(page)).toHaveCount(2);await expect(rows(page).first().locator('td')).toHaveText('Renamed');
+  const after=await snapshot(page);expect(after.state.book.references).toEqual(before.state.book.references);
+  const proof=await page.evaluate(async()=>{const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{exportXlsx}=await import(p+'xlsx-export.ts') as typeof import('../../src/xlsx-export'),{importXlsx}=await import(p+'xlsx.ts') as typeof import('../../src/xlsx'),s=await Store.open();try{const b=await s.backup((await s.load())!);return JSON.stringify((await importXlsx(Uint8Array.from(await exportXlsx(b)).buffer,'synthetic.xlsx')).nativeBackup)===JSON.stringify(b);}finally{s.close();}});
+  expect(proof).toBe(true);
 });
-
-test('supporting Excel import preserves logs, archives all prior state, leaves absent original Meals unavailable and survives native roundtrip',async({page})=>{
+test('cell and column dropdown assignment preserves values and precise scopes and is undoable',async({page})=>{
+  await page.goto('/');await page.getByRole('button',{name:'Ingredients',exact:true}).click();await page.locator('td[data-r="1"][data-c="0"]').click();
+  const before=await snapshot(page);
+  await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.locator('#dropdown-source').selectOption({label:'SnackCountry'});await page.getByRole('button',{name:'Apply dropdown'}).click();
+  const one=await snapshot(page),s=one.state.book.sheets.find(s=>s.name==='Ingredients')!,column=s.columns[0].id;
+  expect(s.cells).toEqual(before.state.book.sheets.find(s=>s.name==='Ingredients')!.cells);
+  expect(s.validations.filter(v=>v.columns.includes(column)).flatMap(v=>v.rows)).toEqual([s.rows[1].id]);
+  await page.locator('[data-action="undo"]').click();
+  await page.locator('th[data-col="0"]').click();await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.locator('#dropdown-source').selectOption({label:'IngredientType'});await page.getByRole('button',{name:'Apply dropdown'}).click();
+  const all=await snapshot(page),sheet=all.state.book.sheets.find(x=>x.id===s.id)!,table=all.state.book.tables.find(t=>t.name==='Ingredients')!;
+  expect(sheet.validations.filter(v=>v.columns.includes(column)).flatMap(v=>v.rows)).toEqual(table.rows);
+  expect(sheet.cells).toEqual(s.cells);await page.reload();
+  await page.locator('td[data-r="1"][data-c="0"]').click();await expect(page.locator('.cell-dropdown')).toContainText('Seasoning');await page.keyboard.press('Escape');
+  await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.locator('#dropdown-source').selectOption('manual');await page.getByRole('button',{name:'Apply dropdown'}).click();
+  await expect(page.locator('td[data-r="1"][data-c="0"]')).toHaveText('Example oats');
+});
+test('live derived lists are filtered shared-grid previews, never editable replacements for the source',async({page})=>{
+  await page.goto('/');await dd(page);await page.locator('[data-action="new-reference"]').click();await page.locator('#answer').fill('Meal choices');await page.locator('#reference-kind').selectOption('derived');await page.getByRole('button',{name:'Create',exact:true}).click();
+  await page.locator('#derived-table').selectOption({label:'Meals'});await page.locator('#derived-column').selectOption({label:'Meal'});await page.locator('#derived-filter').selectOption({label:'Ingredient'});await page.locator('#derived-equals').fill('Example oats');await page.getByRole('button',{name:'Save connection'}).click();
+  await expect(rows(page)).toHaveCount(1);await expect(rows(page).first().locator('td')).toHaveText('Example breakfast');await expect(page.locator('#formula')).toBeDisabled();
+  const before=await snapshot(page);await rows(page).first().locator('td').click();await page.keyboard.press('Delete');await page.locator('[data-action="bold"]').click();await saved(page);
+  expect((await snapshot(page)).state.book).toEqual(before.state.book);
+});
+test('conversion grid hides IDs and confirms factor changes without losing authored formulas or formats',async({page})=>{
   await page.goto('/');await saved(page);
-  await page.evaluate(async()=>{
-    const path='/src/',{Store}=await import(path+'storage.ts') as typeof import('../../src/storage'),{createDemo}=await import(path+'model.ts') as typeof import('../../src/model'),store=await Store.open();
-    try{const state=(await store.load())!,book=createDemo();book.catalogMigrations=['original-dropdowns-v1'];await store.save(book,state.version,'Synthetic pre-catalog import fixture');}finally{store.close();}
-  });
-  await page.reload();await saved(page);
-  const fixture=await page.evaluate(async()=>{
-    const path='/src/',dependency='/node_modules/fflate/esm/browser.js';
-    const {createDemo,blankSheet,setInput,uid}=await import(path+'model.ts') as typeof import('../../src/model'),{exportXlsx}=await import(path+'xlsx-export.ts') as typeof import('../../src/xlsx-export'),{unzipSync,zipSync}=await import(dependency) as typeof import('fflate');
-    const b=createDemo(),dropdowns=blankSheet('Dropdowns',90,6),convert=blankSheet('Convert',12,6),derived=blankSheet('MealDD',8,3);
-    b.sheets.push(dropdowns,convert,derived);
-    const meals=b.tables.find(t=>t.name==='Meals')!,mealSheet=b.sheets.find(s=>s.id===meals.sheet)!,flag=mealSheet.columns[5].id;
-    meals.columns.push({id:uid(),column:flag,name:'isMeal'});setInput(b,mealSheet,meals.header,flag,'isMeal');meals.rows.forEach((row,i)=>setInput(b,mealSheet,row,flag,i===0?'TRUE':'FALSE'));
-    function table(s:typeof dropdowns,name:string,at:number,headers:string[],rows:string[][]){
-      const t={id:uid(),name,sheet:s.id,header:s.rows[at].id,rows:s.rows.slice(at+1,at+1+rows.length).map(r=>r.id),columns:headers.map((name,i)=>({id:uid(),column:s.columns[i].id,name}))};
-      b.tables.push(t);[headers,...rows].forEach((row,i)=>row.forEach((v,j)=>setInput(b,s,s.rows[at+i].id,s.columns[j].id,v)));
-    }
-    ['IngredientType','Period','AnimalType','Table14','SnackCountry','SnackFlavour','SnackCategory'].forEach((name,i)=>table(dropdowns,name,i*5,[name+' field'],[['Invented A'],[name==='Period'?'':'Invented B']]));
-    table(convert,'Convert',0,['From Unit','To Unit','Conversion Factor'],[['tbsp','tsp','3']]);setInput(b,derived,derived.rows[0].id,derived.columns[0].id,'=FILTER(Meals[Meal],Meals[isMeal]=TRUE)');
-    const {compile}=await import(path+'formula.ts') as typeof import('../../src/formula'),original='=FILTER(Meals[Meal],Meals[isMeal]=TRUE)';
-    b.names.push({id:uid(),name:'MealDD',context:derived.id,original,formula:compile(original,b,derived.id,derived.rows[0].id,derived.columns[0].id)});
-    const parts=unzipSync(await exportXlsx({format:'fnt-backup',version:1,state:{book:b,version:1,pending:[],updated:'now'},originals:[]}));
-    delete parts['fnt/backup.json.gz'];delete parts['fnt/manifest.json'];
-    const bytes=zipSync(parts),{importXlsx}=await import(path+'xlsx.ts') as typeof import('../../src/xlsx');
-    const subset=await importXlsx(Uint8Array.from(bytes).buffer,'subset.xlsx',{sheets:['Dropdowns','Convert','MealDD']}),omitted=subset.book.sheets.find(s=>s.name==='Meals')!;
-    return{bytes:Array.from(bytes),omittedCells:Object.keys(omitted.cells).length,omittedTablePresent:subset.book.tables.some(t=>t.sheet===omitted.id&&t.name==='Meals'),formulaCount:subset.book.importReport!.formulaCount};
-  });
-  expect(fixture.omittedCells).toBe(0);expect(fixture.omittedTablePresent).toBe(true);expect(fixture.formulaCount).toBe(1);
-  const buffer=Buffer.from(fixture.bytes);
-  await page.getByRole('button',{name:'Notebook',exact:true}).click();await page.locator('td[data-r="1"][data-c="0"]').click();await edit(page,'Existing local note');
-  const before=await snapshot(page);let githubRequests=0;page.on('request',r=>{if(r.url().includes('api.github.com'))githubRequests++;});
-  await manager(page);await page.locator('#import-references').setInputFiles({name:'invented-supporting.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer});
-  await expect(page.locator('#reference-notice')).toContainText('Imported 7 lists');await expect(page.locator('#reference-notice')).toContainText('1 conversion rules');
-  await page.locator('#reference-source').selectOption({label:'Period'});await expect(page.locator('.reference-option')).toHaveCount(2);await expect(page.getByRole('textbox',{name:'List value 2',exact:true})).toHaveValue('');
-  await page.locator('#reference-source').selectOption({label:'MealDD'});await expect(page.locator('#derived-status')).toContainText('Original derived source unavailable');
-  await expect(page.locator('#derived-table')).toHaveValue('');await close(page);await expect(page.locator('td[data-r="1"][data-c="0"]')).toHaveText('Existing local note');
-  await expect(page.getByRole('button',{name:'Dropdowns',exact:true})).toHaveCount(0);
-  const after=await snapshot(page);for(const original of before.state.book.sheets)expect(after.state.book.sheets.find(s=>s.id===original.id)).toEqual(original);
-  expect(after.originals).toHaveLength(1);expect(after.state.sync).toBeUndefined();expect(after.state.pending.map(p=>p.id)).toEqual(expect.arrayContaining(before.state.pending.map(p=>p.id)));
-  const proof=await page.evaluate(async()=>{
-    const path='/src/',{Store}=await import(path+'storage.ts') as typeof import('../../src/storage'),{parseArchive}=await import(path+'archive.ts') as typeof import('../../src/archive'),{exportXlsx}=await import(path+'xlsx-export.ts') as typeof import('../../src/xlsx-export'),{importXlsx}=await import(path+'xlsx.ts') as typeof import('../../src/xlsx'),s=await Store.open();
-    try{const state=await s.load();if(!state)throw Error('Missing local test workbook');const backup=await s.backup(state),history=await s.history(),prior=parseArchive(history.find(h=>h.label==='Before Supporting data import')!.backup!),restored=await importXlsx(Uint8Array.from(await exportXlsx(backup)).buffer,'roundtrip.xlsx');return{prior,identical:JSON.stringify(restored.nativeBackup)===JSON.stringify(backup)};}finally{s.close();}
-  });
-  expect(proof.prior).toEqual(before);expect(proof.identical).toBe(true);
-  await page.reload();await manager(page);await page.locator('#import-attached-references').click();await expect(page.locator('#reference-notice')).toContainText('already imported');
-  const again=await snapshot(page);expect(again.state.book).toEqual(after.state.book);expect(githubRequests).toBe(0);
-  await page.locator('#reference-source').selectOption({label:'Units'});await page.getByRole('textbox',{name:'List value 1',exact:true}).fill('Invented spoon');await page.getByRole('textbox',{name:'List value 1',exact:true}).press('Tab');
-  await page.locator('#reference-source').selectOption({label:'Convert'});
-  await expect(page.locator('.conversion-rule').first().getByRole('combobox',{name:'From unit',exact:true}).locator('option:checked')).toContainText('Invented spoon');
-  await close(page);await page.locator('td[data-r="1"][data-c="1"]').click();await edit(page,'=SUM(Convert[Conversion Factor])');
-  await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('3');
-  await manager(page);await page.locator('#reference-source').selectOption({label:'Convert'});
-  await page.locator('.conversion-rule').first().getByRole('textbox',{name:'Conversion factor',exact:true}).fill('6');await page.locator('.conversion-rule').first().getByRole('button',{name:'Save',exact:true}).click();
-  await expect(page.getByRole('dialog')).toContainText('Recalculate affected records?');await page.locator('#confirm').click();
-  await expect(page.locator('.conversion-rule').first().getByRole('textbox',{name:'Conversion factor',exact:true})).toHaveValue('6');
-  await close(page);await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('6');
-  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('3');await saved(page);await page.reload();await expect(page.locator('td[data-r="1"][data-c="1"]')).toHaveText('3');
-  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.evaluate(async()=>{const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{createReference,addReferenceValue,unitsSource,upsertConversion}=await import(p+'references.ts') as typeof import('../../src/references'),{setInput,key}=await import(p+'model.ts') as typeof import('../../src/model'),s=await Store.open();try{const state=(await s.load())!,b=state.book,u=unitsSource(b),a=addReferenceValue(b,u,'c'),z=addReferenceValue(b,u,'lb'),src=createReference(b,'Convert','conversions'),row=upsertConversion(b,src,undefined,a,z,'2',true),t=b.tables.find(t=>t.id===src.table)!,sheet=b.sheets.find(s=>s.id===t.sheet)!;sheet.cells[key(row,t.columns[2].column)].format={color:'#cc1122',underline:true};setInput(b,b.sheets[0],b.sheets[0].rows[1].id,b.sheets[0].columns[5].id,`=SUM(${t.name}[Conversion Factor])`);await s.save(b,state.version,'Synthetic conversions');}finally{s.close();}});
+  await page.reload();await dd(page,'Convert');await expect(rows(page).first().locator('td').nth(0)).toHaveText('c');await expect(rows(page).first().locator('td').nth(1)).toHaveText('lb');
+  await rows(page).first().locator('td').nth(2).click();await edit(page,'=3*2');await expect(page.getByRole('dialog')).toContainText('historical');await expect(rows(page).first().locator('td').nth(2)).toHaveText('2');
+  await page.locator('#confirm').click();await expect(rows(page).first().locator('td').nth(2)).toHaveText('6');await expect(page.locator('#formula')).toHaveValue('=(3*2)');
+  await expect(rows(page).first().locator('td').nth(2)).toHaveCSS('color','rgb(204, 17, 34)');
+  await page.locator('[data-action="undo"]').click();await expect(rows(page).first().locator('td').nth(2)).toHaveText('2');
+  await rows(page).first().locator('td').nth(0).click();await expect(page.locator('.cell-dropdown').getByRole('tab',{name:'Units',exact:true})).toBeVisible();await expect(page.locator('.cell-dropdown')).not.toContainText(/c\/[0-9a-f]/);
+});
+test('DD field deletion never deletes neighboring sources sharing the backing column',async({page})=>{
+  await page.goto('/');await dd(page,'SnackCountry');const before=await snapshot(page);
+  await page.locator('th[data-col]').click();await page.keyboard.press('Delete');await expect(page.locator('.reference-heading')).toContainText('unavailable');
+  await page.locator('[data-action="undo"]').click();await expect(rows(page)).toHaveCount(4);const after=await snapshot(page);
+  expect(after.state.book.references).toEqual(before.state.book.references);expect(after.state.book.tables).toEqual(before.state.book.tables);
+  expect(after.state.book.sheets.map(s=>s.cells)).toEqual(before.state.book.sheets.map(s=>s.cells));
 });

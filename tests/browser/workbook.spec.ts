@@ -18,11 +18,11 @@ test('real grid editing, formulas, rename/move, undo, local reload, notes and pi
   await cell(page,1,3).click();await expect(page.getByRole('textbox',{name:'Cell value or formula',exact:true})).toHaveValue(/Ingredients\[Energy density\]/);
   await expect(page.locator('#save-state')).toContainText('Saved');
   await page.reload();await expect(cell(page,1,3)).toHaveText('232');
-  await cell(page,1,5).dblclick();await expect(page.getByRole('dialog')).toBeVisible();
-  await page.locator('#cell-editor').fill('Line one\nLine two');await page.locator('#cell-note').fill('Private synthetic note');await page.getByRole('button',{name:'Apply changes'}).click();
+  await cell(page,1,5).dblclick();await expect(page.locator('#cell-editor')).toBeVisible();await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.locator('#cell-editor').fill('Line one\nLine two');await expect(page.locator('#cell-note,#cell-link')).toHaveCount(0);await cell(page,2,5).click();await expect(page.locator('#cell-editor')).toHaveCount(0);
   await expect(cell(page,1,5)).toHaveCSS('white-space','nowrap');await expect(cell(page,1,5)).toHaveText('Line one\nLine two');
-  await cell(page,1,1).click();await page.getByRole('button',{name:'Choose source',exact:true}).click();
-  await page.locator('#picker-source').selectOption({label:'Ingredients / Ingredient'});await page.locator('#picker-search').fill('oats');await page.locator('[data-record]').click();
+  await cell(page,1,1).click();await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.locator('#dropdown-source').selectOption({label:'Ingredients / Ingredient'});await page.getByRole('button',{name:'Apply dropdown'}).click();
+  await cell(page,1,1).click();await page.getByRole('searchbox',{name:'Search dropdown options'}).fill('oats');await page.locator('.cell-dropdown').getByRole('option').click();
   await expect(cell(page,1,1)).toHaveText('Example oats');await expect(cell(page,1,1)).toHaveClass(/linked/);await expect(cell(page,1,3)).toHaveText('750');
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();await edit(page,1,0,'Oats renamed');
   await page.getByRole('button',{name:'Daily log',exact:true}).click();await expect(cell(page,1,1)).toHaveText('Oats renamed');await expect(cell(page,1,3)).toHaveText('750');
@@ -105,8 +105,8 @@ test('typing adjacent to a table expands formulas, while a gap remains freeform'
   await expect(page.locator('#save-state')).toContainText('Saved');await page.reload();
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();await expect(cell(page,4,5)).toHaveText('2');
   await page.getByRole('button',{name:'Daily log',exact:true}).click();await cell(page,2,1).click();
-  await page.getByRole('button',{name:'Choose source',exact:true}).click();await page.locator('#picker-source').selectOption({label:'Ingredients / Ingredient'});
-  await page.locator('#picker-search').fill('lentils');await page.locator('[data-record]').click();await edit(page,2,2,'100');
+  await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.locator('#dropdown-source').selectOption({label:'Ingredients / Ingredient'});await page.getByRole('button',{name:'Apply dropdown'}).click();await cell(page,2,1).click();
+  await page.getByRole('searchbox',{name:'Search dropdown options'}).fill('lentils');await page.locator('.cell-dropdown').getByRole('option').click();await edit(page,2,2,'100');
   await expect(cell(page,2,3)).toHaveText('116');await expect(cell(page,2,1)).toHaveClass(/linked/);
 });
 test('header boundary controls insert and move a selected column block without losing formulas',async({page})=>{

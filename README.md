@@ -42,7 +42,10 @@ Static hosting must contain only the built application, never nutrition data.
 - Select a cell and type, or edit in the formula bar. Both editors show the same
   live draft, committed once by Enter/Apply or selecting another cell. Escape
   cancels the draft; formulas display their results after commit. Enter/F2 starts
-  in-cell editing; double-click or **Expand** opens the multiline editor. Editing notes
+  in-cell editing; double-click or **Expand** opens a multiline textarea over the
+  cell, not a dialog. It adapts to the visible viewport on mobile. Clicking outside
+  applies changes; Escape cancels and Ctrl/Cmd+Enter applies from the keyboard.
+  Editing notes
   does not change wrapping. Formula-column cells can be manually overridden.
   The formula bar marks **Calculated** versus **Manual**; **Restore** recovers
   the exact previous formula (or asks which existing column calculation to use).
@@ -53,6 +56,35 @@ Static hosting must contain only the built application, never nutrition data.
   on desktop or mobile. The cell-count menu also enables touch-drag selection
   without converting ordinary scrolling into edits.
   Arrow keys navigate; Ctrl/Cmd+Z, Y, F, S, A, C, X, V work.
+  Ctrl/Cmd+G creates a summary group; Ctrl/Cmd+Shift+G ungroups it.
+  Select the summary row/column along with its details: the topmost row or
+  leftmost column stays visible on collapse. Moving it moves its group together.
+  Ctrl/Cmd+Alt+G creates a plain range group (all members hide);
+  Ctrl/Cmd+Alt+Shift+G ungroups plain ranges.
+  Cell selections ask which axis to use. Ungroup removes the exact group, or
+  the innermost containing group; spanning separate groups removes their outer
+  level while retaining nested groups. These operations are undoable and do not
+  change cells or formulas. Shortcuts leave active text editors alone.
+  **Option A grouping controls** sit beside row numbers and at column headers,
+  without replacing their labels. The corner hierarchy icon opens row/column
+  level toggles, independent plain-range eye controls and **Tree view** brackets.
+  One nesting level shows one button per axis without redundant level headings.
+  **Plain group hints** default on; the eye controls remain available whether
+  groups are expanded or collapsed. Toggle them off explicitly to hide them.
+  Tree view and hint preferences are stored with each sheet in autosave, manual
+  saves, native backups and optional private sync, not as a global setting.
+  Plain-range hints sit on the preceding visible row/column; a summary-row
+  collision uses the first data cell so row numbers and summary controls remain
+  separate. Group controls never add totals or rewrite formulas.
+  Rows and columns can belong to both group types. A plain group containing a
+  summary identity hides that summary and its entire current group, including
+  nested summary details. Showing it again preserves the summary's independent
+  collapsed/expanded state. The same hiding semantics are projected into XLSX.
+  **Manage groups** opens an unblurred, non-modal panel beside the sheet
+  (a bottom panel on mobile). Summary/plain cards show current coordinates,
+  included cell previews and explicit hiding behavior; **Locate on sheet**
+  highlights the visible members or their hint. A plain group selected on one
+  summary lists the full affected range, rather than just its single anchor.
   Delete structurally removes row/column header selections (Shift-click selects
   several); ordinary cell selections clear contents without shifting cells.
   Both are undoable in one step. Delete remains text editing inside an editor.
@@ -60,10 +92,13 @@ Static hosting must contain only the built application, never nutrition data.
   external clipboard text supports quoted multiline/tab-separated fields.
   The dashed copy indication survives selection changes; Escape clears it.
 - **Rows & columns** inserts, deletes, hides, resizes, and moves records/columns.
-  Header-boundary **+** buttons insert rows/columns. Selected column headers show
-  a move handle: drag to an indicated boundary, or tap the handle then a boundary
-  on mobile. Shift-select headers to move multiple columns together without
-  overwriting cells. Sheet tabs also support drag reordering.
+  Hover headers to reveal grab handles and boundary **+** buttons. Moving does
+  not require selecting the header first; drag, or tap a handle then a boundary.
+  Shift-select headers to move multiple rows/columns together. Inserting with
+  multiple same-axis headers selected adds the same number in one undoable step.
+  Drag header edges to resize; double-click an edge to auto-fit without changing
+  wrapping. Sheet tabs support drag reordering, double-click rename and a
+  right-click command menu.
   **Fill down** copies formulas with relative/absolute reference handling and
   increments trailing text numbers (`Raisin 1`, `Raisin 2`, ...).
   The selected range's corner handle also supports mouse/touch drag-fill,
@@ -91,24 +126,63 @@ Static hosting must contain only the built application, never nutrition data.
   Typing directly below a table extends it using existing row IDs, calculated
   columns, formatting, and adjacent-row validation. A blank separating row, other
   table, or existing content in the target table area prevents auto-expansion.
-- **Choose source** searches a selected source column from any workbook table.
-  The chosen selector is remembered per destination column. Source records bind
-  to exact IDs; duplicate names are disambiguated by record number/ID. Renames
-  follow the record; deletion becomes `#REF!`. Manual text never silently relinks.
-  Explicit text XLOOKUP formulas retain ordinary first-match semantics.
-- **DD** at the bottom right opens **Lists & conversions**, independently of the
-  scrolling sheet tabs. Create, rename,
+  Double-click a table column header to rename it, add/manage/remove its applied
+  dropdowns, or edit column formulas. Matching-pattern edits retain other formula
+  patterns and manual overrides, updating their saved restore calculations.
+  Replacing all manual values requires explicitly choosing **All data rows**.
+- **Dropdown…** assigns a source to selected cells or a table's selected columns
+  without changing their contents. Click an assigned cell or its dropdown arrow
+  to search and choose options; Alt+Down opens it from the keyboard. Escape
+  dismisses the list. **Manual**, F2 and the expanded editor remain
+  available. Choices retain exact source identities, including duplicate labels
+  and distinct blank/space options. Selecting a table-backed option links it
+  automatically; there is no separate linking step. Manual text never silently
+  relinks. Explicit text XLOOKUP formulas retain ordinary first-match semantics.
+  Select multiple sources to combine their options without merging duplicate
+  record identities. **Grid view** provides checkbox cards with at most four
+  preview options per source; previews do not limit the actual dropdown.
+  Assignment opens in Grid view by default. Grid/List use the same compact
+  dialog height, reduced only when required by the viewport.
+  Source tabs above the searchable options mark the active list with a check.
+  A lightweight **manual** action uses a solid green pencil and bold text when
+  active. It closes the picker and starts direct cell editing, committed with
+  Enter, Tab or selecting another cell; there is no separate Apply step.
+  Only the chosen source's options scroll. The last source
+  choice is saved per column for subsequent empty cells; existing linked entries
+  retain their exact record and manual entries remain free text. Switching tabs
+  does not change existing cells. There is no picker footer; the small **+**
+  beside the tabs opens source assignment. Manual mode starts direct editing
+  for subsequent empty cells. Reopening its picker (cell arrow or Alt+Down)
+  immediately shows the last-used list's searchable options, without a manual
+  panel or status row. Manual text never automatically matches a source record.
+- Formatting controls use consistent local SVG icons. Bold, italic, underline,
+  strikethrough and wrapping are independent; text-color and background-color
+  buttons open palettes and support custom colors.
+  With the grid selected: Ctrl+B bold, Ctrl+I italic, Ctrl+U underline,
+  Ctrl+5 strikethrough, Ctrl+Alt+W wrap, Ctrl+Alt+C text color,
+  Ctrl+Alt+B background color, and Ctrl+Alt+N number format. Compact hover/focus
+  hints show the action name and keyboard-key badges for buttons with shortcuts.
+  On macOS use Command instead of Ctrl and Option instead of Alt.
+  Shortcuts do not intercept typing inside inputs or dialogs.
+- **DD** at the bottom right toggles **Lists & conversions**, independently of the
+  scrolling sheet tabs. Click **DD** again to return to
+  your previous sheet and selection. Source tabs use the same spreadsheet grid,
+  preserving formulas and formatting. Purple accents replace green tints in DD
+  mode; white surfaces and stored cell colors are unchanged. Create, rename,
   reorder and archive lists; edit options or derived table/field/filter sources;
   connect them to selected cells without changing existing contents. Exact
   selections follow option renames, while manual strings stay manual. Removal
   shows usages and replacement/archive/cancel controls. Formula/text-dependent
   removals require explicit reference changes first; archival is nondestructive.
   Archived options are excluded from new choices, not from legacy table formulas.
-  Blank imported records remain editable in the manager but are not dropdown choices.
+  Blank imported records remain editable and available as explicit blank choices.
   Unit records are shared with the conversion-rule editor. Ingredient-specific
   serving conversions stay separate in Ingredients; changed universal rules can
   recalculate historical records and show an impact confirmation, not a freeze.
-  Supporting sheets stay out of ordinary tabs; **Backing sheet** remains available.
+  Supporting sheets stay out of ordinary tabs; DD displays their canonical cells.
+- DD categories use compact Chrome-style pills, with one faint trailing divider
+  per top-level category. Group paths such as `Snack / Chocolate / Imported`
+  support three nested levels. Collapse, rename, and reorder preserve record IDs.
 - **DD > Import attached Excel sources** reads the original already saved in
   this browser. The seven original Dropdowns catalogs are also bundled with the
   app: IngredientType, Period, AnimalType, Table14, SnackCountry, SnackFlavour,

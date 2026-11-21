@@ -66,6 +66,8 @@ export async function importXlsx(buffer:ArrayBuffer,name:string,options?:{sheets
       const tokens=code.replace(/"[^"]*"|\\.|\[[^\]]*\]/g,'');
       const rgb=font?first(font,'color')?.getAttribute('rgb'):null,bg=fill?first(fill,'fgColor')?.getAttribute('rgb'):null;
       formats.push({bold:font?elements(font,'b').length>0:false,underline:font?elements(font,'u').length>0:false,wrap:first(xf,'alignment')?.getAttribute('wrapText')==='1',
+        ...(font&&first(font,'i')&&!['0','false'].includes(first(font,'i')!.getAttribute('val')??'')?{italic:true}:{}),
+        ...(font&&first(font,'strike')&&!['0','false'].includes(first(font,'strike')!.getAttribute('val')??'')?{strikethrough:true}:{}),
         ...(rgb?{color:'#'+rgb.slice(-6)}:{}),...(bg?{background:'#'+bg.slice(-6)}:{}),
         ...(code?{excelNumberFormat:code}:{}),
         number:([14,15,16,17,18,19,20,21,22].includes(num)||/[ydhs]/i.test(tokens))?'date':[9,10].includes(num)||tokens.includes('%')?'percent':[2,4].includes(num)||/^0\.00$/.test(tokens)?'decimal':''});

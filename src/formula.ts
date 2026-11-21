@@ -18,7 +18,7 @@ type Token = { type: 'number' | 'string' | 'word' | 'bracket' | 'symbol' | 'quot
 type Env = Map<string, Value | (() => Value)>;
 const compiled = new WeakMap<Workbook, { revision: number; trees: Map<string, Ast> }>();
 const normalName = (s: string) => s.replace(/_xlfn\.|_xlws\./gi, '').toUpperCase();
-export const supportedFunctions = new Set(['IF', 'IFERROR', 'SUM', 'AVERAGE', 'MIN', 'MAX', 'INDEX', 'MATCH', 'XLOOKUP', 'XMATCH', 'FILTER', 'LET', 'ROW', 'ROWS', 'ISNUMBER', 'DATE', 'DATEDIF', 'FIND', 'LEFT', 'RIGHT', 'ROUND', 'VALUE', 'AND', 'OR', 'NOT', 'COUNT', 'COUNTA', 'ABS', 'INT', 'TODAY', 'CONCAT', 'LEN', 'TRIM', 'LOWER', 'UPPER', 'INDIRECT', 'ANCHORARRAY']);
+export const supportedFunctions = new Set(['IF', 'IFERROR', 'SUM', 'AVERAGE', 'MIN', 'MAX', 'INDEX', 'MATCH', 'XLOOKUP', 'XMATCH', 'FILTER', 'VSTACK', 'LET', 'ROW', 'ROWS', 'ISNUMBER', 'DATE', 'DATEDIF', 'FIND', 'LEFT', 'RIGHT', 'ROUND', 'VALUE', 'AND', 'OR', 'NOT', 'COUNT', 'COUNTA', 'ABS', 'INT', 'TODAY', 'CONCAT', 'LEN', 'TRIM', 'LOWER', 'UPPER', 'INDIRECT', 'ANCHORARRAY']);
 function tokenize(source: string): Token[] {
   const out: Token[] = [];
   for (let i = 0; i < source.length;) {
@@ -231,7 +231,7 @@ export function maySpill(ast:Ast,bindings=new Map<string,Ast>(),depth=0):boolean
   if(ast.kind==='binary')return maySpill(ast.left,bindings,depth+1)||maySpill(ast.right,bindings,depth+1);
   if(ast.kind==='unary')return maySpill(ast.child,bindings,depth+1);
   if(ast.kind==='call'){
-    if(['FILTER','ANCHORARRAY'].includes(ast.name))return true;
+    if(['FILTER','VSTACK','ANCHORARRAY'].includes(ast.name))return true;
     if(ast.name==='LET'){
       const local=new Map(bindings);for(let i=0;i<ast.args.length-1;i+=2){const id=ast.args[i];if(id.kind==='variable')local.set(id.name,ast.args[i+1]);}
       return !!ast.args.length&&maySpill(ast.args.at(-1)!,local,depth+1);
@@ -533,7 +533,7 @@ export class Engine {
     }
     const values = args.map((_,i) => ev(i));
     const errors = values.flatMap(flatten).find(isFault);
-    if (name !== 'ISNUMBER' && name !== 'XLOOKUP' && name !== 'FILTER' && errors) return errors;
+    if (name !== 'ISNUMBER' && name !== 'XLOOKUP' && name !== 'FILTER' && name !== 'VSTACK' && errors) return errors;
     const n = (i: number, fallback = 0) => number(values[i] ?? fallback);
     const numericValues=values.flatMap((value,i)=>args[i].kind==='literal'&&typeof value!=='object'?[number(value)]:flatten(value));
     if(['SUM','AVERAGE','MIN','MAX'].includes(name)){
@@ -557,6 +557,13 @@ export class Engine {
         if (rr === 0) return matrix.map(r => r[cc-1] ?? fault('#REF!'));
         if (cc === 0) return matrix[rr-1] ?? fault('#REF!');
         return matrix[rr-1]?.[cc-1] ?? fault('#REF!');
+      }
+      case 'VSTACK': {
+        if(!values.length)return fault('#VALUE!','VSTACK needs at least one array.');
+        const rows=values.flatMap(value=>Array.isArray(value)?value.map(row=>Array.isArray(row)?row:[row]):[[value]]);
+        const width=Math.max(0,...rows.map(row=>row.length));
+        if(!width)return fault('#CALC!','Empty stack.');
+        return rows.map(row=>Array.from({length:width},(_,i)=>row[i]??(i<row.length?null:fault('#N/A'))));
       }
       case 'FILTER': {
         const data = Array.isArray(values[0]) ? values[0] : [values[0]], include = flatten(values[1]);

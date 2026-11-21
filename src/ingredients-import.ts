@@ -149,8 +149,9 @@ export function mergeIngredients(current:Workbook,source:Workbook):IngredientsIm
       to.validations.push(copied);
     }
     for(const g of from.groups){
+      if(g.kind==='summary'&&!(g.axis==='row'?rows:columns).has(g.members[0]))continue;
       const members=g.members.filter(id=>g.axis==='row'?rows.has(id):columns.has(id)).map(remap);
-      if(members.length&&!to.groups.some(existing=>existing.id===g.id))to.groups.push({...clone(g),members});
+      if((g.kind==='summary'?members.length>1:members.length)&&!to.groups.some(existing=>existing.id===g.id))to.groups.push({...clone(g),members});
     }
   }
   for(const c of extras){

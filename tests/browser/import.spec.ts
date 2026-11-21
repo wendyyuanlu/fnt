@@ -25,9 +25,9 @@ test('imports shared formulas and cached spills without stale results, retains s
   await expect(page.locator('td[data-r="0"][data-c="0"]')).toHaveText('Sample apple');
   await expect(page.locator('td[data-r="1"][data-c="0"]')).toHaveText('Sample pear');
   await page.getByRole('button',{name:'Pantry',exact:true}).click();
-  await page.locator('td[data-r="3"][data-c="0"]').click();await page.getByRole('button',{name:'Choose source',exact:true}).click();
-  await expect(page.locator('.validation-values')).toContainText('Sample apple');
-  await expect(page.locator('.validation-values')).toContainText('Sample pear');
-  await page.getByRole('button',{name:'Close dialog'}).click();
+  await page.locator('td[data-r="3"][data-c="0"]').click();
+  await expect(page.locator('.cell-dropdown')).toContainText('Sample apple');
+  await expect(page.locator('.cell-dropdown')).toContainText('Sample pear');
+  await page.keyboard.press('Escape');
   await page.getByRole('button',{name:'Workbook and backups'}).click();await page.getByRole('button',{name:'Compatibility report'}).click();await expect(page.getByRole('dialog')).toContainText('"formulaCount": 3');
 });

@@ -1,8 +1,8 @@
 import { expect,it } from 'vitest';
 import { compile,Engine } from '../src/formula';
-import { addReferenceValue,createReference,moveReferenceValue,referenceChoices,referenceTable,referenceUsages,removeReferenceValue,renameReferenceValue,setDerivedSource,unitsSource,upsertConversion,validationReference } from '../src/references';
+import { addReferenceValue,createReference,duplicateReference,moveReferenceGroup,moveReferenceValue,referenceChoices,referenceFormula,referenceNavigation,referenceTable,referenceUsages,removeReferenceValue,renameReferenceGroup,renameReferenceValue,reorderReferenceSelection,reorderReferenceTabs,setDerivedSource,setReferencePresentation,unitsSource,upsertConversion,validationChoiceGroups,validationChoices,validationReference } from '../src/references';
 import { mergeReferences } from '../src/references-import';
-import { blankSheet,clone,createDemo,key,setInput,uid,type Workbook } from '../src/model';
+import { addRow,blankSheet,clone,createDemo,key,setInput,uid,type Workbook } from '../src/model';
 import { validateBook } from '../src/storage';
 import { dropdownCatalog,seedDropdownCatalog } from '../src/dropdown-catalog';
 
@@ -21,6 +21,139 @@ function source(){
   b.names.push({id:uid(),name:'MealDD',context:derived.id,original,formula:compile(original,b,derived.id,derived.rows[0].id,derived.columns[0].id)},{id:uid(),name:'MealDD',sheet:meals.id,context:meals.id,original,formula:compile(original,b,meals.id,meals.rows[0].id,meals.columns[0].id)});
   return b;
 }
+it('nests DD categories through three levels and renames a branch without changing records or bindings',()=>{
+  const b=createDemo(),a=createReference(b,'Country'),z=createReference(b,'Flavour'),row=addReferenceValue(b,a,'Japan'),s=b.sheets[0];
+  setReferencePresentation(b,a,'Country',' Snack / Chocolate / Imported ');setReferencePresentation(b,z,'Flavour','Snack / Chocolate');
+  s.cells[key(s.rows[1].id,s.columns[0].id)]={binding:referenceChoices(b,a)[0].binding};
+  const tables=clone(b.tables),cells=clone(b.sheets.map(s=>s.cells)),refs=b.references!.map(s=>s.id);
+  const root=referenceNavigation(b).find(n=>n.group==='Snack')!;
+  expect(root.children[0].group).toBe('Snack / Chocolate');expect(root.children[0].children[0].group).toBe('Snack / Chocolate / Imported');
+  expect(root.members.map(s=>s.id)).toEqual([a.id,z.id]);
+  expect(()=>setReferencePresentation(b,a,'Other','Snack / Chocolate / Imported / Fourth')).toThrow('three');expect(a.label).toBeUndefined();
+  b.pickerSources['dd-group-collapsed:snack / chocolate / imported']='true';
+  renameReferenceGroup(b,'Snack / Chocolate','Sweet');
+  expect(a.group).toBe('Snack / Sweet / Imported');expect(z.group).toBe('Snack / Sweet');
+  expect(b.pickerSources['dd-group-collapsed:snack / sweet / imported']).toBe('true');
+  expect(b.tables).toEqual(tables);expect(b.sheets.map(s=>s.cells)).toEqual(cells);expect(b.references!.map(s=>s.id)).toEqual(refs);
+  expect(new Engine(b).cell(s.id,s.rows[1].id,s.columns[0].id)).toBe('Japan');expect(referenceChoices(b,a)[0].binding.row).toBe(row);
+});
+it('moves entire DD branches while retaining hidden unit identities and unrelated source order',()=>{
+  const b=createDemo(),a=createReference(b,'Country'),u=unitsSource(b),z=createReference(b,'Flavour'),other=createReference(b,'Animal');
+  setReferencePresentation(b,a,'Country','Snack / Chocolate');setReferencePresentation(b,z,'Flavour','Snack / Chocolate / Imported');
+  const records=clone(b.tables),ids=new Set(b.references!.map(s=>s.id));
+  moveReferenceGroup(b,'Snack',1);
+  expect(referenceNavigation(b).map(n=>n.label)).toEqual(['Animal','Snack']);expect(b.references).toContain(u);
+  reorderReferenceTabs(b,'group:Snack',other.id,false);
+  expect(referenceNavigation(b).map(n=>n.label)).toEqual(['Snack','Animal']);
+  expect(new Set(b.references!.map(s=>s.id))).toEqual(ids);expect(b.tables).toEqual(records);
+  reorderReferenceTabs(b,a.id,other.id,false);expect(a.group).toBeUndefined();expect(b.tables).toEqual(records);
+});
+it('drag nesting and extraction preserve category descendants, collapsed state and exact bindings',()=>{
+  const b=createDemo(),country=createReference(b,'Country'),flavour=createReference(b,'Flavour'),animal=createReference(b,'Animal');
+  setReferencePresentation(b,country,'Country','Snack / Chocolate');setReferencePresentation(b,flavour,'Flavour','Snack / Chocolate / Imported');
+  const record=addReferenceValue(b,country,'Japan'),s=b.sheets[0];s.cells[key(s.rows[1].id,s.columns[0].id)]={binding:referenceChoices(b,country)[0].binding};
+  const tables=clone(b.tables),cells=clone(b.sheets.map(s=>s.cells)),ids=b.references!.map(s=>s.id);
+  b.pickerSources['dd-group-collapsed:snack / chocolate / imported']='true';
+  reorderReferenceTabs(b,'group:Snack / Chocolate',animal.id,true);
+  expect(country.group).toBe('Chocolate');expect(flavour.group).toBe('Chocolate / Imported');
+  expect(b.pickerSources['dd-group-collapsed:chocolate / imported']).toBe('true');
+  setReferencePresentation(b,animal,'Animal','Other');
+  reorderReferenceTabs(b,'group:Chocolate','group:Other',true,true);
+  expect(country.group).toBe('Other / Chocolate');expect(flavour.group).toBe('Other / Chocolate / Imported');
+  reorderReferenceTabs(b,country.id,animal.id,true);
+  expect(country.group).toBe('Other');
+  expect(new Set(b.references!.map(s=>s.id))).toEqual(new Set(ids));expect(b.tables).toEqual(tables);expect(b.sheets.map(s=>s.cells)).toEqual(cells);
+  expect(new Engine(b).cell(s.id,s.rows[1].id,s.columns[0].id)).toBe('Japan');expect(referenceChoices(b,country)[0].binding.row).toBe(record);
+});
+it('rejects nesting cycles and excessive depth before changing any category',()=>{
+  const b=createDemo(),a=createReference(b,'A'),z=createReference(b,'Z');
+  setReferencePresentation(b,a,'A','One / Two / Three');setReferencePresentation(b,z,'Z','Other');
+  const before=clone(b);
+  expect(()=>reorderReferenceTabs(b,'group:One','group:One / Two',true,true)).toThrow('descendants');expect(b).toEqual(before);
+  expect(()=>reorderReferenceTabs(b,'group:One','group:Other',true,true)).toThrow('three');expect(b).toEqual(before);
+});
+it('moves multiple selected DDs in order, deduplicates categories and rejects conflicts atomically',()=>{
+  const b=createDemo(),a=createReference(b,'A'),z=createReference(b,'Z'),destination=createReference(b,'Destination');
+  setReferencePresentation(b,destination,'Destination','Other');
+  const records=clone(b.tables),cells=clone(b.sheets.map(s=>s.cells));
+  reorderReferenceSelection(b,[a.id,z.id],'group:Other',true,true);
+  expect(referenceNavigation(b)[0].members.map(s=>s.id)).toEqual([destination.id,a.id,z.id]);
+  reorderReferenceSelection(b,['group:Other',a.id,z.id],destination.id,false);
+  expect(b.tables).toEqual(records);expect(b.sheets.map(s=>s.cells)).toEqual(cells);
+  const conflict=createReference(b,'Conflict');setReferencePresentation(b,conflict,'Z','Conflict');
+  const before=clone(b);
+  expect(()=>reorderReferenceSelection(b,[a.id,z.id],'group:Conflict',true,true)).toThrow('already used');
+  expect(b).toEqual(before);
+});
+it('creates conversions as ordinary sheets and excludes them from DD navigation without dropping their source identities',()=>{
+  const b=createDemo(),source=createReference(b,'Convert','conversions'),table=referenceTable(b,source).table;
+  expect(referenceTable(b,source).sheet.supporting).toBe(false);expect(table.name).toBe('Convert');
+  expect(referenceNavigation(b).flatMap(n=>n.members)).not.toContain(source);
+  const sheet=referenceTable(b,source).sheet,row=addRow(b,sheet,1,table);['tbsp','tsp','3'].forEach((value,i)=>setInput(b,sheet,row.id,table.columns[i].column,value));
+  const s=b.sheets[0];setInput(b,s,s.rows[1].id,s.columns[0].id,'=XLOOKUP("tbsp",Convert[From Unit],Convert[Conversion Factor],"")');
+  expect(new Engine(b).cell(s.id,s.rows[1].id,s.columns[0].id)).toBe(3);
+});
+it('duplicates only the selected DD with fresh identities and preserves internal formulas, external references and literal ID text',()=>{
+  const b=createDemo(),source=createReference(b,'Options'),first=addReferenceValue(b,source,'Base'),second=addReferenceValue(b,source,'Formula'),{table,sheet}=referenceTable(b,source);
+  setInput(b,sheet,first,table.columns[0].column,"'"+first);setInput(b,sheet,sheet.rows[20].id,sheet.columns[1].id,'External');setInput(b,sheet,second,table.columns[0].column,'=A2&B21');
+  sheet.validations.push({id:uid(),sheet:sheet.id,rows:[second],columns:[table.columns[0].column],source:JSON.stringify(referenceFormula(source))});source.archivedRows.push(first);
+  const original=clone(b),copy=duplicateReference(b,source),cloned=referenceTable(b,copy);
+  expect(cloned.table.id).not.toBe(table.id);expect(cloned.table.rows.some(r=>table.rows.includes(r))).toBe(false);expect(copy.archivedRows).toEqual([cloned.table.rows[0]]);
+  expect(referenceChoices(b,copy,true).map(c=>c.value)).toEqual([first,first+'External']);
+  expect(JSON.parse(cloned.sheet.validations[0].source).table).toBe(cloned.table.id);expect(cloned.sheet.validations[0].id).not.toBe(sheet.validations[0].id);
+  for(const s of original.sheets)expect(b.sheets.find(x=>x.id===s.id)).toEqual(s);for(const t of original.tables)expect(b.tables.find(x=>x.id===t.id)).toEqual(t);
+  setInput(b,cloned.sheet,cloned.table.rows[0],cloned.table.columns[0].column,'New');
+  expect(referenceChoices(b,copy,true).map(c=>c.value)).toEqual(['New','NewExternal']);expect(referenceChoices(b,source,true).map(c=>c.value)).toEqual([first,first+'External']);
+  validateBook(JSON.parse(JSON.stringify(b)));
+});
+it('duplicates a live DD definition independently without redirecting its original name or anchor',()=>{
+  const b=createDemo(),source=createReference(b,'Live','derived'),table=b.tables.find(t=>t.name==='Ingredients')!;setDerivedSource(b,source,table.id,table.columns[0].id);
+  const before=clone(b.names.find(n=>n.id===source.nameId)),copy=duplicateReference(b,source);
+  expect(copy.nameId).not.toBe(source.nameId);expect(referenceChoices(b,copy)).toEqual(referenceChoices(b,source));
+  setDerivedSource(b,copy,table.id,table.columns[1].id);
+  expect(b.names.find(n=>n.id===source.nameId)).toEqual(before);expect(copy.derived?.column).toBe(table.columns[1].id);expect(source.derived?.column).toBe(table.columns[0].id);
+});
+it('resolves dropdown choices with exact identities, retaining blanks and excluding archived options',()=>{
+  const b=seedDropdownCatalog(createDemo()).book,s=b.sheets[0],period=b.references!.find(r=>r.name==='Period')!,table=b.tables.find(t=>t.id===period.table)!;
+  const validation={id:uid(),rows:[s.rows[1].id],columns:[s.columns[0].id],sheet:s.id,source:JSON.stringify({kind:'structured',table:table.id,columns:[period.column],mode:'data'})};
+  const choices=()=>validationChoices(b,validation,s.rows[1].id,s.columns[0].id,new Engine(b)).choices;
+  expect(choices().map(c=>c.value)).toEqual(['','Spotting','Yes']);
+  expect(choices()[0].binding).toEqual({table:table.id,row:table.rows[0],column:period.column});
+  period.archivedRows.push(table.rows[1]);expect(choices().map(c=>c.value)).toEqual(['','Yes']);
+  b.tables=b.tables.filter(t=>t.id!==table.id);expect(choices).toThrow('missing');
+});
+it('resolves named table dropdowns by stable fields and keeps literal strings distinct from numbers',()=>{
+  const b=createDemo(),s=b.sheets[0],table=b.tables.find(t=>t.name==='Ingredients')!,name={id:uid(),name:'IngredientChoices',context:s.id,original:'=Ingredients[Ingredient]',formula:compile('=Ingredients[Ingredient]',b,s.id,s.rows[1].id,s.columns[0].id)};
+  b.names.push(name);
+  const validation={id:uid(),rows:[s.rows[1].id],columns:[s.columns[0].id],sheet:s.id,source:JSON.stringify({kind:'name',id:name.id})};
+  const choices=validationChoices(b,validation,s.rows[1].id,s.columns[0].id,new Engine(b)).choices;
+  expect(choices[0].binding).toEqual({table:table.id,row:table.rows[0],column:table.columns[0].id});
+  table.name='RenamedIngredients';table.columns[0].name='RenamedIngredient';
+  expect(validationChoices(b,validation,s.rows[1].id,s.columns[0].id,new Engine(b)).choices).toEqual(choices);
+  expect(validationChoices(b,{...validation,values:['01',' ','']},s.rows[1].id,s.columns[0].id,new Engine(b)).choices).toEqual([{value:'01',raw:'01'},{value:' ',raw:' '},{value:'',raw:''}]);
+});
+it('combines dropdown sources without merging duplicate labels or their identities',()=>{
+  const b=createDemo(),a=createReference(b,'First list'),z=createReference(b,'Second list'),one=addReferenceValue(b,a,'Same'),two=addReferenceValue(b,z,'Same'),s=b.sheets[0];
+  const ast={kind:'call',name:'VSTACK',args:[a,z].map(ref=>({kind:'structured',table:ref.table,columns:[ref.column],mode:'data'}))};
+  const v={id:uid(),rows:[s.rows[1].id],columns:[s.columns[0].id],sheet:s.id,source:JSON.stringify(ast)};
+  const choices=validationChoices(b,v,s.rows[1].id,s.columns[0].id,new Engine(b)).choices;
+  expect(choices.map(c=>[c.value,c.source,c.binding?.row])).toEqual([['Same','First list',one],['Same','Second list',two]]);
+  s.cells[key(s.rows[1].id,s.columns[0].id)]={binding:choices[1].binding};renameReferenceValue(b,z,two,'Renamed');
+  expect(new Engine(b).cell(s.id,s.rows[1].id,s.columns[0].id)).toBe('Renamed');
+  const table=b.tables.find(t=>t.name==='Ingredients')!,stacked=new Engine(b).evaluate({kind:'call',name:'VSTACK',args:[{kind:'structured',table:table.id,columns:table.columns.slice(0,2).map(c=>c.id),mode:'data'},{kind:'literal',value:5}]},s.id,s.rows[1].id,s.columns[0].id);
+  expect(Array.isArray(stacked)).toBe(true);if(Array.isArray(stacked))expect(stacked.at(-1)).toMatchObject([5,{error:'#N/A'}]);
+});
+it('picker group identities survive source renames and literal stacks remain one list',()=>{
+  const b=createDemo(),a=createReference(b,'First'),z=createReference(b,'Second'),s=b.sheets[0];
+  addReferenceValue(b,a,'Same');addReferenceValue(b,z,'Same');
+  const v={id:uid(),rows:[s.rows[1].id],columns:[s.columns[0].id],sheet:s.id,source:JSON.stringify({kind:'call',name:'VSTACK',args:[a,z].map(ref=>({kind:'structured',table:ref.table,columns:[ref.column],mode:'data'}))})};
+  const before=validationChoiceGroups(b,v,s.rows[1].id,s.columns[0].id,new Engine(b));
+  a.name='Renamed source';b.tables.find(t=>t.id===a.table)!.name='Renamed table';
+  const after=validationChoiceGroups(b,v,s.rows[1].id,s.columns[0].id,new Engine(b));
+  expect(after.map(g=>g.id)).toEqual(before.map(g=>g.id));expect(after[0].name).toBe('Renamed source');expect(after[0].id).not.toBe(after[1].id);
+  const literals=validationChoiceGroups(b,{...v,source:JSON.stringify({kind:'call',name:'VSTACK',args:[{kind:'literal',value:'01'},{kind:'literal',value:' '}]})},s.rows[1].id,s.columns[0].id,new Engine(b));
+  expect(literals).toHaveLength(1);expect(literals[0].choices.map(c=>c.raw)).toEqual(['01',' ']);
+});
 it('later original supporting import reuses bundled catalogs and keeps edited/archived exact row bindings intact',()=>{
   const incoming=source(),dropdowns=incoming.sheets.find(s=>s.name==='Dropdowns')!;
   dropdowns.cells={};

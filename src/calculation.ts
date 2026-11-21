@@ -1,5 +1,34 @@
 import { compare,displayFormula,Engine,maySpill,scalar,type Ast } from './formula';
-import { clone,getCell,isFault,key,mapAst,tableAt,translate,type Sheet,type Workbook } from './model';
+import { clone,getCell,isFault,key,mapAst,tableAt,translate,type Sheet,type Table,type Workbook } from './model';
+
+export function tableColumnFormulas(book:Workbook,table:Table,column:string):{row:string;formula:Ast}[]{
+  const sheet=book.sheets.find(s=>s.id===table.sheet);
+  if(!sheet||!table.columns.some(c=>c.column===column))throw Error('This table column no longer exists.');
+  const first=table.rows[0];if(!first)return[];
+  const seen=new Set<string>(),result:{row:string;formula:Ast}[]=[];
+  for(const row of table.rows){
+    const cell=getCell(sheet,row,column),source=cell.formula??cell.calculation;if(!source)continue;
+    const formula=translate(source,book,sheet.id,row,column,first,column),signature=JSON.stringify(formula);
+    if(!seen.has(signature)){seen.add(signature);result.push({row,formula});}
+  }
+  return result;
+}
+export function applyTableColumnFormula(book:Workbook,table:Table,column:string,formula:Ast,scope:'matching'|'calculated'|'all',source?:Ast):void{
+  const sheet=book.sheets.find(s=>s.id===table.sheet),first=table.rows[0];
+  if(!sheet||!first||!table.columns.some(c=>c.column===column))throw Error('Add a data row before editing this table column.');
+  if(scope==='matching'&&!source)throw Error('Choose the existing formula pattern to modify.');
+  let changed=0;
+  for(const row of table.rows){
+    const cell=getCell(sheet,row,column),prior=cell.formula??cell.calculation;
+    const matching=!!prior&&JSON.stringify(translate(prior,book,sheet.id,row,column,first,column))===JSON.stringify(source);
+    if(scope==='matching'&&!matching)continue;
+    const next=translate(formula,book,sheet.id,first,column,row,column);
+    if(scope!=='all'&&cell.calculation&&!cell.formula){sheet.cells[key(row,column)]={...clone(cell),calculation:next};changed++;continue;}
+    if(scope==='calculated'&&!cell.formula&&(cell.binding||cell.value!=null&&cell.value!==''||cell.note||cell.link))continue;
+    restoreCalculation(book,sheet,row,column,next);changed++;
+  }
+  if(!changed)throw Error('No data cells match this formula scope.');
+}
 
 export function columnCalculations(book:Workbook,sheet:Sheet,row:string,column:string):{row:string;formula:Ast}[]{
   const cell=getCell(sheet,row,column);

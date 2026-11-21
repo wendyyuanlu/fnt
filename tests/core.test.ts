@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { compile, displayFormula, Engine, flatten } from '../src/formula';
-import { addRow, clone, createDemo, deleteColumn, deleteRows, duplicateSheet, fillCells, getCell, insertColumn, key, move, moveColumns, renameColumn, setInput, translate } from '../src/model';
+import { addRow, clone, createDemo, deleteColumn, deleteRows, duplicateSheet, fillCells, getCell, insertColumn, key, move, moveColumns, moveRows, outlineMembers, renameColumn, setInput, translate } from '../src/model';
+
+it('summary identities stay visible, move with their details and do not reanchor after deletion',()=>{
+  const b=createDemo(),s=b.sheets[3],rows=s.rows.slice(1,4).map(r=>r.id),columns=s.columns.slice(1,4).map(c=>c.id),cells=clone(s.cells);
+  s.groups.push({id:'summary-rows',axis:'row',members:rows,kind:'summary',collapsed:true,label:'Summary rows'},{id:'summary-columns',axis:'column',members:columns,kind:'summary',collapsed:true,label:'Summary columns'});
+  expect(outlineMembers(s.groups[0])).toEqual(rows.slice(1));
+  moveRows(b,s,[rows[0]],7);expect(s.rows.slice(4,7).map(r=>r.id)).toEqual(rows);
+  moveColumns(b,s,[columns[0]],7);expect(s.columns.slice(4,7).map(c=>c.id)).toEqual(columns);expect(s.cells).toEqual(cells);
+  deleteRows(b,s,[rows[0]]);expect(s.groups.some(g=>g.id==='summary-rows')).toBe(false);
+  deleteColumn(b,s,columns[0]);expect(s.groups).toHaveLength(0);
+});
 
 describe('identity-bound calculation',()=>{
   function fixture(){

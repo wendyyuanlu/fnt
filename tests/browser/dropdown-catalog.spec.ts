@@ -1,4 +1,7 @@
 import { expect,test } from '@playwright/test';
+const records='.grid tbody tr[data-row]:has(td:not(.table-header))';
+const values=(page:import('@playwright/test').Page)=>page.locator(records+' td').evaluateAll(nodes=>nodes.map(n=>n.textContent??''));
+const choose=async(page:import('@playwright/test').Page,name:string)=>page.locator('[data-reference]').filter({hasText:new RegExp('^'+name+'$')}).click();
 
 const expected=[
   {name:'IngredientType',values:['Seasoning','Staple','Whole','Premade']},
@@ -13,23 +16,22 @@ test('fresh browser automatically displays every original dropdown in DD and the
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
   await page.getByRole('button',{name:'Lists & conversions',exact:true}).click();
   for(const list of expected){
-    await page.locator('#reference-source').selectOption({label:list.name});
-    await expect.poll(()=>page.locator('.reference-option input[aria-label^="List value"]').evaluateAll(nodes=>nodes.map(n=>(n as HTMLInputElement).value))).toEqual(list.values);
+    await choose(page,list.name);
+    await expect.poll(()=>values(page)).toEqual(list.values);
   }
-  await page.locator('#reference-source').selectOption({label:'SnackCountry'});
-  await page.getByRole('textbox',{name:'List value 1',exact:true}).fill('User country');
-  await page.getByRole('textbox',{name:'List value 1',exact:true}).press('Tab');
-  await page.locator('.reference-option').first().getByRole('button',{name:'Archive',exact:true}).click();
-  await page.getByRole('button',{name:'Close dialog',exact:true}).click();
-  await page.getByRole('button',{name:'Choose source',exact:true}).click();
-  await expect(page.locator('#picker-source option').filter({hasText:'SnackCountry / Country'})).toHaveCount(1);
+  await choose(page,'SnackCountry');await page.locator(records+' td').first().click();
+  await page.locator('#formula').fill('User country');await page.getByRole('button',{name:'Apply',exact:true}).click();
+  await page.locator(records+' th').first().click();await page.locator('[data-action="archive-options"]').click();
+  await page.getByRole('button',{name:'Close lists & conversions',exact:true}).click();
+  await page.locator('[data-action="dropdown-source"]').click();
+  await expect(page.locator('#dropdown-source option').filter({hasText:/^SnackCountry$/})).toHaveCount(1);
   await page.getByRole('button',{name:'Close dialog',exact:true}).click();
   await expect(page.locator('#save-state')).toContainText('Saved');await page.reload();
   await page.getByRole('button',{name:'Lists & conversions',exact:true}).click();
-  await expect(page.locator('#reference-source option')).toHaveCount(8);
-  await page.locator('#reference-source').selectOption({label:'SnackCountry'});
-  await expect(page.getByRole('textbox',{name:'List value 1',exact:true})).toHaveValue('User country');
-  await expect(page.locator('.reference-option').first()).toContainText('Unarchive');
+  await expect(page.locator('[data-reference]')).toHaveCount(7);
+  await choose(page,'SnackCountry');
+  await expect(page.locator(records+' td').first()).toHaveText('User country');
+  await expect(page.locator(records).first()).toHaveClass(/archived/);
 });
 test('older saved profile receives catalogs once with full recovery and existing IDs, custom source and pending edits intact',async({page})=>{
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
@@ -43,8 +45,8 @@ test('older saved profile receives catalogs once with full recovery and existing
   });
   await page.reload();await expect(page.locator('#save-state')).toContainText('Saved');
   await page.getByRole('button',{name:'Lists & conversions',exact:true}).click();
-  await page.locator('#reference-source').selectOption({label:'SnackCountry'});await expect(page.getByRole('textbox',{name:'List value 1',exact:true})).toHaveValue('Keep custom value');
-  await page.locator('#reference-source').selectOption({label:'SnackCountry_2'});await expect.poll(()=>page.locator('.reference-option input[aria-label^="List value"]').evaluateAll(nodes=>nodes.map(n=>(n as HTMLInputElement).value))).toEqual(['Taiwan','Japan','Canada','USA']);
+  await choose(page,'SnackCountry');await expect(page.locator(records+' td').first()).toHaveText('Keep custom value');
+  await choose(page,'SnackCountry_2');await expect.poll(()=>values(page)).toEqual(['Taiwan','Japan','Canada','USA']);
   const proof=await page.evaluate(async()=>{
     const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{parseArchive}=await import(p+'archive.ts') as typeof import('../../src/archive'),store=await Store.open();
     try{const state=(await store.load())!,history=await store.history();return{state,prior:parseArchive(history.find(h=>h.label==='Before Add original Dropdowns catalogs')!.backup!)};}finally{store.close();}
@@ -52,5 +54,5 @@ test('older saved profile receives catalogs once with full recovery and existing
   expect(proof.state.book.id).toBe(old.book.id);expect(proof.state.book.sheets.slice(0,4)).toEqual(old.book.sheets.slice(0,4));expect(proof.state.pending.slice(0,-1)).toEqual(old.pending);
   expect((proof.prior as {state:{book:unknown}}).state.book).toEqual(old.book);
   await page.reload();await expect(page.locator('#save-state')).toContainText('Saved');
-  await page.getByRole('button',{name:'Lists & conversions',exact:true}).click();await expect(page.locator('#reference-source option')).toHaveCount(9);
+  await page.getByRole('button',{name:'Lists & conversions',exact:true}).click();await expect(page.locator('[data-reference]')).toHaveCount(8);
 });

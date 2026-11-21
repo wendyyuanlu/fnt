@@ -1,7 +1,7 @@
 import { expect,it } from 'vitest';
 import { Engine } from '../src/formula';
 import { defaultHeaderFormula,groupBlockToTop,positionalBlock } from '../src/meal-block';
-import { blankSheet,clone,key,move,setInput,uid,type Workbook } from '../src/model';
+import { blankSheet,clone,key,move,outlineMembers,setInput,uid,type Workbook } from '../src/model';
 
 function fixture(){
   const s=blankSheet('Invented meals',12,6),b:Workbook={schema:1,id:uid(),title:'Synthetic meals',revision:0,sheets:[s],tables:[],names:[],pickerSources:{}};
@@ -27,8 +27,8 @@ it('moves the selected ingredient owning block, collapses only its details, and 
   expect(positionalBlock(b,s,t,ingredient)).toEqual([header,ingredient]);
   expect(groupBlockToTop(b,s,t,ingredient)).toBe(1);expect(s.rows.slice(1,3).map(r=>r.id)).toEqual([header,ingredient]);expect(t.rows.slice(0,2)).toEqual([header,ingredient]);
   expect(s.rows[3].id).not.toBe(next);expect(s.cells).toEqual(cells);expect(s.validations).toEqual(validation);expect(s.groups[0]).toEqual(other);
-  expect(s.groups.find(g=>g.members.includes(ingredient))).toMatchObject({members:[ingredient],collapsed:true});
-  expect(s.groups.filter(g=>g.collapsed).some(g=>g.members.includes(header))).toBe(false);expect(value(header)).toBe(50);
+  expect(s.groups.find(g=>g.members.includes(ingredient))).toMatchObject({members:[header,ingredient],kind:'summary',collapsed:true});
+  expect(s.groups.filter(g=>g.collapsed).some(g=>outlineMembers(g).includes(header))).toBe(false);expect(value(header)).toBe(50);
   const groups=s.groups.length;groupBlockToTop(b,s,t,header);expect(s.groups).toHaveLength(groups);
 });
 it('keeps membership positional when an ingredient crosses a header, without permanent meal foreign keys',()=>{

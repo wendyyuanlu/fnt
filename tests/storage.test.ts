@@ -5,6 +5,17 @@ import { encode64, Store, SyncConflict, syncGitHub, type LocalState } from '../s
 import { parseArchive,stringifyArchive } from '../src/archive';
 
 describe('recoverable local storage',()=>{
+  it('persists sheet-specific hints and tree settings through local save and backup restore',async()=>{
+    const store=await Store.open(uid()),book=createDemo();
+    book.sheets[0].outlineView={tree:true,plainGroupHints:false};
+    book.sheets[1].outlineView={tree:false,plainGroupHints:true};
+    const saved=await store.save(book,0,'Outline preferences'),backup=await store.backup(saved);
+    expect((await store.load())!.book.sheets[0].outlineView).toEqual(book.sheets[0].outlineView);
+    const changed=createDemo(),other=await store.save(changed,saved.version,'Other book');
+    const restored=await store.restore(backup,other.version);
+    expect(restored.book.sheets.slice(0,2).map(s=>s.outlineView)).toEqual(book.sheets.slice(0,2).map(s=>s.outlineView));
+    store.close();
+  });
   it('atomically archives the full pre-import state, retains pending edits and disconnects imported private data from sync',async()=>{
     const store=await Store.open(uid()),first=await store.save(createDemo(),0,'Existing edits');
     const configured=await store.metadata(first.version,s=>({...s,sync:{owner:'example',repo:'data',branch:'main',path:'book.json'},remoteSha:'prior'}));

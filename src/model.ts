@@ -4,7 +4,7 @@ export type Scalar = string | number | boolean | null | Fault;
 export interface Fault { error: string; detail?: string }
 export type Value = Scalar | Value[];
 export interface Format {
-  bold?: boolean; underline?: boolean; wrap?: boolean;
+  bold?: boolean; italic?:boolean; underline?: boolean; strikethrough?:boolean; wrap?: boolean;
   color?: string; background?: string; number?: string; excelNumberFormat?: string;
 }
 export interface Cell {
@@ -14,15 +14,29 @@ export interface Cell {
 }
 export interface Column { id: string; label: string; width?: number; hidden?: boolean }
 export interface Row { id: string; hidden?: boolean; height?: number; status?: 'real' | 'planned' | 'hypothetical' }
-export interface Group { id: string; axis: 'row' | 'column'; members: string[]; collapsed: boolean; label: string }
+export interface Group { id: string; axis: 'row' | 'column'; members: string[]; collapsed: boolean; label: string; kind?:'summary'|'range' }
+export function outlineMembers(group:Group,groups:readonly Group[]=[]):string[] {
+  if(group.kind==='summary')return group.members.slice(1);
+  const members=new Set(group.members);
+  let changed=true;
+  while(changed){
+    changed=false;
+    for(const summary of groups)if(summary.axis===group.axis&&summary.kind==='summary'&&members.has(summary.members[0])){
+      for(const id of summary.members)if(!members.has(id)){members.add(id);changed=true;}
+    }
+  }
+  return [...members];
+}
 export interface Validation { id: string; rows: string[]; columns: string[]; source: string; sheet: string; values?: string[]; originalSource?: string }
 export interface Sheet {
   id: string; name: string; color: string; columns: Column[]; rows: Row[];
   cells: Record<string, Cell>; groups: Group[]; validations: Validation[];
   supporting?:boolean;
+  outlineView?:{tree?:boolean;plainGroupHints?:boolean};
 }
 export interface ReferenceSource {
   id:string;name:string;kind:'list'|'units'|'conversions'|'derived';table?:string;column?:string;
+  label?:string;group?:string;
   archived?:boolean;archivedRows:string[];
   origin?:{original:string;table?:string;definition?:string};
   catalog?:{id:string;table:string;rows?:string[]};
@@ -112,7 +126,7 @@ export function deleteRows(book: Workbook, sheet: Sheet, ids: string[]): void {
   for (const t of book.tables.filter(t => t.sheet === sheet.id)) t.rows = t.rows.filter(r => !removed.has(r));
   book.tables = book.tables.filter(t => t.sheet!==sheet.id||!removed.has(t.header));
   for (const k of Object.keys(sheet.cells)) if (removed.has(k.split(':')[0])) delete sheet.cells[k];
-  sheet.groups=sheet.groups.map(g=>g.axis==='row'?{...g,members:g.members.filter(id=>!removed.has(id))}:g).filter(g=>g.members.length);
+  sheet.groups=sheet.groups.filter(g=>g.axis!=='row'||g.kind!=='summary'||!removed.has(g.members[0])).map(g=>g.axis==='row'?{...g,members:g.members.filter(id=>!removed.has(id))}:g).filter(g=>g.kind==='summary'?g.members.length>1:g.members.length);
   sheet.validations=sheet.validations.map(v=>({...v,rows:v.rows.filter(id=>!removed.has(id))})).filter(v=>v.rows.length);
 }
 export function deleteColumn(book: Workbook, sheet: Sheet, id: string): void {
@@ -120,7 +134,7 @@ export function deleteColumn(book: Workbook, sheet: Sheet, id: string): void {
   for (const t of book.tables.filter(t => t.sheet === sheet.id)) t.columns = t.columns.filter(c => c.column !== id);
   for (const k of Object.keys(sheet.cells)) if (k.endsWith(`:${id}`)) delete sheet.cells[k];
   book.tables=book.tables.filter(t=>t.sheet!==sheet.id||t.columns.length>0);
-  sheet.groups=sheet.groups.map(g=>g.axis==='column'?{...g,members:g.members.filter(c=>c!==id)}:g).filter(g=>g.members.length);
+  sheet.groups=sheet.groups.filter(g=>g.axis!=='column'||g.kind!=='summary'||g.members[0]!==id).map(g=>g.axis==='column'?{...g,members:g.members.filter(c=>c!==id)}:g).filter(g=>g.kind==='summary'?g.members.length>1:g.members.length);
   sheet.validations=sheet.validations.map(v=>({...v,columns:v.columns.filter(c=>c!==id)})).filter(v=>v.columns.length);
 }
 export function addRow(book: Workbook, sheet: Sheet, at: number, table?: Table): Row {
@@ -180,12 +194,12 @@ export function expandAdjacentTable(book:Workbook,sheet:Sheet,row:string,column:
   if(at===sheet.rows.length-1)sheet.rows.push({id:uid()});
   return table;
 }
-export function insertColumn(book:Workbook,sheet:Sheet,at:number):Column {
+export function insertColumn(book:Workbook,sheet:Sheet,at:number,scope?:Table):Column {
   if(at<0||at>sheet.columns.length)throw Error('Column insertion is outside the sheet.');
   const right=sheet.columns[at]?.id,column:Column={id:uid(),label:'New column',width:145};
   sheet.columns.splice(at,0,column);
-  for(const t of book.tables.filter(t=>t.sheet===sheet.id)){
-    const index=t.columns.findIndex(c=>c.column===right);
+  for(const t of book.tables.filter(t=>t.sheet===sheet.id&&(!scope||t.id===scope.id))){
+    const index=scope?t.columns.filter(c=>sheet.columns.findIndex(x=>x.id===c.column)<at).length:t.columns.findIndex(c=>c.column===right);
     if(index>=0){
       const name=uniqueName(t.columns.map(c=>c.name),'New column');
       t.columns.splice(index,0,{id:uid(),column:column.id,name});sheet.cells[key(t.header,column.id)]={value:name};
@@ -193,8 +207,34 @@ export function insertColumn(book:Workbook,sheet:Sheet,at:number):Column {
   }
   return column;
 }
+function summaryMoveMembers(sheet:Sheet,axis:Group['axis'],ids:string[]):string[]{
+  const chosen=new Set(ids);let added=true;
+  while(added){added=false;for(const g of sheet.groups)if(g.axis===axis&&g.kind==='summary'&&chosen.has(g.members[0]))for(const id of g.members)if(!chosen.has(id)){chosen.add(id);added=true;}}
+  return[...chosen];
+}
+export function moveRows(book:Workbook,sheet:Sheet,ids:string[],boundary:number,scope?:Table):number{
+  if(!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!sheet.rows.some(r=>r.id===id))||boundary<0||boundary>sheet.rows.length)throw Error('Invalid row move.');
+  ids=summaryMoveMembers(sheet,'row',ids);
+  const selected=new Set(ids);
+  if(scope){
+    if(ids.some(id=>!scope.rows.includes(id)))throw Error('Move options, not the list header.');
+    const slots=sheet.rows.map((r,i)=>scope.rows.includes(r.id)?i:-1).filter(i=>i>=0),records=slots.map(i=>sheet.rows[i]);
+    const columns=new Set(scope.columns.map(c=>c.column));
+    for(const row of records){
+      if(book.tables.some(t=>t.id!==scope.id&&t.sheet===sheet.id&&(t.header===row.id||t.rows.includes(row.id)))||Object.entries(sheet.cells).some(([address,c])=>address.startsWith(row.id+':')&&!columns.has(address.split(':')[1])&&(c.value!=null||c.formula||c.binding||c.note||c.link)))throw Error('These rows share other data. Move them in the full sheet instead.');
+    }
+    const at=slots.filter((i,n)=>i<boundary&&!selected.has(records[n].id)).length,moving=records.filter(r=>selected.has(r.id)),remaining=records.filter(r=>!selected.has(r.id));
+    remaining.splice(at,0,...moving);slots.forEach((i,n)=>sheet.rows[i]=remaining[n]);scope.rows=remaining.map(r=>r.id);
+    return slots[at];
+  }
+  const at=sheet.rows.slice(0,boundary).filter(r=>!selected.has(r.id)).length,moving=sheet.rows.filter(r=>selected.has(r.id));
+  sheet.rows=sheet.rows.filter(r=>!selected.has(r.id));sheet.rows.splice(at,0,...moving);
+  for(const table of book.tables.filter(t=>t.sheet===sheet.id))table.rows.sort((a,b)=>sheet.rows.findIndex(r=>r.id===a)-sheet.rows.findIndex(r=>r.id===b));
+  return at;
+}
 export function moveColumns(book:Workbook,sheet:Sheet,ids:string[],boundary:number):number {
   if(!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!sheet.columns.some(c=>c.id===id))||boundary<0||boundary>sheet.columns.length)throw Error('Invalid column move.');
+  ids=summaryMoveMembers(sheet,'column',ids);
   const moving=sheet.columns.filter(c=>ids.includes(c.id));
   const at=sheet.columns.slice(0,boundary).filter(c=>!ids.includes(c.id)).length;
   sheet.columns=sheet.columns.filter(c=>!ids.includes(c.id));

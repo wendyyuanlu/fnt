@@ -1,6 +1,6 @@
 import { strToU8,zipSync } from 'fflate';
 import { displayFormula,type Ast } from './formula';
-import { columnIndex,isFault,key,letters,mapAst,type Cell,type Format } from './model';
+import { columnIndex,isFault,key,letters,mapAst,outlineMembers,type Cell,type Format } from './model';
 import { validateBook,type Backup } from './storage';
 import { addNativeArchive,type PackageParts } from './xlsx-native';
 
@@ -43,7 +43,7 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
     if(!format)return 0;const signature=JSON.stringify(format);let id=styleIds.get(signature);
     if(id===undefined){id=formats.length;formats.push(format);styleIds.set(signature,id);}return id;
   };
-  const newer=new Set(['XLOOKUP','XMATCH','LET','FILTER','ANCHORARRAY']),formatted=new WeakMap<Ast,string>();
+  const newer=new Set(['XLOOKUP','XMATCH','LET','FILTER','VSTACK','ANCHORARRAY']),formatted=new WeakMap<Ast,string>();
   const formula=(ast:Ast):string=>{
     let out=formatted.get(ast);if(out!==undefined)return out;
     const converted=mapAst(ast,node=>{
@@ -72,9 +72,15 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
     const relationships:{id:string;type:string;target:string;external?:boolean}[]=[],tableParts:string[]=[],hyperlinks:string[]=[],comments:{r:number;c:number;text:string}[]=[];
     const rowCells=new Map<number,{c:number;cell:Cell}[]>();
     for(const [address,cell]of Object.entries(s.cells)){const [rid,cid]=address.split(':'),r=rows.get(rid)!,c=cols.get(cid)!;const list=rowCells.get(r)??[];list.push({c,cell});rowCells.set(r,list);}
-    const level=(axis:'row'|'column',id:string)=>s.groups.filter(g=>g.axis===axis&&g.members.includes(id)).length;
-    const collapsed=(axis:'row'|'column',id:string)=>s.groups.some(g=>g.axis===axis&&g.collapsed&&g.members.includes(id));
-    const summary=(axis:'row'|'column',position:number)=>s.groups.some(g=>g.axis===axis&&g.collapsed&&Math.max(...g.members.map(id=>(axis==='row'?rows:cols).get(id)!))+1===position);
+    const summaryBefore=(axis:'row'|'column')=>s.groups.some(g=>g.axis===axis&&g.kind==='summary');
+    const outlines=new Map(s.groups.map(g=>[g.id,new Set(outlineMembers(g,s.groups))]));
+    const level=(axis:'row'|'column',id:string)=>s.groups.filter(g=>g.axis===axis&&outlines.get(g.id)!.has(id)).length;
+    const collapsed=(axis:'row'|'column',id:string)=>s.groups.some(g=>g.axis===axis&&g.collapsed&&outlines.get(g.id)!.has(id));
+    const summary=(axis:'row'|'column',position:number)=>s.groups.some(g=>{
+      if(g.axis!==axis||!g.collapsed)return false;
+      const positions=g.members.map(id=>(axis==='row'?rows:cols).get(id)!);
+      return(g.kind==='summary'?positions[0]:summaryBefore(axis)?Math.min(...positions)-1:Math.max(...positions)+1)===position;
+    });
     const data=s.rows.map((row,r)=>{
       const outline=level('row',row.id);if(outline>7)throw Error('Excel supports at most seven outline levels. Use the native archive for deeper groups.');
       const cells=(rowCells.get(r)??[]).sort((a,b)=>a.c-b.c).map(({c,cell})=>{
@@ -147,7 +153,7 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
       const outline=level('column',column.id);if(outline>7)throw Error('Excel supports at most seven outline levels.');
       return `<col min="${i+1}" max="${i+1}" width="${(column.width??145)/7}" customWidth="1"${column.hidden||collapsed('column',column.id)?' hidden="1"':''}${outline?` outlineLevel="${outline}"`:''}${summary('column',i)?' collapsed="1"':''}/>`;
     }).join('');
-    put(`xl/worksheets/sheet${number}.xml`,`<worksheet xmlns="${main}" xmlns:r="${rel}"><sheetPr><tabColor rgb="FF${s.color.slice(1)}"/></sheetPr><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${columnXml}</cols><sheetData>${data}</sheetData>${validations.length?`<dataValidations count="${validations.length}">${validations.join('')}</dataValidations>`:''}${hyperlinks.length?`<hyperlinks>${hyperlinks.join('')}</hyperlinks>`:''}${comments.length?`<legacyDrawing r:id="rNotes${commentsNumber}"/>`:''}${tableParts.length?`<tableParts count="${tableParts.length}">${tableParts.join('')}</tableParts>`:''}</worksheet>`);
+    put(`xl/worksheets/sheet${number}.xml`,`<worksheet xmlns="${main}" xmlns:r="${rel}"><sheetPr><tabColor rgb="FF${s.color.slice(1)}"/><outlinePr summaryBelow="${summaryBefore('row')?0:1}" summaryRight="${summaryBefore('column')?0:1}"/></sheetPr><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${columnXml}</cols><sheetData>${data}</sheetData>${validations.length?`<dataValidations count="${validations.length}">${validations.join('')}</dataValidations>`:''}${hyperlinks.length?`<hyperlinks>${hyperlinks.join('')}</hyperlinks>`:''}${comments.length?`<legacyDrawing r:id="rNotes${commentsNumber}"/>`:''}${tableParts.length?`<tableParts count="${tableParts.length}">${tableParts.join('')}</tableParts>`:''}</worksheet>`);
     if(relationships.length)put(`xl/worksheets/_rels/sheet${number}.xml.rels`,relationXml(relationships));
     workbookRels.push({id:'rSheet'+number,type:'worksheet',target:`worksheets/sheet${number}.xml`});
     sheetXml.push(`<sheet name="${x(s.name)}" sheetId="${number}" r:id="rSheet${number}"/>`);overrides.push({path:`xl/worksheets/sheet${number}.xml`,type:'worksheet'});
@@ -159,7 +165,7 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
     workbookRels.push({id:'rSheet'+number,type:'worksheet',target:`worksheets/sheet${number}.xml`});sheetXml.push(`<sheet name="${x(helperName)}" sheetId="${number}" state="veryHidden" r:id="rSheet${number}"/>`);overrides.push({path:`xl/worksheets/sheet${number}.xml`,type:'worksheet'});
   }
   const numFormats=formats.map((f,i)=>({id:164+i,code:x(f.excelNumberFormat??(f.number==='date'?'yyyy-mm-dd':f.number==='percent'?'0.00%':f.number==='decimal'?'0.00':'General'))}));
-  put('xl/styles.xml',`<styleSheet xmlns="${main}"><numFmts count="${numFormats.length}">${numFormats.map(f=>`<numFmt numFmtId="${f.id}" formatCode="${f.code}"/>`).join('')}</numFmts><fonts count="${formats.length}">${formats.map(f=>`<font><sz val="11"/><name val="Calibri"/>${f.bold?'<b/>':''}${f.underline?'<u/>':''}${f.color?`<color rgb="FF${f.color.slice(1)}"/>`:''}</font>`).join('')}</fonts><fills count="${formats.length+2}"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>${formats.map(f=>`<fill><patternFill patternType="${f.background?'solid':'none'}">${f.background?`<fgColor rgb="FF${f.background.slice(1)}"/><bgColor indexed="64"/>`:''}</patternFill></fill>`).join('')}</fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${formats.length}">${formats.map((f,i)=>`<xf numFmtId="${164+i}" fontId="${i}" fillId="${i+2}" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyAlignment="1"><alignment wrapText="${f.wrap?1:0}"/></xf>`).join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`);
+  put('xl/styles.xml',`<styleSheet xmlns="${main}"><numFmts count="${numFormats.length}">${numFormats.map(f=>`<numFmt numFmtId="${f.id}" formatCode="${f.code}"/>`).join('')}</numFmts><fonts count="${formats.length}">${formats.map(f=>`<font><sz val="11"/><name val="Calibri"/>${f.bold?'<b/>':''}${f.italic?'<i/>':''}${f.underline?'<u/>':''}${f.strikethrough?'<strike/>':''}${f.color?`<color rgb="FF${f.color.slice(1)}"/>`:''}</font>`).join('')}</fonts><fills count="${formats.length+2}"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>${formats.map(f=>`<fill><patternFill patternType="${f.background?'solid':'none'}">${f.background?`<fgColor rgb="FF${f.background.slice(1)}"/><bgColor indexed="64"/>`:''}</patternFill></fill>`).join('')}</fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${formats.length}">${formats.map((f,i)=>`<xf numFmtId="${164+i}" fontId="${i}" fillId="${i+2}" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyAlignment="1"><alignment wrapText="${f.wrap?1:0}"/></xf>`).join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`);
   if(dynamic){
     put('xl/metadata.xml',`<metadata xmlns="${main}" xmlns:xda="http://schemas.microsoft.com/office/spreadsheetml/2017/dynamicarray"><metadataTypes count="1"><metadataType name="XLDAPR" minSupportedVersion="120000" copy="1" pasteAll="1" pasteValues="1" merge="1" splitFirst="1" rowColShift="1" clearFormats="1" clearComments="1" assign="1" coerce="1" cellMeta="1"/></metadataTypes><futureMetadata name="XLDAPR" count="1"><bk><extLst><ext uri="{bdbb8cdc-fa1e-496e-a857-3c3f30c029c3}"><xda:dynamicArrayProperties fDynamic="1" fCollapsed="0"/></ext></extLst></bk></futureMetadata><cellMetadata count="1"><bk><rc t="1" v="0"/></bk></cellMetadata></metadata>`);
     workbookRels.push({id:'rMetadata',type:'sheetMetadata',target:'metadata.xml'});overrides.push({path:'xl/metadata.xml',type:'sheetMetadata'});

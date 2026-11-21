@@ -1,5 +1,5 @@
-import { addRow,clone,key,renameColumn,uniqueName,type Workbook } from './model';
-import { createReference,referenceTable } from './references';
+import { addRow,clone,key,renameColumn,uniqueName,type Cell,type Workbook } from './model';
+import { createReference,referenceLabel,referenceTable,setReferencePresentation } from './references';
 import { validateBook,type Backup } from './storage';
 
 interface CatalogList {name:string;field:string;range:string;values:readonly (string|null)[]}
@@ -15,6 +15,31 @@ export const dropdownCatalog:{id:string;sheet:string;lists:readonly CatalogList[
     {name:'SnackCategory',field:'Category',range:'A42:A50',values:['Chocolate','Gummy','Chip/Noodle','Cookie','Pastry','Biscuit','Bread','Pudding/Custard']}
   ]
 };
+export const dropdownFormatMigration='original-dropdown-formats-v1';
+export const dropdownGroupMigration='snack-navigation-v1';
+function seedGroups(book:Workbook):void{
+  for(const [name,label] of [['SnackCountry','Country'],['SnackFlavour','Flavour'],['SnackCategory','Category']]){
+    for(const source of book.references?.filter(s=>s.catalog?.table===name&&!s.group)??[]){
+      const originalName=source.name===name||source.name.startsWith(name+'_')&&/^\d+$/.test(source.name.slice(name.length+1)),display=source.label??(originalName?label:source.name);
+      setReferencePresentation(book,source,uniqueName(book.references?.filter(s=>s.id!==source.id&&s.group==='Snack').map(referenceLabel)??[],display),'Snack');
+    }
+  }
+  book.catalogMigrations=[...book.catalogMigrations??[],dropdownGroupMigration];
+}
+const originalFormat:NonNullable<Cell['format']>={bold:false,underline:false,wrap:false,excelNumberFormat:'General',number:''};
+function seedFormats(book:Workbook):void{
+  for(const source of book.references??[]){
+    if(source.catalog?.id!==dropdownCatalog.id||!source.catalog.rows)continue;
+    const list=dropdownCatalog.lists.find(l=>l.name===source.catalog!.table),table=book.tables.find(t=>t.id===source.table),sheet=book.sheets.find(s=>s.id===table?.sheet),column=table?.columns.find(c=>c.id===source.column);
+    if(!list||!table||!sheet||!column)continue;
+    const header=sheet.cells[key(table.header,column.column)];if(header&&!header.format)header.format={...originalFormat};
+    source.catalog.rows.forEach((row,i)=>{
+      const cell=sheet.cells[key(row,column.column)],value=list.values[i];
+      if(table.rows.includes(row)&&cell&&!cell.format&&value!==null&&cell.value===value&&!cell.formula)cell.format={...originalFormat,...(list.name==='AnimalType'&&i===1?{color:'#242424'}:{})};
+    });
+  }
+  book.catalogMigrations=[...book.catalogMigrations??[],dropdownFormatMigration];
+}
 
 export function matchesDropdownCatalog(book:Workbook):boolean{
   return dropdownCatalog.lists.every(list=>{
@@ -43,7 +68,10 @@ export async function verifiedCatalogOrigins(backup:Backup):Promise<Set<string>>
 
 export function seedDropdownCatalog(current:Workbook,verifiedOrigins:ReadonlySet<string>=new Set()):{book:Workbook;changed:boolean}{
   validateBook(current);
-  if(current.catalogMigrations?.includes(dropdownCatalog.id))return{book:current,changed:false};
+  if(current.catalogMigrations?.includes(dropdownCatalog.id)){
+    if(current.catalogMigrations.includes(dropdownFormatMigration)&&current.catalogMigrations.includes(dropdownGroupMigration))return{book:current,changed:false};
+    const book=clone(current);if(!current.catalogMigrations.includes(dropdownFormatMigration))seedFormats(book);if(!current.catalogMigrations.includes(dropdownGroupMigration))seedGroups(book);book.revision++;validateBook(book);return{book,changed:true};
+  }
   const book=clone(current);
   for(const list of dropdownCatalog.lists){
     const existing=book.references?.filter(r=>r.catalog?.id===dropdownCatalog.id&&r.catalog.table===list.name||
@@ -66,6 +94,8 @@ export function seedDropdownCatalog(current:Workbook,verifiedOrigins:ReadonlySet
     }
   }
   book.catalogMigrations=[...book.catalogMigrations??[],dropdownCatalog.id];
+  seedFormats(book);
+  seedGroups(book);
   book.revision++;validateBook(book);
   return{book,changed:true};
 }

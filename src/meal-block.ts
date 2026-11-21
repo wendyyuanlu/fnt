@@ -26,9 +26,9 @@ export function groupBlockToTop(book:Workbook,sheet:Sheet,table:Table,row:string
   for(const g of sheet.groups)if(g.axis==='row'&&g.members.includes(members[0]))g.collapsed=false;
   const details=members.slice(1);
   if(details.length){
-    const same=sheet.groups.find(g=>g.axis==='row'&&g.members.length===details.length&&g.members.every(id=>details.includes(id)));
-    if(same)same.collapsed=true;
-    else sheet.groups.push({id:uid(),axis:'row',members:details,collapsed:true,label:'Meal / day details'});
+    const same=sheet.groups.find(g=>g.axis==='row'&&(g.kind==='summary'?g.members.length===members.length&&g.members.every(id=>members.includes(id)):g.members.length===details.length&&g.members.every(id=>details.includes(id))));
+    if(same){same.collapsed=true;same.kind='summary';same.members=members;}
+    else sheet.groups.push({id:uid(),axis:'row',members,kind:'summary',collapsed:true,label:'Meal / day details'});
   }
   return at;
 }
