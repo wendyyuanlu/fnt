@@ -6,6 +6,7 @@ export interface SyncConfig { owner: string; repo: string; branch: string; path:
 export interface LocalState {
   book: Workbook; version: number; pending: Pending[]; updated: string;
   sync?: SyncConfig; remoteSha?: string;
+  publishedSnapshot?:string;
 }
 export interface Checkpoint { id: string; label: string; time: string; book: Workbook; backup?: string }
 export interface Backup {
@@ -118,7 +119,10 @@ export class Store {
     if (state) validateBook(state.book);
     return state;
   }
-  async save(book: Workbook, expected: number, label: string, checkpoint = false, original?: {id:string;name:string;data:string}, options?:{localOnly?:boolean;recoveryArchive?:string}): Promise<LocalState> {
+  async originalCount():Promise<number>{
+    return request(this.db.transaction('originals').objectStore('originals').count());
+  }
+  async save(book: Workbook, expected: number, label: string, checkpoint = false, original?: {id:string;name:string;data:string}, options?:{localOnly?:boolean;recoveryArchive?:string;publishedSnapshot?:string}): Promise<LocalState> {
     const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx);
     const store = tx.objectStore('state');
     let result: LocalState | undefined, conflict = false, failure:unknown;
@@ -130,6 +134,7 @@ export class Store {
       result = { ...previous, book: clone(book), version: expected+1,
         pending: [...previous?.pending ?? [], {id:uid(),label,time:new Date().toISOString()}], updated:new Date().toISOString() };
       if(options?.localOnly){delete result.sync;delete result.remoteSha;}
+      if(options?.publishedSnapshot)result.publishedSnapshot=options.publishedSnapshot;
       if (checkpoint && previous) tx.objectStore('history').put({id:uid(),label:`Before ${label}`,time:new Date().toISOString(),book:previous.book,...(options?.recoveryArchive?{backup:options.recoveryArchive}:{})} satisfies Checkpoint);
       if (original) tx.objectStore('originals').put(original);
       store.put(result,'current');

@@ -18,6 +18,8 @@ import { hexToHsv,hsvToHex,normalizeHex } from './colors';
 import { dropdownCatalog,dropdownFormatMigration,dropdownGroupMigration,seedDropdownCatalog,verifiedCatalogOrigins } from './dropdown-catalog';
 import { outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout } from './grouping';
 import { mountGroupControls } from './grouping-ui';
+import {createTextSearch} from './find';
+import {loadPublishedTesting,untouchedStarter} from './published';
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
@@ -946,7 +948,7 @@ async function action(name:string):Promise<void> {
   if(!commitDraft())return;
   if(['fill','tables','dropdown-source','block'].includes(name)&&extraSelections.length){const b=requireRectangle(name==='dropdown-source'?'Assign dropdown':name);if(!b)return;extraSelections=[];anchor={r:b.r1,c:b.c1};selected={r:b.r2,c:b.c2};}
   if(['select-all','range','top','bottom','next','prev','undo','redo'].includes(name))extraSelections=[];
-  if(referenceId&&!editableReference()&&!['back-workbook','reference-settings','references','new-reference','copy','save','file','undo','redo','range','top','bottom','next','prev','dropdown-source'].includes(name)){flash('This is a read-only live list. Edit its source table or change its connection.');return;}
+  if(referenceId&&!editableReference()&&!['back-workbook','reference-settings','references','new-reference','copy','save','file','find','undo','redo','range','top','bottom','next','prev','dropdown-source'].includes(name)){flash('This is a read-only live list. Edit its source table or change its connection.');return;}
   switch(name) {
     case 'save': await manualSave();break;
     case 'undo':case 'redo': {
@@ -1753,27 +1755,112 @@ async function importReferenceSources(file?:File):Promise<void>{
   finally{busy=false;renderStatus();openReferences(undefined,notice);}
 }
 function openFind():void {
-  dialog('Find & replace',`<div class="button-row"><button id="find-tab" class="primary">Find</button><button id="replace-tab">Replace</button></div><label>Find text<input id="find-text" type="search"></label><label id="replace-label" hidden>Replace with<input id="replace-text"></label><fieldset><legend>Search sheets</legend>${book.sheets.map(s=>`<label class="inline"><input type="checkbox" name="scope" value="${s.id}" ${s.id===sheetId?'checked':''}>${esc(s.name)}</label>`).join('')}</fieldset><p class="muted">Searches literal text and rendered values. Replace only changes literal text, never formula source or linked records.</p><button id="replace-all" hidden>Replace all literal matches</button><div id="find-results" class="picker-results"></div>`,d=>{
-    const input=d.querySelector<HTMLInputElement>('#find-text')!,results=d.querySelector('#find-results')!;
-    let matches:{s:Sheet;r:number;c:number}[]=[];
-    const draw=()=>{
-      const scope=[...d.querySelectorAll<HTMLInputElement>('input[name=scope]:checked')].map(e=>e.value),query=input.value.toLowerCase();matches=[];
-      if(query)for(const s of book.sheets.filter(s=>scope.includes(s.id)))for(const [k,cell]of Object.entries(s.cells)){const [rid,cid]=k.split(':'),r=s.rows.findIndex(r=>r.id===rid),c=s.columns.findIndex(c=>c.id===cid);if(r>=0&&c>=0&&cellText(cell,s,r,c).toLowerCase().includes(query))matches.push({s,r,c});}
-      results.innerHTML=`<p>${matches.length} matches</p>`+matches.slice(0,200).map((m,i)=>`<button data-match="${i}">${esc(m.s.name)} / ${letters(m.c)}${m.r+1}<small>${esc(cellText(getCell(m.s,m.s.rows[m.r].id,m.s.columns[m.c].id),m.s,m.r,m.c))}</small></button>`).join('');
-      results.querySelectorAll<HTMLButtonElement>('[data-match]').forEach(el=>el.onclick=()=>{const m=matches[Number(el.dataset.match)];sheetId=m.s.id;selected={r:m.r,c:m.c};anchor={...selected};selectionKind='cells';scrollTarget=m.r;page=Math.floor(m.r/60);render();d.close();});
+  dialog('Find and Replace',`<div class="find-tabs" role="tablist" aria-label="Search mode"><button id="find-tab" role="tab" aria-controls="find-controls">Find</button><button id="replace-tab" role="tab" aria-controls="find-controls">Replace</button></div>
+    <div id="find-controls" class="find-controls" role="tabpanel"><label>Find<input id="find-text" type="search" autocomplete="off"></label><div id="replace-fields"></div>
+    <p class="find-help">Use * for any text, ? for one character, and ~ to escape a wildcard.</p>
+    <details class="find-options" open><summary>Search options</summary><div class="find-selectors"><label>Within<select id="find-within"><option value="selected">Selected sheets</option><option value="workbook">Workbook</option></select></label><label>Direction<select id="find-direction"><option value="down">Down</option><option value="up">Up</option></select></label></div>
+    <div class="find-flags"><label class="inline"><input id="find-case" type="checkbox">Match case</label><label class="inline"><input id="find-entire" type="checkbox">Match entire cell contents</label></div>
+    <fieldset class="find-scope"><legend>Search sheets</legend><label class="inline"><input id="find-all-sheets" type="checkbox">All</label>${book.sheets.map(s=>`<label class="inline"><input type="checkbox" name="scope" value="${s.id}" ${s.id===sheetId?'checked':''}>${esc(s.name)}</label>`).join('')}</fieldset></details></div>
+    <div class="find-results-panel"><p id="find-count" role="status">Results found (0)</p><div id="find-results" class="find-results-scroll"><table class="find-results-table"><colgroup><col style="width:80px"><col></colgroup><thead><tr><th scope="col">Cell</th><th scope="col">Value</th></tr></thead><tbody></tbody></table></div><div class="find-pagination" hidden><button id="find-previous-page" aria-label="Previous results page">Previous</button><span id="find-page-count"></span><button id="find-next-page" aria-label="Next results page">Next</button></div></div>
+    <p id="find-feedback" class="find-feedback" role="status"></p><div class="find-actions"><button id="find-next" class="primary">Find next</button><button id="find-all">Find all</button><span id="replace-actions"></span></div>`,d=>{
+    d.classList.add('find-dialog');
+    const field=<T extends HTMLElement>(id:string)=>d.querySelector<T>('#'+id)!;
+    const input=field<HTMLInputElement>('find-text'),scopes=[...d.querySelectorAll<HTMLInputElement>('input[name=scope]')],all=field<HTMLInputElement>('find-all-sheets');
+    type Match={sid:string;row:string;column:string;r:number;c:number;value:string};
+    let matches:Match[]=[],active:string|undefined,resultPage=0,replacement='';
+    const identity=(m:Match)=>`${m.sid}:${m.row}:${m.column}`;
+    const source=(m:Match)=>book.sheets.find(s=>s.id===m.sid)!;
+    const literal=(m:Match)=>{const cell=getCell(source(m),m.row,m.column);return !cell.formula&&!cell.binding&&typeof cell.value==='string';};
+    const matcher=()=>createTextSearch(input.value,{matchCase:field<HTMLInputElement>('find-case').checked,entire:field<HTMLInputElement>('find-entire').checked});
+    const feedback=(text:string,bad=false)=>{const el=field('find-feedback');el.textContent=text;el.classList.toggle('bad',bad);el.setAttribute('role',bad?'alert':'status');};
+    const buttons=()=>{
+      field<HTMLButtonElement>('find-next').disabled=!matches.length;
+      field<HTMLButtonElement>('find-all').disabled=!input.value||!scopes.some(s=>s.checked);
+      const current=matches.find(m=>identity(m)===active);
+      const single=d.querySelector<HTMLButtonElement>('#replace-one'),multiple=d.querySelector<HTMLButtonElement>('#replace-all');
+      if(single){single.disabled=current?!literal(current):!matches.some(literal);single.title='Replaces literal text only';}
+      if(multiple)multiple.disabled=!matches.some(literal);
     };
-    input.oninput=draw;d.querySelectorAll('input[name=scope]').forEach(e=>e.addEventListener('change',draw));
-    d.querySelector<HTMLButtonElement>('#replace-tab')!.onclick=()=>{d.querySelector<HTMLElement>('#replace-label')!.hidden=false;d.querySelector<HTMLElement>('#replace-all')!.hidden=false;};
-    d.querySelector<HTMLButtonElement>('#find-tab')!.onclick=()=>{d.querySelector<HTMLElement>('#replace-label')!.hidden=true;d.querySelector<HTMLElement>('#replace-all')!.hidden=true;};
-    d.querySelector<HTMLButtonElement>('#replace-all')!.onclick=()=>{
-      if(!input.value)return;
-      const value=d.querySelector<HTMLInputElement>('#replace-text')!.value,q=input.value;
-      mutate('Replace literal text',()=>{for(const m of matches){const cell=getCell(m.s,m.s.rows[m.r].id,m.s.columns[m.c].id);if(!cell.formula&&!cell.binding&&typeof cell.value==='string'){
-        const t=book.tables.find(t=>t.sheet===m.s.id&&t.header===m.s.rows[m.r].id&&t.columns.some(c=>c.column===m.s.columns[m.c].id));
-        const next=cell.value.replace(new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'),()=>value);
-        if(t)renameColumn(book,t,t.columns.find(c=>c.column===m.s.columns[m.c].id)!.id,next);else m.s.cells[key(m.s.rows[m.r].id,m.s.columns[m.c].id)]={...cell,value:next};
-      }}});draw();
-    };input.focus();
+    const paint=()=>{
+      let previous='';
+      field('find-results').querySelector('tbody')!.innerHTML=matches.slice(resultPage*200,resultPage*200+200).map((m,j)=>{
+        const i=resultPage*200+j,s=source(m),header=previous===s.id?'':`<tr class="find-sheet-header"><th colspan="2">${esc(s.name)}</th></tr>`;previous=s.id;
+        return`${header}<tr data-find-match="${i}" tabindex="0" aria-selected="${identity(m)===active}"><th scope="row">${letters(m.c)}${m.r+1}</th><td title="${esc(m.value)}">${esc(m.value)}</td></tr>`;
+      }).join('');
+      field('find-count').textContent=`Results found (${matches.length})`;
+      d.querySelector<HTMLElement>('.find-pagination')!.hidden=matches.length<=200;
+      field('find-page-count').textContent=`${resultPage*200+1}-${Math.min(matches.length,resultPage*200+200)} of ${matches.length}`;
+      field<HTMLButtonElement>('find-previous-page').disabled=resultPage===0;
+      field<HTMLButtonElement>('find-next-page').disabled=(resultPage+1)*200>=matches.length;
+      buttons();
+    };
+    const draw=(reset=true)=>{
+      if(reset){active=undefined;resultPage=0;feedback('');}
+      const chosen=new Set(scopes.filter(s=>s.checked).map(s=>s.value)),search=matcher();matches=[];engine.beginPass();
+      if(input.value)for(const s of book.sheets.filter(s=>chosen.has(s.id))){
+        const rows=new Map(s.rows.map((r,i)=>[r.id,i])),columns=new Map(s.columns.map((c,i)=>[c.id,i])),found:Match[]=[];
+        for(const [k,cell]of Object.entries(s.cells)){
+          const [row,column]=k.split(':'),r=rows.get(row),c=columns.get(column);if(r===undefined||c===undefined)continue;
+          const value=cellText(cell,s,r,c);if(value&&search.matches(value))found.push({sid:s.id,row,column,r,c,value});
+        }
+        matches=matches.concat(found.sort((a,b)=>a.r-b.r||a.c-b.c));
+      }
+      if(active&&!matches.some(m=>identity(m)===active))active=undefined;
+      resultPage=Math.min(resultPage,Math.max(0,Math.ceil(matches.length/200)-1));paint();
+      if(input.value&&!chosen.size)feedback('Select at least one sheet to search.',true);
+    };
+    const go=(index:number)=>{
+      const m=matches[index];if(!m)return;
+      const s=source(m),row=s.rows.find(r=>r.id===m.row)!,column=s.columns.find(c=>c.id===m.column)!;
+      const hidden=s.groups.filter(g=>g.collapsed&&outlineMembers(g,s.groups).includes(g.axis==='row'?m.row:m.column));
+      if(row.hidden||column.hidden||hidden.length){
+        if(!mutate('Reveal search result',()=>{if(row.hidden)row.hidden=false;if(column.hidden)column.hidden=false;hidden.forEach(g=>g.collapsed=false);})){feedback(error,true);return;}
+      }
+      sheetId=s.id;referenceId=undefined;workbookView=undefined;filter='all';extraSelections=[];selected={r:m.r,c:m.c};anchor={...selected};selectionKind='cells';scrollTarget=m.r;page=Math.floor(m.r/60);active=identity(m);resultPage=Math.floor(index/200);render();paint();
+      d.querySelector<HTMLElement>(`[data-find-match="${index}"]`)?.scrollIntoView({block:'nearest'});
+    };
+    const next=()=>{
+      if(!matches.length)return;
+      const up=field<HTMLSelectElement>('find-direction').value==='up',current=matches.findIndex(m=>identity(m)===active);
+      if(current>=0){go((current+(up?-1:1)+matches.length)%matches.length);return;}
+      const order=book.sheets.findIndex(s=>s.id===sheetId),after=(m:Match)=>book.sheets.findIndex(s=>s.id===m.sid)-order||m.r-selected.r||m.c-selected.c;
+      const index=up?matches.reduce((last,m,i)=>after(m)<0?i:last,-1):matches.findIndex(m=>after(m)>0);go(index<0?(up?matches.length-1:0):index);
+    };
+    const replace=(every:boolean)=>{
+      draw(false);if(!every&&!active)next();
+      const targets=every?matches:matches.filter(m=>identity(m)===active),editable=targets.filter(literal),search=matcher();let changed=0;
+      if(!editable.length){feedback('Only literal text can be replaced. Formula and linked cells are unchanged.',true);return;}
+      if(!mutate('Replace literal text',()=>{for(const m of editable){
+        const s=source(m),cell=getCell(s,m.row,m.column);if(typeof cell.value!=='string'||cell.formula||cell.binding)throw Error('This result changed. Search again before replacing it.');
+        const value=search.replace(cell.value,replacement);if(value===cell.value)continue;
+        const table=book.tables.find(t=>t.sheet===m.sid&&t.header===m.row&&t.columns.some(c=>c.column===m.column));
+        if(table)renameColumn(book,table,table.columns.find(c=>c.column===m.column)!.id,value);
+        else s.cells[key(m.row,m.column)]={...cell,value};changed++;
+      }})){feedback(error,true);return;}
+      draw(false);feedback(`${changed} literal cell${changed===1?'':'s'} replaced.${targets.length>editable.length?` ${targets.length-editable.length} other results left unchanged.`:''}`);
+    };
+    const mode=(replaceMode:boolean)=>{
+      for(const id of ['find-tab','replace-tab']){const tab=field<HTMLButtonElement>(id),selected=id===(replaceMode?'replace-tab':'find-tab');tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;}
+      field('find-controls').setAttribute('aria-labelledby',replaceMode?'replace-tab':'find-tab');
+      field('replace-fields').innerHTML=replaceMode?`<label id="replace-label">Replace with<input id="replace-text" value="${esc(replacement)}"></label><p class="find-help">Replaces literal text only; formulas and linked records stay intact.</p>`:'';
+      field('replace-actions').innerHTML=replaceMode?'<button id="replace-one">Replace</button><button id="replace-all">Replace all</button>':'';
+      if(replaceMode){field<HTMLInputElement>('replace-text').oninput=e=>replacement=(e.target as HTMLInputElement).value;field<HTMLButtonElement>('replace-one').onclick=()=>replace(false);field<HTMLButtonElement>('replace-all').onclick=()=>replace(true);}
+      buttons();
+    };
+    const syncScope=()=>{const count=scopes.filter(s=>s.checked).length;all.checked=count===scopes.length;all.indeterminate=count>0&&count<scopes.length;field<HTMLSelectElement>('find-within').value=all.checked?'workbook':'selected';};
+    all.onchange=()=>{scopes.forEach(s=>s.checked=all.checked);syncScope();draw();};
+    scopes.forEach(s=>s.onchange=()=>{syncScope();draw();});
+    field<HTMLSelectElement>('find-within').onchange=e=>{const workbook=(e.target as HTMLSelectElement).value==='workbook';scopes.forEach(s=>s.checked=workbook||s.value===sheetId);syncScope();draw();};
+    for(const id of ['find-case','find-entire'])field<HTMLInputElement>(id).onchange=()=>draw();
+    input.oninput=()=>draw();input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();next();}};
+    field<HTMLButtonElement>('find-next').onclick=next;field<HTMLButtonElement>('find-all').onclick=()=>draw();
+    field<HTMLButtonElement>('find-previous-page').onclick=()=>{resultPage--;paint();field('find-results').scrollTop=0;};
+    field<HTMLButtonElement>('find-next-page').onclick=()=>{resultPage++;paint();field('find-results').scrollTop=0;};
+    const result=(e:Event)=>{const row=(e.target as HTMLElement).closest<HTMLElement>('[data-find-match]');if(row)go(Number(row.dataset.findMatch));};
+    field('find-results').onclick=result;field('find-results').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();result(e);}};
+    field<HTMLButtonElement>('find-tab').onclick=()=>mode(false);field<HTMLButtonElement>('replace-tab').onclick=()=>mode(true);
+    d.querySelector<HTMLElement>('.find-tabs')!.onkeydown=e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const replaceMode=e.key==='ArrowRight'||e.key==='End';mode(replaceMode);field(replaceMode?'replace-tab':'find-tab').focus();}};
+    mode(false);syncScope();draw();input.focus();
   });
 }
 function download(name:string,data:string,type='application/json'):void {
@@ -1792,6 +1879,18 @@ function openFile():void {
     localContext.id='browser-workbook';localContext.className='muted';
     localContext.textContent=`This browser profile at ${location.origin}. Other browser profiles and preview ports have separate local workbooks. ${ingredients?`Ingredients: ${ingredients.rows.length} records, ${ingredients.columns.length} columns.`:'No Ingredients table in this workbook.'} ${book.importReport?'An Excel source is attached locally.':'No Excel source has been imported into this workbook. Choose Import Ingredients below to load your Excel data here.'}`;
     d.querySelector('.menu')!.before(localContext);
+    if(import.meta.env.PROD){
+      const published=document.createElement('button');published.textContent='Load published testing workbook';
+      d.querySelector('.menu')!.prepend(published);
+      published.onclick=()=>{d.close();confirmAction('Load published testing workbook','Your current workbook and original attachments will be preserved in a full recovery checkpoint before loading the published testing snapshot.',()=>{
+        void(async()=>{busy=true;renderStatus();try{
+          await flush();if(savedGeneration!==generation)throw Error('Save failed. Published workbook was not loaded.');
+          const snapshot=await loadPublishedTesting(),before=await store.backup({...state,book:clone(book)});
+          state=await store.save(snapshot.book,state.version,'Load published testing workbook',true,undefined,{localOnly:true,recoveryArchive:stringifyArchive(before),publishedSnapshot:snapshot.id});
+          book=clone(state.book);engine=new Engine(book);sheetId=(book.sheets.find(s=>!s.supporting)??book.sheets[0]).id;referenceId=undefined;workbookView=undefined;extraSelections=[];selected={r:0,c:0};anchor={...selected};undo.length=redo.length=0;generation++;savedGeneration=generation;status='Published testing workbook saved in this browser';channel?.postMessage({version:state.version});render();
+        }catch(e){flash(e);}finally{busy=false;renderStatus();}})();
+      });};
+    }
     const exportButton=document.createElement('button');exportButton.textContent='Export Excel projection + embedded Fnt archive';d.querySelector('#backup')!.after(exportButton);
     const recoveryLabel=document.createElement('label');recoveryLabel.textContent='Recover embedded Fnt snapshot (ignores external Excel edits)';
     const recoveryInput=document.createElement('input');recoveryInput.type='file';recoveryInput.id='recover-xlsx';recoveryInput.accept='.xlsx';recoveryLabel.append(recoveryInput);d.querySelector('#restore')!.closest('label')!.after(recoveryLabel);
@@ -1938,6 +2037,15 @@ function deleteSelection(structural:boolean):void {
   });
 }
 document.addEventListener('keydown',e=>{
+  if(e.isComposing||e.keyCode===229||e.altKey||!(e.ctrlKey||e.metaKey)||e.key.toLowerCase()!=='f')return;
+  e.preventDefault();e.stopPropagation();
+  const existing=document.querySelector<HTMLInputElement>('.find-dialog[open] #find-text');
+  if(existing){existing.focus();existing.select();return;}
+  if(!book)return;
+  if(document.querySelector('dialog[open]')){flash('Close the current dialog before opening Find and Replace.');return;}
+  void action('find');
+},{capture:true});
+document.addEventListener('keydown',e=>{
   if(e.defaultPrevented||e.isComposing||e.keyCode===229)return;
   if(resizing){if(e.key==='Escape'){e.preventDefault();finishResize(false);}return;}
   if(!book||document.querySelector('dialog[open]:not(.color-picker)'))return;
@@ -1945,7 +2053,6 @@ document.addEventListener('keydown',e=>{
   const target=e.target as HTMLElement,editing=['INPUT','TEXTAREA','SELECT'].includes(target.tagName)||target.isContentEditable;
   if(target.closest('.sheet-tab,.tab-context-menu'))return;
   if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();void manualSave();return;}
-  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='f'){e.preventDefault();openFind();return;}
   if(editing)return;
   if(e.altKey&&e.key==='ArrowDown'){e.preventDefault();openCellDropdown();return;}
   const mod=e.ctrlKey||e.metaKey;
@@ -2009,10 +2116,42 @@ async function start():Promise<void> {
           channel?.postMessage({version:state.version});
         }
       }
-    }else{book=seedDropdownCatalog(createDemo()).book;state=await store.save(book,0,'Create starter workbook with original Dropdowns catalogs');}
+      if(import.meta.env.PROD&&untouchedStarter(state,await store.originalCount())){
+        try{
+          const snapshot=await loadPublishedTesting();
+          if(state.publishedSnapshot!==snapshot.id){
+            const before=await store.backup(state);
+            state=await store.save(snapshot.book,state.version,'Load published testing workbook',true,undefined,{localOnly:true,recoveryArchive:stringifyArchive(before),publishedSnapshot:snapshot.id});
+            book=clone(state.book);
+          }
+        }catch(e){error=`Published testing data could not be updated; your existing workbook was retained. ${String(e)}`;}
+      }
+    }else{
+      if(import.meta.env.PROD){
+        stage='loading the published testing workbook';const snapshot=await loadPublishedTesting();book=clone(snapshot.book);
+        state=await store.save(book,0,'Load published testing workbook',false,undefined,{localOnly:true,publishedSnapshot:snapshot.id});
+      }else{book=seedDropdownCatalog(createDemo()).book;state=await store.save(book,0,'Create starter workbook with original Dropdowns catalogs');}
+    }
     let remembered:string|null=null;try{remembered=sessionStorage.getItem('fnt-current-sheet');}catch(e){error=`Selected-tab preference unavailable: ${String(e)}`;}
     stage='rendering the spreadsheet';engine=new Engine(book);sheetId=book.sheets.some(s=>s.id===remembered)?remembered!:book.sheets[0].id;const view=restoreView();if(referenceId&&!workbookView){const s=book.sheets.find(s=>!s.supporting)??book.sheets[0];workbookView={sheet:s.id,selected:{r:0,c:0},anchor:{r:0,c:0},kind:'cells',scroll:0,left:0,filter:'all'};}status=state.sync?`Saved locally - ${state.pending.length} pending changes`:'Saved in this browser';render();if(view){const grid=root.querySelector<HTMLElement>('#grid-scroll')!;grid.scrollTop=view.scroll;grid.scrollLeft=view.left;drawRowWindow?.();rememberView();}
-    if('serviceWorker'in navigator&&import.meta.env.PROD)void navigator.serviceWorker.register('./sw.js').catch(e=>{flash(`Offline app cache failed: ${String(e)}`);});
+    if('serviceWorker'in navigator&&import.meta.env.PROD){
+      navigator.serviceWorker.addEventListener('message',e=>{
+        if(e.data?.type!=='fnt-update-ready'||!Array.isArray(e.data.files))return;
+        const current=document.querySelector<HTMLScriptElement>('script[type=module][src]')?.src;
+        if(current&&e.data.files.some((file:string)=>new URL(file,location.href).href===current))return;
+        if(document.querySelector('#app-update'))return;
+        const banner=document.createElement('div');banner.id='app-update';banner.className='app-update';banner.textContent='A newer website version is ready. ';
+        const update=document.createElement('button');update.textContent='Save and update';
+        update.onclick=()=>void(async()=>{if(!commitDraft())return;await flush();if(savedGeneration!==generation){flash('Save failed. Download a backup before updating.');return;}location.reload();})();
+        banner.append(update);root.before(banner);
+      });
+      void navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).then(registration=>{
+        const current=document.querySelector<HTMLScriptElement>('script[type=module][src]')?.src;
+        const acknowledge=()=>navigator.serviceWorker.controller?.postMessage({type:'fnt-shell-loaded',file:current});
+        navigator.serviceWorker.addEventListener('controllerchange',acknowledge);acknowledge();
+        return registration.update();
+      }).catch(e=>{flash(`Offline app cache failed: ${String(e)}`);});
+    }
   }catch(e){root.innerHTML=`<main class="startup"><h1>Could not finish ${esc(stage)}</h1><p>${esc(String(e))}</p><p>Your browser data has not been cleared. Do not delete site data. ${stage==='rendering the spreadsheet'?'Reload after the application error is fixed.':'Check browser storage access, or restore a complete independent backup.'}</p></main>`;}
 }
 void start();

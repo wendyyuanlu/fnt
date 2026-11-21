@@ -1,8 +1,9 @@
 # Fnt
 
 A custom, local-first spreadsheet for a personal nutrition workbook. No external
-spreadsheet runtime, analytics, backend account, or bundled personal workbook.
-The starter data is invented.
+spreadsheet runtime, analytics, or backend account. Local development starts with
+invented data. The published review build includes the owner-authorized testing
+workbook, but not the original Excel attachment or private recovery archives.
 
 **Review build, not a certified Excel replacement. Keep the original Excel file
 authoritative until calculation compatibility and recovery are proven.**
@@ -34,8 +35,14 @@ not import into an unshared user tab. **File** shows that profile's origin,
 Ingredients record count and whether an Excel source is attached; use
 **Import Ingredients into this workbook** in the browser you actually use.
 Save and wait for confirmation before refreshing to pick up a code update.
-Refreshing updates code, not workbook data from another browser profile.
-Static hosting must contain only the built application, never nutrition data.
+Refreshing does not sync edits from another browser profile. Production loads
+`testing-workbook.json` into new profiles and upgrades untouched old starters,
+preserving a full recovery checkpoint first. Existing edited, synced or imported
+workbooks are never automatically replaced. **File > Load published testing
+workbook** explicitly loads that snapshot while preserving the previous archive.
+The authorized testing snapshot is the only published workbook data. Original
+Excel packages, recovery histories, tokens and subsequent browser edits are not
+automatically bundled or published.
 
 ## Use
 
@@ -249,8 +256,13 @@ Static hosting must contain only the built application, never nutrition data.
   Planned/hypothetical/real metadata can filter the view but **does not silently
   exclude rows from existing calculations**.
 - Tabs can be duplicated, renamed (double-click the active tab or use settings),
-  reordered, colored, and deleted. Find/Replace has separate controls and
-  multi-sheet scope; replacing literal text never rewrites formula source.
+  reordered, colored, and deleted. Ctrl/Cmd+F commits the current draft and opens
+  the fixed-height Find and Replace dialog. Find has no replacement field;
+  replacement drafts survive tab switches. **All** selects every search sheet.
+  Results have Cell/Value columns with one subheader per sheet; long result sets
+  have explicit pagination. Case, entire-cell matching, `*`, `?`, escaped
+  wildcards and upward/downward Find next are supported. Replace/Replace all are
+  undoable and only change literal text, never formula source or linked cells.
 - Top/Bottom, row navigation, and temporary selected-column pinning keep large
   sheets navigable. All rows occupy one continuous scrollable sheet; a bounded
   rendering window keeps large sheets responsive without paging. Column moves
@@ -267,8 +279,13 @@ pushing app updates; this builds `/fnt/` assets without changing local `dist`.
 Branch publishing avoids requiring an OAuth workflow scope. Local development
 and production preview keep their existing root URLs.
 The manifest, icon and offline cache use project-relative URLs. The deployed
-origin has separate browser storage from either local preview; this publication
-includes only the approved generic Dropdowns catalogs, not personal workbooks.
+origin has separate browser storage from either local preview; the authorized
+testing snapshot supplies the review data without publishing the original XLSX.
+Online navigation fetches current HTML rather than pinning an old offline shell.
+Updates activate without waiting for every old tab to close; old assets remain
+available until open clients acknowledge the current bundle. A **Save and update**
+notice applies later code updates without silently discarding drafts. Offline
+reload continues to use the cached shell and testing snapshot.
 `scripts/check-dropdown-catalog.mjs` compares the bundled catalog with a read-only
 local XLSX supplied through `FNT_REFERENCE`, in an isolated browser with
 non-local network blocked. It prints only aggregate results.
