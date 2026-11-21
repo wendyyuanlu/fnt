@@ -11,7 +11,7 @@ test('production shell reloads offline, persists editable data and exports the n
   await expect(page.locator('td[data-r="1"][data-c="3"]')).toHaveText('208.8');
   await page.locator('td[data-r="1"][data-c="2"]').click();
   await page.getByRole('textbox',{name:'Cell value or formula',exact:true}).fill('100');
-  await page.getByRole('button',{name:'Apply',exact:true}).click();
+  await page.locator('#formula').press('Enter');
   await expect(page.locator('td[data-r="1"][data-c="3"]')).toHaveText('116');
   await expect(page.locator('#save-state')).toContainText('Saved');
   await page.reload();

@@ -20,7 +20,7 @@ test('fresh browser automatically displays every original dropdown in DD and the
     await expect.poll(()=>values(page)).toEqual(list.values);
   }
   await choose(page,'SnackCountry');await page.locator(records+' td').first().click();
-  await page.locator('#formula').fill('User country');await page.getByRole('button',{name:'Apply',exact:true}).click();
+  await page.locator('#formula').fill('User country');await page.locator('#formula').press('Enter');
   await page.locator(records+' th').first().click();await page.locator('[data-action="archive-options"]').click();
   await page.getByRole('button',{name:'Close lists & conversions',exact:true}).click();
   await page.locator('[data-action="dropdown-source"]').click();

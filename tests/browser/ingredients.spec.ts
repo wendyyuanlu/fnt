@@ -30,7 +30,7 @@ test('targeted Excel import keeps existing data, identifies browser-local state,
   await page.getByRole('button',{name:'Close dialog',exact:true}).click();
   await page.getByRole('button',{name:'Notebook',exact:true}).click();
   await page.locator('td[data-r="1"][data-c="0"]').click();await page.locator('#formula').fill('Local note kept');
-  await page.getByRole('button',{name:'Apply',exact:true}).click();await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.locator('#formula').press('Enter');await expect(page.locator('#save-state')).toContainText('Saved');
   await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
   await page.locator('#import-ingredients').setInputFiles({name:'invented-ingredients.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer});
   await expect(page.getByRole('dialog')).toHaveCount(0);

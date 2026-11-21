@@ -28,7 +28,7 @@ test('one continuous large sheet crosses row 60, respects groups/heights and pre
   await scroller.evaluate(el=>{el.scrollTop=33*195;});await expect(cell(199)).toHaveCount(1);await expect(cell(200)).toHaveCount(0);await expect(cell(220)).toHaveCount(0);await expect(cell(221)).toHaveCount(1);
   expect(await version()).toBe(before);
   await page.locator('#row-jump').fill('4001');await page.locator('#row-jump').press('Enter');
-  await expect(cell(4000)).toHaveText('Row 4001');await cell(4000,2).click();await page.locator('#formula').fill('123');await page.getByRole('button',{name:'Apply',exact:true}).click();
+  await expect(cell(4000)).toHaveText('Row 4001');await cell(4000,2).click();await page.locator('#formula').fill('123');await page.locator('#formula').press('Enter');
   await expect(page.locator('#save-state')).toContainText('Saved');
   const durable=await version(),position=await scroller.evaluate(el=>el.scrollTop);
   await cell(4000,2).click();await page.keyboard.type('456');
@@ -55,14 +55,15 @@ test('column drag/tap moves, pinning and undo retain the actual mid-sheet viewpo
     const after=await position();expect(after.row).toBe(before.row);expect(Math.abs(after.left-before.left)).toBeLessThan(2);expect(Math.abs(after.offset-before.offset)).toBeLessThan(2);
   };
   const tap=async(selector:string)=>{
-    const control=page.locator(selector);
-    if(isMobile){const box=(await control.boundingBox())!;expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(390);await page.touchscreen.tap(box.x+box.width/2,box.y+box.height/2);}
-    else await control.click();
+    const box=(await page.locator(selector).boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+    if(isMobile)await page.touchscreen.tap(box.x+box.width/2,box.y+box.height/2);
+    else await page.mouse.click(box.x+box.width/2,box.y+box.height/2);
   };
   await scroller.evaluate(el=>{el.scrollTop=50000;el.scrollLeft=400;});
   await expect.poll(async()=>Number(await page.locator('#row-jump').inputValue())).toBeGreaterThan(1400);
   if(!isMobile){
-    await page.locator('th[data-col="3"]').click();await page.locator('th[data-col="4"]').click({modifiers:['Shift']});
+    await page.locator('th[data-col="3"] .column-index').click();await page.locator('th[data-col="4"] .column-index').click({modifiers:['Shift']});
     const before=await position();
     await scroller.evaluate(el=>el.addEventListener('drop',()=>{document.body.dataset.dropTop=String(el.scrollTop);document.body.dataset.dropLeft=String(el.scrollLeft);},{capture:true}));
     await page.locator('[data-move-column="3"]').dragTo(page.locator('th[data-col="7"]'),{targetPosition:{x:130,y:14}});
@@ -71,9 +72,9 @@ test('column drag/tap moves, pinning and undo retain the actual mid-sheet viewpo
     await stable({...before,...chosen});await page.getByRole('button',{name:'Undo',exact:true}).click();await stable({...before,...chosen});
   }
   await scroller.evaluate(el=>{el.scrollLeft=0;});
-  await page.locator('th[data-col="0"]').click();await page.locator('th[data-col="1"]').click({modifiers:['Shift']});
+  await page.locator('th[data-col="0"] .column-index').click();await page.locator('th[data-col="1"] .column-index').click({modifiers:['Shift']});
   await page.getByRole('button',{name:'Pin selected columns',exact:true}).click();
-  await scroller.evaluate(el=>{el.scrollLeft=400;});const pinned=await position();
+  await scroller.evaluate(el=>{el.scrollLeft=440;});const pinned=await position();
   await tap('[data-move-column="0"]');await stable(pinned);
   await tap('[data-insert-column="5"]');await stable(pinned);
   await page.getByRole('button',{name:'Undo',exact:true}).click();await stable(pinned);

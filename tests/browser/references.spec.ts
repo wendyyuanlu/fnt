@@ -2,7 +2,7 @@ import { expect,test,type Page } from '@playwright/test';
 const rows=(p:Page)=>p.locator('.grid tbody tr[data-row]:has(td:not(.table-header))');
 const saved=(p:Page)=>expect(p.locator('#save-state')).toContainText(/^Saved/);
 const dd=async(p:Page,name?:string)=>{await p.locator('[data-action="references"]').click();if(name)await p.locator('[data-reference]').filter({hasText:new RegExp('^'+name+'$')}).click();};
-async function edit(p:Page,text:string){await p.locator('#formula').fill(text);await p.getByRole('button',{name:'Apply',exact:true}).click();}
+async function edit(p:Page,text:string){await p.locator('#formula').fill(text);await p.locator('#formula').press('Enter');}
 async function snapshot(p:Page){await saved(p);return p.evaluate(async()=>{const path='/src/',{Store}=await import(path+'storage.ts') as typeof import('../../src/storage'),s=await Store.open();try{return await s.backup((await s.load())!);}finally{s.close();}});}
 
 test('DD uses the same grid, maintains duplicate identities and formats across row movement, archive, undo and reload',async({page})=>{

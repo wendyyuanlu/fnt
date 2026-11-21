@@ -138,7 +138,9 @@ export function deleteColumn(book: Workbook, sheet: Sheet, id: string): void {
   sheet.validations=sheet.validations.map(v=>({...v,columns:v.columns.filter(c=>c!==id)})).filter(v=>v.columns.length);
 }
 export function addRow(book: Workbook, sheet: Sheet, at: number, table?: Table): Row {
+  if(at<0||at>sheet.rows.length)throw Error('Row insertion is outside the sheet.');
   const row: Row = { id: uid() };
+  inheritInsertedGroups(sheet,'row',[{at,id:row.id}]);
   sheet.rows.splice(at, 0, row);
   if (table) {
     const before = sheet.rows.slice(0, at).filter(r => table.rows.includes(r.id)).length;
@@ -146,6 +148,28 @@ export function addRow(book: Workbook, sheet: Sheet, at: number, table?: Table):
     inheritTableRow(book,sheet,table,row.id,before);
   }
   return row;
+}
+function stationaryGroupBounds(group:Group,positions:ReadonlyMap<string,number>,moving:ReadonlySet<string>):{first:number;last:number} {
+  let first=Infinity,last=-1;
+  for(const member of group.members){
+    if(moving.has(member))continue;
+    const position=positions.get(member);
+    if(position!==undefined){first=Math.min(first,position);last=Math.max(last,position);}
+  }
+  return {first,last};
+}
+function inheritInsertedGroups(sheet:Sheet,axis:Group['axis'],insertions:{at:number;id:string}[],moving:ReadonlySet<string>=new Set()):void {
+  if(!sheet.groups.some(group=>group.axis===axis))return;
+  const positions=new Map((axis==='row'?sheet.rows:sheet.columns).map((item,index)=>[item.id,index]));
+  for(const group of sheet.groups.filter(g=>g.axis===axis)){
+    const {first,last}=stationaryGroupBounds(group,positions,moving);
+    const members=new Set(group.members);
+    for(const {at,id}of insertions){
+      if(at<=first||at>last||members.has(id))continue;
+      const before=group.members.findIndex((member,index)=>(group.kind!=='summary'||index>0)&&!moving.has(member)&&(positions.get(member)??-1)>=at);
+      group.members.splice(before<0?group.members.length:before,0,id);members.add(id);
+    }
+  }
 }
 function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string,at:number):void {
   const candidates=[...table.rows.slice(0,at).reverse(),...table.rows.slice(at+1)];
@@ -197,6 +221,7 @@ export function expandAdjacentTable(book:Workbook,sheet:Sheet,row:string,column:
 export function insertColumn(book:Workbook,sheet:Sheet,at:number,scope?:Table):Column {
   if(at<0||at>sheet.columns.length)throw Error('Column insertion is outside the sheet.');
   const right=sheet.columns[at]?.id,column:Column={id:uid(),label:'New column',width:145};
+  inheritInsertedGroups(sheet,'column',[{at,id:column.id}]);
   sheet.columns.splice(at,0,column);
   for(const t of book.tables.filter(t=>t.sheet===sheet.id&&(!scope||t.id===scope.id))){
     const index=scope?t.columns.filter(c=>sheet.columns.findIndex(x=>x.id===c.column)<at).length:t.columns.findIndex(c=>c.column===right);
@@ -207,15 +232,59 @@ export function insertColumn(book:Workbook,sheet:Sheet,at:number,scope?:Table):C
   }
   return column;
 }
-function summaryMoveMembers(sheet:Sheet,axis:Group['axis'],ids:string[]):string[]{
+export function summaryMoveMembers(sheet:Sheet,axis:Group['axis'],ids:string[]):string[]{
   const chosen=new Set(ids);let added=true;
   while(added){added=false;for(const g of sheet.groups)if(g.axis===axis&&g.kind==='summary'&&chosen.has(g.members[0]))for(const id of g.members)if(!chosen.has(id)){chosen.add(id);added=true;}}
   return[...chosen];
 }
+function moveGroupPlan(sheet:Sheet,axis:Group['axis'],ids:string[],boundary:number):{group:Group;inside:boolean;whole:boolean}[]{
+  const moving=new Set(ids),positions=new Map((axis==='row'?sheet.rows:sheet.columns).map((item,i)=>[item.id,i]));
+  return sheet.groups.filter(group=>group.axis===axis).map(group=>{
+    const members=group.kind==='summary'?[group.members[0],...outlineMembers(group,sheet.groups)]:outlineMembers(group,sheet.groups);
+    const {first,last}=stationaryGroupBounds({...group,members},positions,new Set());
+    return {group,inside:boundary>first&&boundary<=last,whole:group.members.every(id=>moving.has(id))};
+  });
+}
+function applyMoveGroupPlan(sheet:Sheet,axis:Group['axis'],ids:string[],plan:ReturnType<typeof moveGroupPlan>):void{
+  const moving=new Set(ids),items=axis==='row'?sheet.rows:sheet.columns,positions=new Map(items.map((item,i)=>[item.id,i])),ordered=items.filter(item=>moving.has(item.id));
+  for(const {group,inside,whole} of plan){
+    if(whole)continue;
+    if(!inside){group.members=group.members.filter(id=>!moving.has(id));continue;}
+    for(const item of ordered){
+      if(group.members.includes(item.id))continue;
+      const at=positions.get(item.id)!,before=group.members.findIndex((member,index)=>(group.kind!=='summary'||index>0)&&(positions.get(member)??-1)>=at);
+      group.members.splice(before<0?group.members.length:before,0,item.id);
+    }
+  }
+}
+export function moveTargetGroups(sheet:Sheet,axis:Group['axis'],ids:string[],boundary:number,scope?:Table):Group[]{
+  const items=(axis==='row'?sheet.rows:sheet.columns).map(item=>item.id);
+  if(!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!items.includes(id))||boundary<0||boundary>items.length)throw Error('Invalid move preview.');
+  const moving=summaryMoveMembers(sheet,axis,ids);
+  if(axis==='row'&&scope&&moving.some(id=>!scope.rows.includes(id)))throw Error('Move options, not the list header.');
+  return moveGroupPlan(sheet,axis,moving,boundary).filter(target=>target.inside&&!target.whole).map(target=>target.group);
+}
+export function groupMoveTarget(sheet:Sheet,axis:Group['axis'],ids:string[],groupId:string,scope?:Table):{group:Group;members:string[];boundary:number;parents:Group[]}{
+  const items=(axis==='row'?sheet.rows:sheet.columns).map(item=>item.id),group=sheet.groups.find(g=>g.id===groupId&&g.axis===axis);
+  if(!group||!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!items.includes(id)))throw Error('Invalid group move.');
+  const members=summaryMoveMembers(sheet,axis,ids),coverage=(g:Group)=>new Set(g.kind==='summary'?[g.members[0],...outlineMembers(g,sheet.groups)]:outlineMembers(g,sheet.groups)),target=coverage(group);
+  if(group.kind==='summary'&&members.includes(group.members[0])||[...target].every(id=>members.includes(id)))throw Error('A group cannot be moved into itself.');
+  if(axis==='row'&&scope&&members.some(id=>!scope.rows.includes(id)))throw Error('Move options, not the list header.');
+  const positions=items.map((id,i)=>target.has(id)?i:-1).filter(i=>i>=0);if(!positions.length)throw Error('The destination group has no rows or columns.');
+  const parents=sheet.groups.filter(g=>{if(g===group||g.axis!==axis)return false;const parent=coverage(g);return parent.size>target.size&&[...target].every(id=>parent.has(id));});
+  return {group,members,boundary:positions.reduce((last,position)=>Math.max(last,position),-1)+1,parents};
+}
+export function moveIntoGroup(book:Workbook,sheet:Sheet,axis:Group['axis'],ids:string[],groupId:string,scope?:Table):number{
+  const target=groupMoveTarget(sheet,axis,ids,groupId,scope);
+  const at=axis==='row'?moveRows(book,sheet,ids,target.boundary,scope):moveColumns(book,sheet,ids,target.boundary);
+  const moving=new Set(target.members),ordered=(axis==='row'?sheet.rows:sheet.columns).map(item=>item.id).filter(id=>moving.has(id));
+  for(const group of [target.group,...target.parents])for(const id of ordered)if(!group.members.includes(id))group.members.push(id);
+  return at;
+}
 export function moveRows(book:Workbook,sheet:Sheet,ids:string[],boundary:number,scope?:Table):number{
   if(!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!sheet.rows.some(r=>r.id===id))||boundary<0||boundary>sheet.rows.length)throw Error('Invalid row move.');
   ids=summaryMoveMembers(sheet,'row',ids);
-  const selected=new Set(ids);
+  const selected=new Set(ids),groups=moveGroupPlan(sheet,'row',ids,boundary);
   if(scope){
     if(ids.some(id=>!scope.rows.includes(id)))throw Error('Move options, not the list header.');
     const slots=sheet.rows.map((r,i)=>scope.rows.includes(r.id)?i:-1).filter(i=>i>=0),records=slots.map(i=>sheet.rows[i]);
@@ -225,20 +294,23 @@ export function moveRows(book:Workbook,sheet:Sheet,ids:string[],boundary:number,
     }
     const at=slots.filter((i,n)=>i<boundary&&!selected.has(records[n].id)).length,moving=records.filter(r=>selected.has(r.id)),remaining=records.filter(r=>!selected.has(r.id));
     remaining.splice(at,0,...moving);slots.forEach((i,n)=>sheet.rows[i]=remaining[n]);scope.rows=remaining.map(r=>r.id);
+    applyMoveGroupPlan(sheet,'row',ids,groups);
     return slots[at];
   }
   const at=sheet.rows.slice(0,boundary).filter(r=>!selected.has(r.id)).length,moving=sheet.rows.filter(r=>selected.has(r.id));
   sheet.rows=sheet.rows.filter(r=>!selected.has(r.id));sheet.rows.splice(at,0,...moving);
+  applyMoveGroupPlan(sheet,'row',ids,groups);
   for(const table of book.tables.filter(t=>t.sheet===sheet.id))table.rows.sort((a,b)=>sheet.rows.findIndex(r=>r.id===a)-sheet.rows.findIndex(r=>r.id===b));
   return at;
 }
 export function moveColumns(book:Workbook,sheet:Sheet,ids:string[],boundary:number):number {
   if(!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!sheet.columns.some(c=>c.id===id))||boundary<0||boundary>sheet.columns.length)throw Error('Invalid column move.');
   ids=summaryMoveMembers(sheet,'column',ids);
-  const moving=sheet.columns.filter(c=>ids.includes(c.id));
+  const moving=sheet.columns.filter(c=>ids.includes(c.id)),groups=moveGroupPlan(sheet,'column',ids,boundary);
   const at=sheet.columns.slice(0,boundary).filter(c=>!ids.includes(c.id)).length;
   sheet.columns=sheet.columns.filter(c=>!ids.includes(c.id));
   sheet.columns.splice(at,0,...moving);
+  applyMoveGroupPlan(sheet,'column',ids,groups);
   for(const t of book.tables.filter(t=>t.sheet===sheet.id))t.columns.sort((a,b)=>sheet.columns.findIndex(c=>c.id===a.column)-sheet.columns.findIndex(c=>c.id===b.column));
   return at;
 }

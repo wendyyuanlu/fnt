@@ -6,9 +6,9 @@ async function snapshot(page:Page){
     try{return(await store.load())!.book;}finally{store.close();}
   });
 }
-async function fixture(page:Page){
+async function fixture(page:Page,narrowHeaders=false){
   await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
-  await page.evaluate(async()=>{
+  await page.evaluate(async(narrow)=>{
     const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
     try{
       const state=(await store.load())!,s=state.book.sheets[0];
@@ -22,11 +22,16 @@ async function fixture(page:Page){
         {id:'col-inner',axis:'column',kind:'summary',members:s.columns.slice(1,3).map(c=>c.id),collapsed:false,label:'Macros'},
         {id:'plain-col',axis:'column',kind:'range',members:s.columns.slice(3,5).map(c=>c.id),collapsed:false,label:'Extras'}
       ];
+      for(const i of [1,2,3,4,5,6,7,8,9,15,16,17,18,19]){
+        const value=({1:'Outer summary',3:'Inner summary',4:'Leaf summary',5:'Nested detail',7:'Last direct child',15:'Separate summary',16:'Independent detail'} as Record<number,string>)[i]??'';
+        s.cells[`${s.rows[i].id}:${s.columns[0].id}`]={value};
+      }
+      if(narrow){s.columns[0].width=40;s.columns[2].width=40;}
       const notes=state.book.sheets.find(s=>s.name==='Notebook')!;
       notes.groups=[{id:'notebook-group',axis:'row',kind:'summary',members:notes.rows.slice(1,3).map(r=>r.id),collapsed:false,label:'Notebook notes'}];
       await store.save(state.book,state.version,'Synthetic outlines');
     }finally{store.close();}
-  });
+  },narrowHeaders);
   await page.reload();await expect(page.locator('.group-menu-button')).toBeVisible();
   return snapshot(page);
 }
@@ -34,16 +39,113 @@ async function menu(page:Page){
   if(!await page.locator('.group-popover').count())await page.getByRole('button',{name:'Group controls',exact:true}).click();
   return page.locator('.group-popover');
 }
-test('Option A retains summaries, independent branches, plain hints and formula identities',async({page})=>{
+test('moving a nested two-row group outside its parents trims old memberships and rails, with reload and undo',async({page})=>{
+  const before=await fixture(page),s=before.sheets[0],members=s.groups.find(g=>g.id==='leaf')!.members;
+  await (await menu(page)).getByRole('switch',{name:'Tree view',exact:true}).click();
+  await page.getByRole('button',{name:'Group controls',exact:true}).click();
+  await page.locator('[data-row-select="4"] .row-index').click();
+  await page.locator('[data-move-row="4"]').click();
+  await expect(page.locator('td[data-c="0"].moving')).toHaveCount(2);
+  await page.locator('[data-insert-row="13"]').click();
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const after=await snapshot(page),moved=after.sheets[0],own=moved.groups.find(g=>g.id==='leaf')!;
+  expect(own.members).toEqual(members);
+  for(const id of ['outer','inner'])expect(moved.groups.find(g=>g.id===id)!.members.some(id=>members.includes(id))).toBe(false);
+  expect(moved.cells).toEqual(s.cells);
+  const anchor=moved.rows.findIndex(r=>r.id===members[0]),last=moved.rows.findIndex(r=>r.id===members[1]);
+  await expect(page.locator(`td[data-r="${anchor}"][data-c="0"] .row-outline-rail[data-group-id="outer"]`)).toHaveCount(0);
+  await expect(page.locator(`td[data-r="${last}"][data-c="0"] .row-outline-rail[data-group-id="leaf"]`)).toHaveClass(/outline-end/);
+  await page.getByRole('button',{name:'Undo',exact:true}).click();expect((await snapshotAfterSave(page)).sheets[0].groups).toEqual(s.groups);
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await page.reload();expect((await snapshot(page)).sheets[0].groups).toEqual(moved.groups);
+  await expect(page.locator(`td[data-r="${last}"][data-c="0"] .row-outline-rail[data-group-id="leaf"]`)).toHaveClass(/outline-end/);
+});
+async function snapshotAfterSave(page:Page){await expect(page.locator('#save-state')).toContainText(/^Saved/);return snapshot(page);}
+test('expanded row groups keep full-width boundary strokes and cancel without changes',async({page})=>{
   const before=await fixture(page);
-  await expect(page.locator('th[data-row-select="1"] [data-group-id="outer"]')).toBeVisible();
-  expect(await page.locator('.grid col').first().evaluate(el=>el.getBoundingClientRect().width)).toBe(48);
+  await page.locator('[data-row-select="13"] .row-index').click();await page.locator('[data-move-row="13"]').click();
+  await page.locator('[data-insert-row="4"]').hover();
+  await expect(page.locator('.move-drop-guide[data-axis="row"]')).toHaveCount(1);
+  await expect(page.locator('td[data-r="3"][data-c="0"]')).toHaveAttribute('data-drop-group','inner');
+  await page.locator('[data-insert-row="13"]').hover();
+  await expect(page.locator('.group-drop-target')).toHaveCount(0);
+  const guide=page.locator('.move-drop-guide[data-axis="row"]');await expect(guide).toHaveCount(1);
+  expect(await guide.evaluate(el=>Math.abs(el.getBoundingClientRect().width-document.querySelector('.grid')!.getBoundingClientRect().width))).toBeLessThan(1);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.move-drop-guide,.group-drop-target,.moving')).toHaveCount(0);
+  expect((await snapshot(page)).sheets[0]).toEqual(before.sheets[0]);
+});
+test('expanded column groups keep full-height boundary strokes',async({page})=>{
+  await fixture(page);
+  await page.locator('th[data-col="9"] .column-index').click();await page.locator('[data-move-column="9"]').click();
+  await page.locator('#grid-scroll').evaluate(el=>{el.scrollLeft=0;});
+  await page.locator('[data-insert-column="2"]').hover();
+  await expect(page.locator('.move-drop-guide[data-axis="column"]')).toHaveCount(1);
+  await expect(page.locator('td[data-r="0"][data-c="1"]')).toHaveAttribute('data-drop-group','col-inner');
+  await page.locator('[data-insert-column="9"]').hover();
+  await expect(page.locator('.group-drop-target')).toHaveCount(0);
+  const guide=page.locator('.move-drop-guide[data-axis="column"]');await expect(guide).toHaveCount(1);
+  expect(await guide.evaluate(el=>Math.abs(el.getBoundingClientRect().height-document.querySelector('.grid')!.getBoundingClientRect().height))).toBeLessThan(1);
+  await page.keyboard.press('Escape');await expect(page.locator('.move-drop-guide,.group-drop-target,.moving')).toHaveCount(0);
+});
+test('native body drops retain precise boundaries inside expanded groups and preserve formula identities',async({page})=>{
+  const before=await fixture(page);
+  const transfer=await page.evaluateHandle(()=>new DataTransfer());
+  await page.locator('[data-move-row="13"]').dispatchEvent('dragstart',{dataTransfer:transfer});
+  const target=page.locator('td[data-r="4"][data-c="0"]'),rect=await target.boundingBox();
+  await target.dispatchEvent('dragover',{dataTransfer:transfer,clientX:rect!.x+10,clientY:rect!.y+2});
+  await expect(page.locator('.move-drop-guide[data-axis="row"]')).toHaveCount(1);
+  await expect(page.locator('td[data-r="3"][data-c="0"]')).toHaveAttribute('data-drop-group','inner');
+  await target.dispatchEvent('drop',{dataTransfer:transfer});
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await expect(page.locator('.move-drop-guide,.group-drop-target,.moving')).toHaveCount(0);
+  const after=(await snapshot(page)).sheets[0],id=before.sheets[0].rows[13].id;
+  expect(after.rows[4].id).toBe(id);expect(after.groups.find(g=>g.id==='inner')!.members).toContain(id);
+  expect(after.cells).toEqual(before.sheets[0].cells);
+});
+test('collapsed row targets show only a highlight and accept whole blocks without expanding',async({page})=>{
+  const before=await fixture(page);
+  await page.locator('.summary-chevron[data-group-id="inner"]').click();
+  await page.locator('[data-row-select="13"] .row-index').click();await page.locator('[data-move-row="13"]').click();
+  await page.locator('[data-insert-row="4"]').hover();
+  await expect(page.locator('td[data-r="3"][data-c="0"]')).toHaveAttribute('data-drop-group','inner');
+  await expect(page.locator('.move-drop-guide')).toHaveCount(0);
+  await page.locator('[data-insert-row="4"]').click();
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const after=(await snapshot(page)).sheets[0],id=before.sheets[0].rows[13].id;
+  expect(after.groups.find(g=>g.id==='inner')).toMatchObject({collapsed:true,members:expect.arrayContaining([id])});
+  expect(after.groups.find(g=>g.id==='outer')!.members).toContain(id);
+  expect(after.cells).toEqual(before.sheets[0].cells);
+  await expect(page.locator('.move-drop-guide,.group-drop-target,.moving')).toHaveCount(0);
+});
+test('collapsed column targets show no stroke and accept native drops without expanding',async({page})=>{
+  const before=await fixture(page);
+  await page.locator('.column-summary-controls [data-group-id="col-inner"]').click();
+  const transfer=await page.evaluateHandle(()=>new DataTransfer());
+  await page.locator('[data-move-column="9"]').dispatchEvent('dragstart',{dataTransfer:transfer});
+  const target=page.locator('td[data-r="0"][data-c="1"]'),rect=await target.boundingBox();
+  await target.dispatchEvent('dragover',{dataTransfer:transfer,clientX:rect!.x+rect!.width/2,clientY:rect!.y+rect!.height/2});
+  await expect(target).toHaveAttribute('data-drop-group','col-inner');
+  await expect(page.locator('.move-drop-guide')).toHaveCount(0);
+  await target.dispatchEvent('drop',{dataTransfer:transfer});
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const after=(await snapshot(page)).sheets[0],id=before.sheets[0].columns[9].id;
+  expect(after.groups.find(g=>g.id==='col-inner')).toMatchObject({collapsed:true,members:expect.arrayContaining([id])});
+  expect(after.cells).toEqual(before.sheets[0].cells);
+  await expect(page.locator('.move-drop-guide,.group-drop-target,.moving')).toHaveCount(0);
+});
+test('left chevrons retain summaries, independent branches, plain hints and formula identities',async({page})=>{
+  const before=await fixture(page);
+  await expect(page.locator('tr[data-row="1"] td:first-of-type [data-group-id="outer"]')).toBeVisible();
+  await expect(page.locator('tbody th .row-group-controls')).toHaveCount(0);
+  expect(await page.locator('.grid col').first().evaluate(el=>el.getBoundingClientRect().width)).toBe(72);
   await expect(page.locator('th[data-col="2"] .plain-group-hints [data-group-id="plain-col"]')).toHaveCount(1);
   await page.locator('.grid [data-group-id="outer"]').click();
   await expect(page.locator('[data-row-select="1"]')).toBeVisible();await expect(page.locator('[data-row-select="3"]')).toHaveCount(0);
   await expect(page.locator('[data-row-select="15"]')).toHaveCount(1);
   await expect(page.locator('tr[data-row="1"] td:first-of-type .row-plain-hints [data-group-id="plain-row"]')).toHaveCount(1);
   await page.locator('.grid [data-group-id="plain-row"]').click();
+  await expect(page.locator('.grid [data-group-id="plain-row"] path[d="M3 3l18 18"]')).toHaveCount(1);
   await expect(page.locator('[data-row-select="10"],[data-row-select="11"]')).toHaveCount(0);
   await expect(page.locator('.grid [data-group-id="plain-row"]')).toHaveCount(1);
   await page.locator('.grid [data-group-id="col-outer"]').click();
@@ -55,11 +157,101 @@ test('Option A retains summaries, independent branches, plain hints and formula 
   await page.locator('.grid [data-group-id="outer"]').click();await expect(page.locator('[data-row-select="3"]')).toHaveCount(1);
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('[data-row-select="3"]')).toHaveCount(0);
 });
+test('left chevrons connect nested buttons and keep centered terminal caps through virtual scrolling and edits',async({page})=>{
+  await fixture(page);await menu(page);await page.getByRole('switch',{name:'Tree view',exact:true}).click();
+  await page.keyboard.press('Escape');
+  const geometry=await page.locator('.grid').evaluate(table=>{
+    const buttons=[...table.querySelectorAll<HTMLElement>('.summary-chevron')];
+    const outlined=buttons.every(button=>{const style=getComputedStyle(button);return style.borderLeftStyle==='solid'&&parseFloat(style.borderLeftWidth)>0&&style.borderLeftColor!=='rgba(0, 0, 0, 0)';});
+    const leftOfText=buttons.every(button=>{const text=button.closest('td')!.querySelector<HTMLElement>('.cell-display')!;return button.getBoundingClientRect().right<=text.getBoundingClientRect().left+parseFloat(getComputedStyle(text).paddingLeft);});
+    const inner=table.querySelector('[data-group-id="inner"].summary-chevron')!.getBoundingClientRect(),branch=table.querySelector('tr[data-row="3"] .row-outline-rail[data-group-id="outer"] .row-outline-branch')!.getBoundingClientRect();
+    return {outlined,leftOfText,connection:Math.abs(branch.right-inner.left),counts:buttons.some(b=>b.textContent?.trim()),glyphs:buttons.map(b=>b.querySelector('svg')!.getBoundingClientRect().width)};
+  });
+  expect(geometry.outlined).toBe(true);expect(geometry.leftOfText).toBe(true);expect(geometry.connection).toBeLessThan(1);expect(geometry.counts).toBe(false);expect(geometry.glyphs.every(n=>n===14)).toBe(true);
+  const terminal=page.locator('.grid .row-outline-rail[data-group-id="outer"].outline-end');
+  const measure=()=>terminal.evaluate(rail=>{
+    const row=rail.closest('tr')!.getBoundingClientRect(),r=rail.getBoundingClientRect(),branch=rail.querySelector('.row-outline-branch')!.getBoundingClientRect();
+    return {row:rail.closest('tr')!.dataset.row,center:Math.abs(branch.top-row.top-row.height/2),end:Math.abs(r.bottom-branch.top)};
+  });
+  expect((await measure()).row).toBe('9');expect((await measure()).center).toBeLessThan(1);expect((await measure()).end).toBeLessThan(1);
+  await expect(page.locator('tr[data-row="2"] .row-outline-branch')).toHaveCount(0);
+  const padding=await page.locator('td[data-r="3"][data-c="0"] .cell-display').evaluate(el=>getComputedStyle(el).paddingLeft);
+  await page.locator('#grid-scroll').evaluate(el=>{el.scrollTop=2400;});
+  await expect(page.locator('.grid .summary-chevron[data-group-id="outer"]')).toHaveCount(0);
+  await page.locator('#grid-scroll').evaluate(el=>{el.scrollTop=0;});
+  await expect(page.locator('.grid .summary-chevron[data-group-id="outer"]')).toBeVisible();
+  expect(await page.locator('td[data-r="3"][data-c="0"] .cell-display').evaluate(el=>getComputedStyle(el).paddingLeft)).toBe(padding);
+  expect((await measure()).end).toBeLessThan(1);
+  await page.locator('td[data-r="16"][data-c="0"]').click();
+  await page.locator('#formula').fill('');await page.locator('#formula').press('Enter');
+  await expect(page.locator('.grid .row-outline-rail[data-group-id="separate"].outline-end')).toHaveCount(1);
+  expect(await page.locator('.grid .row-outline-rail[data-group-id="separate"].outline-end').evaluate(el=>el.closest('tr')!.dataset.row)).toBe('19');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await page.locator('#grid-scroll').evaluate(el=>{el.scrollTop=0;});
+  await page.locator('td[data-r="1"][data-c="0"] .cell-display').click();
+  await page.reload();await expect(page.locator('.grid .summary-chevron[data-group-id="outer"]')).toBeVisible();
+  expect((await measure()).end).toBeLessThan(1);
+});
+test('row grips stay centered and column grips stay above letters with grouping buttons beside them',async({page})=>{
+  const before=await fixture(page,true);
+  await expect(page.locator('td .row-move-control')).toHaveCount(0);
+  for(const index of [1,9,12]){
+    await page.locator(`[data-row-select="${index}"] .row-index`).click();
+    const result=await page.locator(`[data-move-row="${index}"]`).evaluate(button=>{
+      const svg=button.querySelector('svg')!.getBoundingClientRect(),row=button.closest('tr')!.getBoundingClientRect(),number=button.closest('tr')!.querySelector('.row-index')!.getBoundingClientRect();
+      const overlaps=(a:DOMRect,b:DOMRect)=>a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top;
+      return {center:Math.abs(svg.top+svg.height/2-row.top-row.height/2),numberOverlap:overlaps(svg,number),size:svg.width,header:button.parentElement!.tagName,
+        leftOfGroups:[...button.closest('tr')!.querySelectorAll('.group-control')].every(el=>svg.right<=el.getBoundingClientRect().left),
+        groupOverlap:[...button.closest('tr')!.querySelectorAll('.group-control')].some(el=>overlaps(svg,el.getBoundingClientRect()))};
+    });
+    expect(result.center).toBeLessThan(.75);expect(result.numberOverlap).toBe(false);expect(result.groupOverlap).toBe(false);expect(result.size).toBe(14);expect(result.header).toBe('TH');expect(result.leftOfGroups).toBe(true);
+  }
+  for(const index of [0,2,9]){
+    await page.locator(`th[data-col="${index}"] .column-index`).click();
+    const result=await page.locator(`[data-move-column="${index}"]`).evaluate(button=>{
+      const svg=button.querySelector('svg')!.getBoundingClientRect(),label=button.closest('th')!.querySelector('.column-index')!.getBoundingClientRect();
+      return{center:Math.abs(svg.left+svg.width/2-label.left-label.width/2),size:svg.width,aboveLetter:svg.bottom<=label.top,
+        groupsBesideLetter:[...button.closest('th')!.querySelectorAll('.group-control')].every(el=>{const r=el.getBoundingClientRect();return Math.abs(r.top+r.height/2-label.top-label.height/2)<.75&&r.left>=label.left+label.width/2+7;}),
+        groupOverlap:[...button.closest('th')!.querySelectorAll('.group-control')].some(el=>{const r=el.getBoundingClientRect();return svg.left<r.right&&svg.right>r.left&&svg.top<r.bottom&&svg.bottom>r.top;})};
+    });
+    expect(result.center).toBeLessThan(.75);expect(result.groupOverlap).toBe(false);expect(result.size).toBe(14);expect(result.aboveLetter).toBe(true);expect(result.groupsBesideLetter).toBe(true);
+  }
+  const gripPosition=()=>page.locator('[data-move-column="0"]').evaluate(button=>{
+    const r=button.getBoundingClientRect(),header=button.closest('th')!.getBoundingClientRect(),label=button.closest('th')!.querySelector('.column-index')!.getBoundingClientRect();
+    return{x:r.left+r.width/2-label.left-label.width/2,y:r.top-header.top};
+  });
+  const position=await gripPosition();
+  expect(await page.locator('th[data-col="0"]').evaluate(el=>el.getBoundingClientRect().height)).toBe(40);
+  await page.locator('.grid [data-group-id="col-outer"]').click();
+  expect(await page.locator('th[data-col="0"]').evaluate(el=>el.getBoundingClientRect().height)).toBe(40);
+  expect(await gripPosition()).toEqual(position);
+  await expect(page.locator('td .row-move-control')).toHaveCount(0);
+  await page.locator('.grid [data-group-id="col-outer"]').click();
+  await page.locator('[data-move-column="9"]').click();
+  await expect(page.locator('[data-insert-column="10"]')).toHaveAttribute('aria-label','Move columns after J');
+  await page.locator('[data-move-column="9"]').click();
+  await page.locator('[data-row-select="1"] .row-index').click();
+  await page.locator('[data-move-row="1"]').click();
+  await expect(page.locator('[data-insert-row="2"]')).toHaveAttribute('aria-label','Move rows after 2');
+  await page.locator('[data-move-row="1"]').click();
+  await expect(page.locator('[data-insert-row="2"]')).toHaveAttribute('aria-label','Insert row after 2');
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  expect((await snapshot(page)).sheets[0].columns).toEqual(before.sheets[0].columns);
+  await page.getByRole('button',{name:'Add sheet',exact:true}).click();
+  await page.locator('#ask-form').getByRole('button',{name:'Apply',exact:true}).click();
+  await expect(page.locator('.group-menu-button')).toHaveCount(0);
+  expect(await page.locator('.grid col').first().evaluate(el=>el.getBoundingClientRect().width)).toBe(48);
+  expect(await page.locator('th[data-col="0"]').evaluate(el=>el.getBoundingClientRect().height)).toBe(35);
+  expect(await gripPosition()).toEqual(position);
+  await expect(page.locator('td .row-move-control')).toHaveCount(0);
+});
 test('tree and hint preferences stay sheet-specific across re-renders, saves and reloads',async({page})=>{
   await fixture(page);await menu(page);await page.getByRole('switch',{name:'Tree view',exact:true}).click();
   await expect(page.locator('.grid')).toHaveClass(/tree-outline/);
   await expect(page.locator('.row-outline-rail')).not.toHaveCount(0);
-  await expect(page.locator('.column-outline-row')).toHaveCount(2);
+  await expect(page.locator('.column-outline-row')).toHaveCount(0);
+  await expect(page.locator('.column-summary-rail')).not.toHaveCount(0);
   await menu(page);await page.getByRole('switch',{name:'Plain group hints',exact:true}).click();
   await expect(page.locator('.row-plain-hints,.plain-group-hints')).toHaveCount(0);
   await expect(page.locator('#save-state')).toContainText(/^Saved/);
@@ -75,7 +267,7 @@ test('tree and hint preferences stay sheet-specific across re-renders, saves and
   await expect(page.locator('.grid [data-group-id="plain-row"]')).toHaveCount(1);
   await page.keyboard.press('Escape');await page.locator('#grid-scroll').evaluate(el=>{el.scrollTop=2000;el.scrollLeft=400;});
   await expect(page.locator('tbody tr[data-row]')).not.toHaveCount(0);
-  expect(await page.locator('.corner').evaluate(el=>el.getBoundingClientRect().height)).toBe(31);
+  expect(await page.locator('.corner').evaluate(el=>el.getBoundingClientRect().height)).toBe(40);
   await page.locator('#grid-scroll').evaluate(el=>{el.scrollTop=0;el.scrollLeft=0;});
   await expect(page.locator('.grid [data-group-id="outer"]')).toBeVisible();
 });
@@ -122,6 +314,38 @@ test('popover is content-sized, single levels omit duplicate controls and icons 
       expect(groups.find(g=>g.id===summary)!.collapsed).toBe(false);expect(groups.find(g=>g.id===child)!.collapsed).toBe(true);
     }
     expect((await snapshot(page)).sheets.map(s=>s.cells)).toEqual(before.sheets.map(s=>s.cells));
+  });
+
+  for(const axis of ['row','column'] as const)test(`inserted and moved ${axis} members join enclosing groups, save and undo together`,async({page})=>{
+    const before=await fixture(page),original=before.sheets[0],at=axis==='row'?5:2,sourceId=(axis==='row'?original.rows:original.columns)[axis==='row'?12:9].id;
+    const enclosing=axis==='row'?['outer','inner','leaf']:['col-outer','col-inner'];
+    const select=async(index:number)=>page.locator(axis==='row'?`[data-row-select="${index}"] .row-index`:`th[data-col="${index}"] .column-index`).click();
+    const insert=(boundary:number)=>page.locator(axis==='row'?`[data-insert-row="${boundary}"]`:`[data-insert-column="${boundary}"]`);
+    await select(at-1);await insert(at).click();await expect(page.locator('#save-state')).toContainText(/^Saved/);
+    const added=(await snapshot(page)).sheets[0],insertedId=(axis==='row'?added.rows:added.columns)[at].id;
+    for(const id of enclosing)expect(added.groups.find(g=>g.id===id)!.members).toContain(insertedId);
+    for(const [address,value]of Object.entries(original.cells))expect(added.cells[address]).toEqual(value);
+    await page.reload();const saved=(await snapshot(page)).sheets[0];
+    for(const id of enclosing)expect(saved.groups.find(g=>g.id===id)!.members).toContain(insertedId);
+    const sourceAt=(axis==='row'?saved.rows:saved.columns).findIndex(item=>item.id===sourceId);
+    await select(sourceAt);await page.locator(axis==='row'?`[data-move-row="${sourceAt}"]`:`[data-move-column="${sourceAt}"]`).click();
+    await select(at-1);await insert(at).click();await expect(page.locator('#save-state')).toContainText(/^Saved/);
+    const moved=(await snapshot(page)).sheets[0];
+    for(const id of enclosing)expect(moved.groups.find(g=>g.id===id)!.members).toContain(sourceId);
+    expect(moved.cells).toEqual(saved.cells);
+    await page.locator(`.grid [data-group-id="${enclosing[0]}"]`).click();
+    await expect(page.locator(axis==='row'?`[data-row-select="${at}"]`:`th[data-col="${at}"]`)).toHaveCount(0);
+    await page.getByRole('button',{name:'Undo',exact:true}).click();
+    await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('#save-state')).toContainText(/^Saved/);
+    expect((await snapshot(page)).sheets[0].groups).toEqual(saved.groups);
+    expect((await snapshot(page)).sheets[0].cells).toEqual(saved.cells);
+    if(axis==='column'){
+      await select(sourceAt);await page.getByRole('button',{name:'Rows & columns',exact:true}).click();
+      await page.getByRole('button',{name:'Move column left',exact:true}).click();await expect(page.locator('#save-state')).toContainText(/^Saved/);
+      expect((await snapshot(page)).sheets[0].groups.find(g=>g.id==='col-outer')!.members).toContain(sourceId);
+      await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('#save-state')).toContainText(/^Saved/);
+      expect((await snapshot(page)).sheets[0].groups).toEqual(saved.groups);
+    }
   });
 
   test('group manager shows group types, real cell previews and affected coordinates without obscuring the sheet',async({page})=>{

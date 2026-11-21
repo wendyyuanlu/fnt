@@ -1,14 +1,15 @@
-import { outlineGroups, outlineLayer, precedingGroupMember } from './grouping';
+import { outlineGroups, outlineLayer, precedingGroupMember,type SummaryRowLayout } from './grouping';
 import {outlineMembers,type Group,type Sheet} from './model';
 
 interface GroupingHost {
   sheet:Sheet;groups:Group[];grid:HTMLElement;rows:string[];columns:string[];tree:boolean;hints:boolean;
+  rowLayouts:Map<string,SummaryRowLayout>;
   menuOpen:boolean;setMenuOpen:(open:boolean)=>void;
   change:(label:string,fn:()=>void)=>boolean;selectAll:()=>void;manage:()=>void;
 }
 const icon=(path:string)=>`<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
 const chevrons=(collapsed:boolean,axis:Group['axis'])=>icon(`<g${axis==='column'?' transform="rotate(90 12 12)"':''}><path d="${collapsed?'M5 9l7-7 7 7M5 15l7 7 7-7':'M5 2l7 7 7-7M5 22l7-7 7 7'}"/></g>`);
-const eye=(collapsed:boolean)=>icon(`<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>${collapsed?'':'<path d="M3 3l18 18"/>'}`);
+const eye=(collapsed:boolean)=>icon(`<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>${collapsed?'<path d="M3 3l18 18"/>':''}`);
 const hierarchy=icon('<path d="M6 8v8q0 3 3 3h7"/><circle cx="6" cy="5" r="3"/><circle cx="19" cy="19" r="3"/>');
 let rememberedFocus:string|undefined;
 
@@ -20,8 +21,8 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
   function button(group:Group,depth:number):HTMLButtonElement {
     const plain=group.kind!=='summary',el=document.createElement('button');
     el.type='button';el.className='group-control';el.dataset.groupId=group.id;
-    el.innerHTML=plain?eye(group.collapsed):chevrons(group.collapsed,group.axis);
-    if(!plain&&depth>1){const badge=document.createElement('span');badge.className='group-depth';badge.textContent=outlineLayer(depth);badge.setAttribute('aria-hidden','true');el.append(badge);}
+    el.innerHTML=plain?eye(group.collapsed):group.axis==='row'?icon(`<path d="${group.collapsed?'M9 6l6 6-6 6':'M6 9l6 6 6-6'}"/>`):chevrons(group.collapsed,group.axis);
+    if(!plain&&group.axis==='column'&&depth>1){const badge=document.createElement('span');badge.className='group-depth';badge.textContent=outlineLayer(depth);badge.setAttribute('aria-hidden','true');el.append(badge);}
     const action=plain?(group.collapsed?'Show':'Hide'):(group.collapsed?'Expand':'Collapse');
     el.setAttribute('aria-label',`${action} ${group.label} ${group.axis==='row'?'rows':'columns'}`);
     el.title=`${el.getAttribute('aria-label')} · ${plain?'plain range':`level ${outlineLayer(depth)}`}`;
@@ -34,29 +35,6 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
   corner.prepend(menuButton);
   corner.querySelector<HTMLElement>('[data-action="select-all"]')?.remove();
   const header=(id:string)=>table.querySelector<HTMLElement>(`thead [data-col="${sheet.columns.findIndex(c=>c.id===id)}"]`);
-  const rowPositions=new Map(host.rows.map((id,i)=>[id,i]));
-  if(host.tree){
-    const bands=Math.max(0,...summaries.filter(e=>e.group.axis==='column'&&host.columns.includes(e.group.members[0])).map(e=>e.depth));
-    for(let depth=1;depth<=bands;depth++){
-      const row=document.createElement('tr');row.className='column-outline-row';const gutter=document.createElement('th');gutter.className='outline-corner';row.append(gutter);
-      for(const id of host.columns){
-        const cell=document.createElement('th');cell.className='column-outline-cell';
-        const entry=summaries.find(e=>e.group.axis==='column'&&e.depth===depth&&e.members.has(id)&&host.columns.includes(e.group.members[0]));
-        if(entry){
-          cell.classList.add('outline-band');
-          if(id===entry.group.members[0]){cell.append(button(entry.group,entry.depth));const name=document.createElement('span');name.className='outline-label';name.textContent=entry.group.label;cell.append(name);}
-          const next=host.columns[host.columns.indexOf(id)+1];if(!next||!entry.members.has(next))cell.classList.add('outline-band-end');
-        }
-        row.append(cell);
-      }
-      table.tHead!.insertBefore(row,table.tHead!.querySelector('tr:not(.column-outline-row)'));
-    }
-  }else{
-    for(const id of host.columns){
-      const entry=summaries.filter(e=>e.group.axis==='column'&&e.group.members[0]===id).sort((a,b)=>a.depth-b.depth)[0];
-      if(entry){const el=header(id);el?.classList.add('has-column-group');el?.prepend(button(entry.group,entry.depth));}
-    }
-  }
   const ranges=entries.filter(e=>e.group.kind!=='summary');
   const rowHints=new Map<string,typeof ranges>();
   if(host.hints)for(const entry of ranges){
@@ -65,28 +43,57 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
       const key=at??'';rowHints.set(key,[...rowHints.get(key)??[],entry]);
     }else{
       const el=at?header(at):corner;
-      if(el){let cluster=el.querySelector<HTMLElement>('.plain-group-hints');if(!cluster){cluster=document.createElement('span');cluster.className='plain-group-hints';el.append(cluster);}cluster.append(button(group,entry.depth));}
+      if(el){
+        let cluster=el.querySelector<HTMLElement>('.plain-group-hints');
+        if(!cluster){cluster=document.createElement('span');cluster.className='plain-group-hints';el.append(cluster);}
+        cluster.append(button(group,entry.depth));
+      }
     }
   }
+  for(const column of sheet.columns.filter(c=>host.columns.includes(c.id))){
+    const controls=header(column.id)?.querySelectorAll<HTMLElement>('.group-control');
+    controls?.forEach((control,index)=>{
+      control.style.right=2+(controls.length-1-index)*26+'px';control.style.top='14px';
+    });
+  }
   function drawRows():void {
-    table.querySelectorAll('.row-group-controls,.row-outline-rail,.row-plain-hints').forEach(el=>el.remove());
+    table.querySelectorAll('.row-group-controls,.row-outline-rail,.row-plain-hints,.column-summary-controls,.column-summary-rail').forEach(el=>el.remove());
     for(const th of table.querySelectorAll<HTMLElement>('tbody [data-row-select]')){
       const id=sheet.rows[Number(th.dataset.rowSelect)].id;
       const parents=summaries.filter(e=>e.group.axis==='row'&&e.group.members[0]===id).sort((a,b)=>a.depth-b.depth);
+      const cell=th.parentElement?.querySelector<HTMLElement>('td[data-r]'),layout=host.rowLayouts.get(id);
       const controls=document.createElement('span');controls.className='row-group-controls';
-      for(const entry of host.tree?parents:parents.slice(0,1)){
-        const el=button(entry.group,entry.depth);
-        if(host.tree)el.style.left=2+(entry.depth-1)*12+'px';
+      for(const entry of layout?.buttons??[]){
+        const el=button(entry.group,entry.depth);el.classList.add('summary-chevron');
+        el.style.left=6+entry.left+'px';
         controls.append(el);
       }
-      th.append(controls);
-      if(host.tree)for(const entry of summaries.filter(e=>e.group.axis==='row'&&!e.group.collapsed&&e.members.has(id)&&host.rows.includes(e.group.members[0]))){
-        const rail=document.createElement('span');rail.className='row-outline-rail';rail.style.left=12+(entry.depth-1)*12+'px';
-        if(id===entry.group.members[0])rail.classList.add('outline-start');
-        const next=host.rows[rowPositions.get(id)!+1];if(!next||!entry.members.has(next))rail.classList.add('outline-end');
-        th.append(rail);
+      if(controls.children.length)cell?.append(controls);
+      const hints=rowHints.get(id);
+      for(const entry of layout?.rails??[]){
+        const rail=document.createElement('span');rail.className='row-outline-rail';rail.dataset.groupId=entry.group.id;rail.style.left=entry.left+'px';
+        if(entry.start)rail.classList.add('outline-start');
+        if(entry.end)rail.classList.add('outline-end');
+        if(entry.branch&&(entry.end||cell?.querySelector('.cell-display')?.textContent?.trim())){const branch=document.createElement('span');branch.className='row-outline-branch';branch.style.width=entry.width+'px';rail.append(branch);}
+        cell?.append(rail);
       }
-      const hints=rowHints.get(id);if(!hints)continue;
+      const firstRow=table.querySelector<HTMLElement>(`tbody [data-row-select="${sheet.rows.findIndex(r=>r.id===host.rows[0])}"]`)?.parentElement;
+      if(firstRow&&firstRow===th.parentElement)for(const entry of summaries.filter(e=>e.group.axis==='column'&&host.columns.includes(e.group.members[0]))){
+        const at=host.columns.indexOf(entry.group.members[0]),cell=firstRow.querySelector<HTMLElement>(`td[data-c="${sheet.columns.findIndex(c=>c.id===entry.group.members[0])}"]`);
+        if(!cell)continue;
+        let controls=cell.querySelector<HTMLElement>('.column-summary-controls');
+        if(!controls){controls=document.createElement('span');controls.className='column-summary-controls';controls.style.left=6+(at===0?host.rowLayouts.get(host.rows[0])?.inset??0:0)+'px';cell.append(controls);}
+        controls.append(button(entry.group,entry.depth));
+        if(host.tree&&!entry.group.collapsed){
+          let end=at;host.columns.forEach((id,i)=>{if(entry.members.has(id))end=Math.max(end,i);});
+          for(let i=at;i<=end;i++){
+            const target=firstRow.querySelector<HTMLElement>(`td[data-c="${sheet.columns.findIndex(c=>c.id===host.columns[i])}"]`);
+            const rail=document.createElement('span');rail.className='column-summary-rail';rail.style.bottom=3+(entry.depth-1)*3+'px';
+            if(i===at)rail.style.left='18px';if(i===end)rail.style.right='50%';target?.append(rail);
+          }
+        }
+      }
+      if(!hints)continue;
       const cluster=document.createElement('span');cluster.className='row-plain-hints';
       hints.forEach(e=>cluster.append(button(e.group,e.depth)));
       if(!parents.length&&hints.length===1)th.append(cluster);

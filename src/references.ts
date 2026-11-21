@@ -1,5 +1,5 @@
 import { compare,compile,displayFormula,Engine,flatten,scalar,type Ast } from './formula';
-import { addRow,blankSheet,clone,deleteRows,duplicateSheet,getCell,isFault,key,mapAst,move,setInput,uid,uniqueName,type Cell,type ReferenceSource,type Scalar,type Sheet,type Table,type Validation,type Workbook } from './model';
+import { addRow,blankSheet,clone,deleteRows,duplicateSheet,getCell,isFault,key,mapAst,move,moveRows,setInput,uid,uniqueName,type Cell,type ReferenceSource,type Scalar,type Sheet,type Table,type Validation,type Workbook } from './model';
 
 export interface ReferenceChoice {row:string;value:string;binding:{table:string;row:string;column:string}}
 export const referenceLabel=(source:ReferenceSource)=>source.label??source.name;
@@ -305,7 +305,7 @@ export function moveReferenceValue(book:Workbook,source:ReferenceSource,row:stri
   if(from<0||to<0||to>=table.rows.length)throw Error('This option is already at the list boundary.');
   const other=table.rows[to];exclusiveRow(book,sheet,table,row);exclusiveRow(book,sheet,table,other);
   if(Math.abs(sheet.rows.findIndex(r=>r.id===row)-sheet.rows.findIndex(r=>r.id===other))!==1)throw Error('Non-list rows separate these options. Rearrange the backing sheet explicitly instead.');
-  move(sheet.rows,sheet.rows.findIndex(r=>r.id===row),sheet.rows.findIndex(r=>r.id===other));move(table.rows,from,to);
+  moveRows(book,sheet,[row],sheet.rows.findIndex(r=>r.id===other)+(direction===1?1:0),table);
 }
 export function removeReferenceValue(book:Workbook,source:ReferenceSource,row:string,replacement?:string):void{
   if(source.kind==='derived')throw Error('Edit the derived source, not a generated option.');

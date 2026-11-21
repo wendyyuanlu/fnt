@@ -1,5 +1,5 @@
 import { displayFormula,Engine,scalar } from './formula';
-import { uid,type Sheet,type Table,type Workbook } from './model';
+import { moveRows,uid,type Sheet,type Table,type Workbook } from './model';
 
 export function positionalBlock(book:Workbook,sheet:Sheet,table:Table,row:string,engine=new Engine(book)):string[]{
   const field=(name:string)=>table.columns.find(c=>c.name.toLowerCase()===name.toLowerCase());
@@ -15,15 +15,13 @@ export function positionalBlock(book:Workbook,sheet:Sheet,table:Table,row:string
   return ordered.slice(start,end);
 }
 export function groupBlockToTop(book:Workbook,sheet:Sheet,table:Table,row:string):number{
-  const members=positionalBlock(book,sheet,table,row),ids=new Set(members),positions=members.map(id=>sheet.rows.findIndex(r=>r.id===id));
+  const members=positionalBlock(book,sheet,table,row),positions=members.map(id=>sheet.rows.findIndex(r=>r.id===id));
   if(positions.some((p,i)=>p!==positions[0]+i))throw Error('This block contains intervening non-table rows. Move those rows explicitly first.');
   const header=sheet.rows.findIndex(r=>r.id===table.header);
   if(header<0||positions[0]<=header)throw Error('The block must follow its table header.');
-  const rows=sheet.rows.filter(r=>ids.has(r.id));sheet.rows=sheet.rows.filter(r=>!ids.has(r.id));
-  const at=sheet.rows.findIndex(r=>r.id===table.header)+1;sheet.rows.splice(at,0,...rows);
-  const order=new Map(sheet.rows.map((r,i)=>[r.id,i]));
-  table.rows.sort((a,b)=>order.get(a)!-order.get(b)!);
-  for(const g of sheet.groups)if(g.axis==='row'&&g.members.includes(members[0]))g.collapsed=false;
+  const expand=sheet.groups.filter(g=>g.axis==='row'&&g.members.includes(members[0]));
+  const at=moveRows(book,sheet,members,header+1);
+  for(const g of expand)if(g.members.includes(members[0]))g.collapsed=false;
   const details=members.slice(1);
   if(details.length){
     const same=sheet.groups.find(g=>g.axis==='row'&&(g.kind==='summary'?g.members.length===members.length&&g.members.every(id=>members.includes(id)):g.members.length===details.length&&g.members.every(id=>details.includes(id))));

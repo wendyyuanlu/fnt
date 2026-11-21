@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 const cell=(page:Page,r:number,c:number)=>page.locator(`td[data-r="${r}"][data-c="${c}"]`);
 async function edit(page:Page,r:number,c:number,value:string){
-  await cell(page,r,c).click();await page.getByRole('textbox',{name:'Cell value or formula',exact:true}).fill(value);await page.getByRole('button',{name:'Apply',exact:true}).click();
+  await cell(page,r,c).click();await page.getByRole('textbox',{name:'Cell value or formula',exact:true}).fill(value);await page.locator('#formula').press('Enter');
 }
 test('real grid editing, formulas, rename/move, undo, local reload, notes and picker',async({page})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
@@ -21,7 +21,7 @@ test('real grid editing, formulas, rename/move, undo, local reload, notes and pi
   await cell(page,1,5).dblclick();await expect(page.locator('#cell-editor')).toBeVisible();await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.locator('#cell-editor').fill('Line one\nLine two');await expect(page.locator('#cell-note,#cell-link')).toHaveCount(0);await cell(page,2,5).click();await expect(page.locator('#cell-editor')).toHaveCount(0);
   await expect(cell(page,1,5)).toHaveCSS('white-space','nowrap');await expect(cell(page,1,5)).toHaveText('Line one\nLine two');
-  await cell(page,1,1).click();await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.locator('#dropdown-source').selectOption({label:'Ingredients / Ingredient'});await page.getByRole('button',{name:'Apply dropdown'}).click();
+  await cell(page,1,1).click();await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.getByRole('checkbox',{name:'Ingredients',exact:true}).check();await page.getByRole('button',{name:'Apply dropdown'}).click();
   await cell(page,1,1).click();await page.getByRole('searchbox',{name:'Search dropdown options'}).fill('oats');await page.locator('.cell-dropdown').getByRole('option').click();
   await expect(cell(page,1,1)).toHaveText('Example oats');await expect(cell(page,1,1)).toHaveClass(/linked/);await expect(cell(page,1,3)).toHaveText('750');
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();await edit(page,1,0,'Oats renamed');
@@ -97,6 +97,26 @@ test('in-cell and formula-bar typing share one draft, one commit and one undo',a
   await cell(page,1,2).click();await page.keyboard.type('999');await inline.press('Escape');
   await expect(cell(page,1,2)).toHaveText('100');await expect(bar).toHaveValue('=(50*2)');
 });
+test('long multiline cells never show scrollbar gutters while typing and retain their full text',async({page})=>{
+  await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();
+  const target=cell(page,1,1),text=Array.from({length:20},(_,i)=>`Invented note ${i+1}: ${'Long text without wrapping. '.repeat(20)}`).join('\n');
+  await target.click();await page.keyboard.type('x');
+  const inline=page.getByRole('textbox',{name:'Edit selected cell',exact:true});
+  await inline.fill(text);await inline.press('Control+End');
+  const metrics=await inline.evaluate(el=>{
+    if(!(el instanceof HTMLTextAreaElement))throw Error('Expected the in-cell textarea.');
+    return{horizontal:el.scrollWidth>el.clientWidth,vertical:el.scrollHeight>el.clientHeight,
+      width:el.offsetWidth-el.clientWidth,height:el.offsetHeight-el.clientHeight,
+      scrolled:el.scrollTop>0,webkit:getComputedStyle(el,'::-webkit-scrollbar').display};
+  });
+  expect(metrics).toEqual({horizontal:true,vertical:true,width:0,height:0,scrolled:true,webkit:'none'});
+  await inline.press('End');await page.keyboard.type('!');
+  await expect(inline).toHaveValue(text+'!');await inline.press('Tab');
+  await expect(target).toHaveText(text+'!');await expect(target).toHaveCSS('white-space','nowrap');await expect(target).toHaveCSS('overflow','hidden');
+  await target.dblclick();await expect(page.locator('#cell-editor')).toHaveValue(text+'!');
+  await cell(page,2,1).click();await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.reload();await expect(target).toHaveText(text+'!');await expect(target).toHaveCSS('white-space','nowrap');
+});
 test('typing adjacent to a table expands formulas, while a gap remains freeform',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Ingredients',exact:true}).click();
   await edit(page,5,0,'Gap entry');await expect(cell(page,5,5)).toHaveText('');
@@ -105,14 +125,14 @@ test('typing adjacent to a table expands formulas, while a gap remains freeform'
   await expect(page.locator('#save-state')).toContainText('Saved');await page.reload();
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();await expect(cell(page,4,5)).toHaveText('2');
   await page.getByRole('button',{name:'Daily log',exact:true}).click();await cell(page,2,1).click();
-  await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.locator('#dropdown-source').selectOption({label:'Ingredients / Ingredient'});await page.getByRole('button',{name:'Apply dropdown'}).click();await cell(page,2,1).click();
+  await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.getByRole('checkbox',{name:'Ingredients',exact:true}).check();await page.getByRole('button',{name:'Apply dropdown'}).click();await cell(page,2,1).click();
   await page.getByRole('searchbox',{name:'Search dropdown options'}).fill('lentils');await page.locator('.cell-dropdown').getByRole('option').click();await edit(page,2,2,'100');
   await expect(cell(page,2,3)).toHaveText('116');await expect(cell(page,2,1)).toHaveClass(/linked/);
 });
 test('header boundary controls insert and move a selected column block without losing formulas',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Ingredients',exact:true}).click();
-  await page.locator('th[data-col="1"]').click();
-  await page.locator('th[data-col="2"]').click({modifiers:['Shift']});
+  await page.locator('th[data-col="1"] .column-index').click();
+  await page.locator('th[data-col="2"] .column-index').click({modifiers:['Shift']});
   await page.locator('[data-move-column="1"]').click();
   await page.locator('[data-insert-column="6"]').click();
   await expect(cell(page,1,4)).toHaveText('40');await expect(cell(page,1,5)).toHaveText('150');await expect(cell(page,1,3)).toHaveText('3.75');
@@ -127,7 +147,7 @@ test('header boundary controls insert and move a selected column block without l
 test('desktop drag handle moves multiple columns without overwriting a destination',async({page,isMobile})=>{
   test.skip(isMobile,'Touch equivalent is exercised in the boundary-control test.');
   await page.goto('/');await page.getByRole('button',{name:'Ingredients',exact:true}).click();
-  await page.locator('th[data-col="1"]').click();await page.locator('th[data-col="2"]').click({modifiers:['Shift']});
+  await page.locator('th[data-col="1"] .column-index').click();await page.locator('th[data-col="2"] .column-index').click({modifiers:['Shift']});
   await page.locator('[data-move-column="1"]').dragTo(page.locator('th[data-col="5"]'),{targetPosition:{x:130,y:14}});
   await expect(cell(page,1,4)).toHaveText('40');await expect(cell(page,1,5)).toHaveText('150');await expect(cell(page,1,3)).toHaveText('3.75');
   await page.getByRole('button',{name:'Daily log',exact:true}).click();await expect(cell(page,1,3)).toHaveText('208.8');

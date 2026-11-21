@@ -1,6 +1,6 @@
 import { expect,it } from 'vitest';
 import { clone,createDemo,getCell,insertColumn,key,moveRows,setInput } from '../src/model';
-import { addReferenceValue,createReference,referenceTable,unitsSource,upsertConversion } from '../src/references';
+import { addReferenceValue,createReference,moveReferenceValue,referenceTable,unitsSource,upsertConversion } from '../src/references';
 import { conversionEditImpact,deleteReferenceColumns,referenceView,writeGridCell } from '../src/reference-grid';
 import { dropdownCatalog,dropdownFormatMigration,seedDropdownCatalog } from '../src/dropdown-catalog';
 
@@ -14,6 +14,14 @@ it('moves scoped rows with formats and identities without moving gaps or another
   expect(sheet.rows.filter((_,i)=>!slots.includes(i))).toEqual(before.sheets.find(s=>s.id===sheet.id)!.rows.filter((_,i)=>!slots.includes(i)));
   expect(referenceView(book,source).rows).toEqual([table.header,b,a]);
   expect(()=>moveRows(book,sheet,[table.header],0,table)).toThrow('header');
+});
+it('moving a dropdown value into grouped records inherits the group without changing its collapse state',()=>{
+  const book=createDemo(),source=createReference(book,'Grouped options'),ids=['A','B','C','D'].map(value=>addReferenceValue(book,source,value)),{sheet}=referenceTable(book,source);
+  const group={id:'options',axis:'row' as const,kind:'summary' as const,members:ids.slice(0,3),collapsed:true,label:'Options'};
+  sheet.groups.push(group);const cells=clone(sheet.cells);
+  moveReferenceValue(book,source,ids[3],-1);
+  expect(group.members).toEqual([ids[0],ids[1],ids[3],ids[2]]);
+  expect(group.collapsed).toBe(true);expect(sheet.cells).toEqual(cells);
 });
 it('scoped field insertion/deletion preserves another list sharing its physical column',()=>{
   const book=createDemo(),a=createReference(book,'A'),b=createReference(book,'B');

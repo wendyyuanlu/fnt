@@ -31,6 +31,23 @@ it('moves the selected ingredient owning block, collapses only its details, and 
   expect(s.groups.filter(g=>g.collapsed).some(g=>outlineMembers(g).includes(header))).toBe(false);expect(value(header)).toBe(50);
   const groups=s.groups.length;groupBlockToTop(b,s,t,header);expect(s.groups).toHaveLength(groups);
 });
+it('moving a meal block inside an existing outline joins it without changing the destination collapse state',()=>{
+  const{b,s,t}=fixture(),header=s.rows[4].id,ingredient=s.rows[5].id;
+  const outer={id:uid(),axis:'row' as const,kind:'summary' as const,members:s.rows.slice(0,4).map(row=>row.id),collapsed:true,label:'Existing outline'};
+  s.groups.push(outer);const cells=clone(s.cells);
+  groupBlockToTop(b,s,t,ingredient);
+  expect(outer.members).toContain(header);expect(outer.members).toContain(ingredient);
+  expect(outer.members[0]).toBe(t.header);expect(outer.collapsed).toBe(true);expect(s.cells).toEqual(cells);
+});
+it('moving a meal block out of an old outline removes its membership without expanding the old group',()=>{
+  const{b,s,t}=fixture(),header=s.rows[4].id,ingredient=s.rows[5].id,remaining=[s.rows[3].id,s.rows[6].id];
+  const parent={id:uid(),axis:'row' as const,kind:'summary' as const,members:s.rows.slice(3,7).map(r=>r.id),collapsed:true,label:'Old outline'};
+  s.groups.push(parent);const cells=clone(s.cells);
+  groupBlockToTop(b,s,t,ingredient);
+  expect(parent.members).toEqual(remaining);expect(parent.collapsed).toBe(true);
+  expect(s.groups.find(g=>g.members.includes(header)&&g.members.includes(ingredient))).toMatchObject({members:[header,ingredient],collapsed:true});
+  expect(s.cells).toEqual(cells);
+});
 it('keeps membership positional when an ingredient crosses a header, without permanent meal foreign keys',()=>{
   const{b,s,t,value}=fixture(),first=s.rows[1].id,second=s.rows[4].id,ingredient=s.rows[3].id;
   move(s.rows,3,5);const order=new Map(s.rows.map((r,i)=>[r.id,i]));t.rows.sort((a,b)=>order.get(a)!-order.get(b)!);

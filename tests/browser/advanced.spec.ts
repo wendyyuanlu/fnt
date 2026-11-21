@@ -1,7 +1,7 @@
 import { expect,test,type Page } from '@playwright/test';
 const cell=(page:Page,r:number,c:number)=>page.locator(`td[data-r="${r}"][data-c="${c}"]`);
 async function edit(page:Page,r:number,c:number,value:string){
-  await cell(page,r,c).click();await page.locator('#formula').fill(value);await page.getByRole('button',{name:'Apply',exact:true}).click();
+  await cell(page,r,c).click();await page.locator('#formula').fill(value);await page.locator('#formula').press('Enter');
 }
 async function range(page:Page,value:string){
   await page.locator('.selection-count').click();await page.locator('#answer').fill(value);await page.getByRole('dialog').getByRole('button',{name:'Apply',exact:true}).click();

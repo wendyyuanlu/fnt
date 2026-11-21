@@ -45,8 +45,9 @@ Static hosting must contain only the built application, never nutrition data.
   in-cell editing; double-click or **Expand** opens a multiline textarea over the
   cell, not a dialog. It adapts to the visible viewport on mobile. Clicking outside
   applies changes; Escape cancels and Ctrl/Cmd+Enter applies from the keyboard.
-  Editing notes
-  does not change wrapping. Formula-column cells can be manually overridden.
+  Cells never show horizontal or vertical scrollbars, including while typing.
+  Long in-cell drafts still scroll to the caret; double-click opens the full editor.
+  Editing notes does not change wrapping. Formula-column cells can be manually overridden.
   The formula bar marks **Calculated** versus **Manual**; **Restore** recovers
   the exact previous formula (or asks which existing column calculation to use).
   Overrides/default formulas survive save, copy/fill, moves and native backups.
@@ -55,7 +56,13 @@ Static hosting must contain only the built application, never nutrition data.
 - Use Shift-click, row/column headers, or the cell-count button to select ranges
   on desktop or mobile. The cell-count menu also enables touch-drag selection
   without converting ordinary scrolling into edits.
-  Arrow keys navigate; Ctrl/Cmd+Z, Y, F, S, A, C, X, V work.
+  Ctrl/Cmd-click adds cells, rows or columns without losing a Shift-selected
+  range. Formatting and clearing affect only the selection, not the gaps;
+  operations requiring one rectangle explicitly reject disjoint selections.
+  Arrow keys commit an in-cell or formula-bar edit and immediately navigate;
+  rejected edits stay open. The expanded editor retains normal text navigation.
+  Enter applies formula-bar edits. Ctrl/Cmd+Z, Y, F, S, A, C, X, V work.
+  Spreadsheet scrollbars are thin and have no arrow buttons.
   Ctrl/Cmd+G creates a summary group; Ctrl/Cmd+Shift+G ungroups it.
   Select the summary row/column along with its details: the topmost row or
   leftmost column stays visible on collapse. Moving it moves its group together.
@@ -65,8 +72,37 @@ Static hosting must contain only the built application, never nutrition data.
   the innermost containing group; spanning separate groups removes their outer
   level while retaining nested groups. These operations are undoable and do not
   change cells or formulas. Shortcuts leave active text editors alone.
-  **Option A grouping controls** sit beside row numbers and at column headers,
-  without replacing their labels. The corner hierarchy icon opens row/column
+  **Operation left chevron** puts summary-group buttons before the text in the
+  first visible cell of a summary row (or the first visible row of a summary
+  column). Buttons stay outlined at rest, with 24px targets, 14px glyphs and no
+  counts. Tree view indents nested rows in 24px steps; lines connect to nested
+  buttons and skip horizontal branches for blank intermediate cells. Every
+  expanded group has a vertical line ending at a centered horizontal cap on its
+  last visible grouped row, even when that cell is blank. The corner menu retains
+  independent nested-level controls.
+  Plain-group buttons retain their header placement: an open eye means visible,
+  and a slashed eye means hidden. Drag grips stay in the headers at fixed
+  positions: row grips stay beside row numbers, and column grips stay above the
+  letters. Column grouping buttons sit beside the letters, never in a band below
+  them. Gutters and rendered columns widen as needed to prevent overlap; headers
+  return to their compact profile when controls are absent. Saved column widths
+  and cell contents stay unchanged.
+  Inserting rows/columns between a group's first and last current members
+  automatically adds them to every enclosing summary/plain group, including
+  nested groups. Insertions immediately before or after a group stay outside it.
+  Summary anchors, collapse states and existing formula identities are preserved.
+  Moving existing rows/columns into a group's interior also adds them to all
+  enclosing groups. Moving outside an old group removes that membership.
+  Moving a summary preserves its own group and anchor, without retaining old
+  enclosing memberships when dropped outside them.
+  Rearranging shows a stroke across the full row or column at each visible
+  boundary, including boundaries inside expanded groups. Receiving groups also
+  highlight their first cell. Only collapsed-group destinations hide the stroke.
+  Dropping into a collapsed group appends the moved items without expanding it;
+  nested destinations highlight the innermost collapsed group.
+  Dragging and tap-then-boundary moves use the same membership prediction;
+  Escape cancels moving and clears the cue.
+  The corner hierarchy icon opens row/column
   level toggles, independent plain-range eye controls and **Tree view** brackets.
   One nesting level shows one button per axis without redundant level headings.
   **Plain group hints** default on; the eye controls remain available whether
