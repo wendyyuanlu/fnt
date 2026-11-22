@@ -78,17 +78,38 @@ for(const axis of ['row','column'] as const)test(`toolbar conversion joins all n
 });
 test('Text combines search and replacement and preserves drafts across Rows/Columns',async({page})=>{
   await fixture(page);const dialog=page.getByRole('dialog'),height=(await dialog.boundingBox())!.height;
-  expect(height).toBeGreaterThan(700);await expect(page.locator('#replace-label')).toBeVisible();
+  expect(height).toBeLessThanOrEqual(page.viewportSize()!.height-24);await expect(page.locator('#replace-label')).toBeVisible();
   await expect(page.locator('#find-help')).toHaveCount(0);
   await page.locator('#find-text').fill('Cottage');await expect(page.locator('#find-count')).toHaveText('Results found (5)');
-  expect((await dialog.boundingBox())!.height).toBe(height);
+  const matchedHeight=(await dialog.boundingBox())!.height;expect(matchedHeight).toBeGreaterThanOrEqual(height);
   await page.locator('#replace-text').fill('Fresh');
-  expect((await dialog.boundingBox())!.height).toBe(height);
+  expect((await dialog.boundingBox())!.height).toBe(matchedHeight);
   await page.getByRole('tab',{name:'Rows/Columns',exact:true}).click();await expect(page.locator('#replace-label')).toBeHidden();
   await page.getByRole('tab',{name:'Text',exact:true}).click();await expect(page.locator('#replace-text')).toHaveValue('Fresh');
   await page.keyboard.press('Control+f');await expect(page.locator('#find-text')).toBeFocused();
   await page.locator('#find-text').fill('no matches');await expect(page.locator('#find-count')).toHaveText('Results found (0)');
-  expect((await dialog.boundingBox())!.height).toBe(height);
+  expect((await dialog.boundingBox())!.height).toBeLessThanOrEqual(matchedHeight);
+});
+test('Find grows for results up to 1000px, shrinks for few matches and stays inside smaller viewports',async({page})=>{
+  const width=page.viewportSize()!.width;await page.setViewportSize({width,height:1200});await fixture(page);
+  await page.evaluate(async()=>{
+    const model='/src/model.ts',storage='/src/storage.ts',{setInput}=await import(/* @vite-ignore */model) as typeof import('../../src/model'),{Store}=await import(/* @vite-ignore */storage) as typeof import('../../src/storage'),store=await Store.open();
+    try{const state=(await store.load())!,book=state.book,s=book.sheets.find(s=>s.name==='Notebook')!;for(let r=6;r<30;r++)setInput(book,s,s.rows[r].id,s.columns[1].id,`Sizing match ${String(r).padStart(2,'0')}`);await store.save(book,state.version,'Synthetic dialog results');}finally{store.close();}
+  });
+  await page.reload();await page.getByRole('button',{name:'Notebook',exact:true}).click();await page.keyboard.press('Control+f');
+  const dialog=page.getByRole('dialog'),input=page.locator('#find-text'),results=page.locator('#find-results'),scrolls=()=>results.evaluate(el=>el.scrollHeight>el.clientHeight+1);
+  const compact=(await dialog.boundingBox())!.height;
+  await input.fill('Sizing match');await expect(page.locator('#find-count')).toHaveText('Results found (24)');
+  expect((await dialog.boundingBox())!.height).toBeCloseTo(1000,0);expect(await scrolls()).toBe(true);
+  await input.fill('Sizing match 06');await expect(page.locator('#find-count')).toHaveText('Results found (1)');
+  expect((await dialog.boundingBox())!.height).toBeLessThan(1000);expect(await scrolls()).toBe(false);
+  await input.fill('no matches');await expect(page.locator('#find-count')).toHaveText('Results found (0)');
+  expect((await dialog.boundingBox())!.height).toBeCloseTo(compact,0);
+  await input.fill('Sizing match');await page.setViewportSize({width,height:600});
+  const bounds=(await dialog.boundingBox())!,button=(await page.locator('#replace-all').boundingBox())!;
+  expect(bounds.height).toBeLessThanOrEqual(576);expect(bounds.y).toBeGreaterThanOrEqual(12);
+  expect(bounds.y+bounds.height).toBeLessThanOrEqual(588);expect(button.y+button.height).toBeLessThanOrEqual(bounds.y+bounds.height);
+  expect(await scrolls()).toBe(true);
 });
 test('All scope stays synchronized, and results have sheet subheaders rather than a Sheet column',async({page})=>{
   await fixture(page);await page.locator('#find-text').fill('Cottage');

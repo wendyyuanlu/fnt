@@ -1,5 +1,33 @@
 import {expect,test} from '@playwright/test';
 
+test('dropdown dialogs grow only for their visible sources and keep scrolling at the height cap',async({page})=>{
+  const width=page.viewportSize()!.width;await page.setViewportSize({width,height:1200});
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,book=state.book,t=book.tables.find(t=>t.name==='Ingredients')!;
+      book.references??=[];for(let i=0;i<26;i++)book.references.push({id:`dialog-sizing-source-${i}`,name:`Sizing source ${String(i).padStart(2,'0')}`,kind:'list',table:t.id,column:t.columns[0].id,archivedRows:[]});
+      await store.save(book,state.version,'Synthetic dialog sources');
+    }finally{store.close();}
+  });
+  await page.reload();await page.getByRole('button',{name:'Notebook',exact:true}).click();await page.getByRole('button',{name:'Assign DD',exact:true}).click();await page.getByRole('button',{name:'List view',exact:true}).click();
+  const dialog=page.getByRole('dialog'),search=page.getByRole('searchbox',{name:'Search dropdown sources'}),cards=page.locator('#dropdown-source-cards'),scrolls=()=>cards.evaluate(el=>el.scrollHeight>el.clientHeight+1);
+  expect((await dialog.boundingBox())!.height).toBeCloseTo(1000,0);expect(await scrolls()).toBe(true);
+  await search.fill('Sizing source 0');await expect(cards.locator('label')).toHaveCount(10);
+  const medium=(await dialog.boundingBox())!.height;
+  expect(medium).toBeGreaterThan(480);expect(medium).toBeLessThan(1000);expect(await scrolls()).toBe(false);
+  await search.fill('Sizing source 00');await expect(cards.locator('label')).toHaveCount(1);
+  expect((await dialog.boundingBox())!.height).toBeLessThan(medium);expect(await scrolls()).toBe(false);
+  await search.fill('');await page.setViewportSize({width,height:600});
+  const bounds=(await dialog.boundingBox())!,apply=(await page.getByRole('button',{name:'Apply dropdown',exact:true}).boundingBox())!;
+  expect(bounds.height).toBeLessThanOrEqual(576);expect(bounds.y).toBeGreaterThanOrEqual(12);
+  expect(bounds.y+bounds.height).toBeLessThanOrEqual(588);expect(apply.y+apply.height).toBeLessThanOrEqual(bounds.y+bounds.height);
+  expect(await scrolls()).toBe(true);
+  await page.getByRole('button',{name:'Close dialog',exact:true}).click();await page.getByRole('button',{name:'Browse values',exact:true}).click();
+  expect((await page.getByRole('dialog').boundingBox())!.height).toBeLessThan(400);
+});
+
 test('group controls stay centered in the corner as the outline gutter changes',async({page})=>{
   await page.goto('/');
   await page.locator('[data-row-select="1"] .row-index').click();await page.locator('[data-row-select="3"] .row-index').click({modifiers:['Shift']});await page.keyboard.press('Control+g');
@@ -260,7 +288,7 @@ test('Assign DD shows assigned state for manual values and follows selection, re
 test('multiple dropdown sources persist for cells and columns and grid previews stop at four options',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();
   const cell=page.locator('td[data-r="2"][data-c="2"]');await cell.click();await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'Grid view',exact:true}).click();
-  const dialog=page.getByRole('dialog'),height=await dialog.evaluate(el=>el.getBoundingClientRect().height);await expect(dialog).not.toContainText('row(s)');await page.getByRole('button',{name:'List view',exact:true}).click();expect(await dialog.evaluate(el=>el.getBoundingClientRect().height)).toBe(height);await page.getByRole('button',{name:'Grid view',exact:true}).click();expect(await dialog.evaluate(el=>el.getBoundingClientRect().height)).toBe(height);
+  const dialog=page.getByRole('dialog'),height=await dialog.evaluate(el=>el.getBoundingClientRect().height);await expect(dialog).not.toContainText('row(s)');await page.getByRole('button',{name:'List view',exact:true}).click();expect(await dialog.evaluate(el=>el.getBoundingClientRect().height)).toBeLessThanOrEqual(height);await page.getByRole('button',{name:'Grid view',exact:true}).click();expect(await dialog.evaluate(el=>el.getBoundingClientRect().height)).toBe(height);
   const category=page.locator('.dropdown-source-card').filter({has:page.getByRole('checkbox',{name:'Snack / Category',exact:true})});
   await expect(page.getByRole('checkbox',{name:/Ingredients.*(?:Sodium|Calories)/})).toHaveCount(0);
   await expect(page.getByRole('checkbox',{name:'Ingredients',exact:true})).toHaveCount(1);await expect(page.locator('.dropdown-source-card')).toHaveCount(8);

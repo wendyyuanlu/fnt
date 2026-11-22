@@ -46,6 +46,9 @@ automatically bundled or published.
 
 ## Use
 
+- Dialogs fit their contents and grow only as needed, up to 1000px or the
+  available screen height. Dropdown lists and search results use that room
+  before scrolling; short dialogs remain compact.
 - Select a cell and type, or edit in the formula bar. Both editors show the same
   live draft, committed once by Enter/Apply or selecting another cell. Escape
   cancels the draft; formulas display their results after commit. Enter/F2 starts
@@ -247,8 +250,8 @@ automatically bundled or published.
   Select multiple sources to combine their options without merging duplicate
   record identities. **Grid view** provides checkbox cards with at most four
   preview options per source; previews do not limit the actual dropdown.
-  Assignment opens in Grid view by default. Grid/List use the same compact
-  dialog height, reduced only when required by the viewport.
+  Assignment opens in Grid view by default. Grid/List fit the visible sources
+  and shrink when filtering removes sources.
   Source tabs above the searchable options mark the active list with a check.
   A lightweight **manual** action uses a solid green pencil and bold text when
   active. It closes the picker and starts direct cell editing, committed with
@@ -320,7 +323,7 @@ automatically bundled or published.
   exclude rows from existing calculations**.
 - Tabs can be duplicated, renamed (double-click the active tab or use settings),
   reordered, colored, and deleted. Ctrl/Cmd+F commits the current draft and opens
-  the fixed-height Find and Replace dialog. **Text** combines finding and
+  the content-sized Find and Replace dialog. **Text** combines finding and
   replacement; drafts survive tab switches. **All** selects every search sheet.
   **Rows/Columns** scans the workbook for sheet-only rows/columns inside table
   spans. Select results and **Convert to table** to join the indicated existing

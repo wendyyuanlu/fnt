@@ -368,4 +368,9 @@ test('popover is content-sized, single levels omit duplicate controls and icons 
     await panel.getByRole('button',{name:'Close group manager',exact:true}).click();await expect(panel).toHaveCount(0);await expect(page.locator('.group-located')).toHaveCount(0);
     await expect(page.locator('#save-state')).toContainText(/^Saved/);
     expect((await snapshot(page)).sheets.map(s=>s.cells)).toEqual(before.sheets.map(s=>s.cells));
+    await menu(page);await page.getByRole('button',{name:'Manage groups',exact:true}).click();
+    const remove=panel.getByRole('button',{name:'Ungroup',exact:true});
+    for(let i=0,count=await remove.count();i<count;i++)await remove.first().click();
+    await expect(remove).toHaveCount(0);
+    expect((await panel.boundingBox())!.height).toBeLessThan(400);
   });
