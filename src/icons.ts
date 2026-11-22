@@ -5,7 +5,7 @@ export const toolbarIconPaths={
   redo:'M15 5l5 5-5 5M20 10h-9a7 7 0 0 0-7 7v2',
   close:'M6 6l12 12M18 6 6 18',
   'convert-table':'M3 2h18v9H3ZM3 6.5h18M9 2v9M3 19h18v4H3ZM9 19v4M12 17v-4m-3 3 3-3 3 3',
-  'dropdown-source':'M2 2h20v7H2ZM16 2v7M5 5.5h8M17.5 4.5l1.5 2 1.5-2M4 9v13h16V9M4 15.5h16M7 12h9M7 19h9',
+  'dropdown-source':'M5 2h14q2 0 2 2v3q0 2-2 2H5q-2 0-2-2V4q0-2 2-2ZM6 14h12M6 19h12',
   'toolbar-layout':'M3 3h18v6H3ZM8 3v6M13 3v6M18 3v6M12 18l8-8 3 3-8 8-4 1 1-4ZM18 12l3 3',
   bold:'M7 5h5a3.5 3.5 0 0 1 0 7H7m5 0h1a3.5 3.5 0 0 1 0 7H7V5',
   italic:'M10 5h8M6 19h8M15 5l-6 14',
@@ -29,5 +29,5 @@ export const toolbarIconPaths={
 };
 export function toolbarIcon(name:keyof typeof toolbarIconPaths,color?:string):string{
   const safeColor=color?.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
-  return `<svg class="toolbar-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">${name==='hypothetical'?`<path class="stamp-frame" vector-effect="non-scaling-stroke" d="${stampFrame}" fill="var(--stamp-fill,none)" stroke="var(--stamp-frame-color,currentColor)"/>`:''}<path vector-effect="non-scaling-stroke" d="${toolbarIconPaths[name]}"/>${name==='hypothetical-settings'?'<rect vector-effect="non-scaling-stroke" x="3" y="3" width="18" height="18" rx="1.5" stroke-dasharray="2 2"/>':''}${safeColor?`<path vector-effect="non-scaling-stroke" d="M4 22h16" stroke="${safeColor}"/>`:''}</svg>`;
+  return `<svg class="toolbar-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">${name==='hypothetical'?`<path class="stamp-frame" vector-effect="non-scaling-stroke" d="${stampFrame}" fill="var(--stamp-fill,none)" stroke="var(--stamp-frame-color,currentColor)"/>`:''}<path vector-effect="non-scaling-stroke" d="${toolbarIconPaths[name]}"/>${name==='dropdown-source'?'<path vector-effect="non-scaling-stroke" d="M15 4h4l-2 2Z" fill="currentColor"/>':''}${name==='hypothetical-settings'?'<rect vector-effect="non-scaling-stroke" x="3" y="3" width="18" height="18" rx="1.5" stroke-dasharray="2 2"/>':''}${safeColor?`<path vector-effect="non-scaling-stroke" d="M4 22h16" stroke="${safeColor}"/>`:''}</svg>`;
 }
