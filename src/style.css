@@ -356,6 +356,7 @@
 .find-dialog .dialog-heading{flex-shrink:0;margin-bottom:12px}.find-dialog h2{font-family:inherit;font-size:20px;font-weight:600;color:var(--green)}
 .find-tabs{display:flex;flex-shrink:0;gap:24px;border-bottom:1px solid #dedede;margin-bottom:12px}.find-tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;padding:8px 1px;font-size:13px}.find-tabs button[aria-selected=true]{border-bottom-color:var(--green);font-weight:600}
 .dropdown-field{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:10px;border:1px solid #cdd8c2;border-radius:5px;text-align:left}.dropdown-field>span{min-width:0;overflow:hidden;text-overflow:ellipsis}.dropdown-field>svg{flex-shrink:0}
+.dropdown-field:is(:focus,[aria-expanded=true]),.find-dialog #find-text:focus{background:#edf1e8;border-color:#789583}
 .find-controls{flex:0 1 auto;min-height:0;overflow:auto}.find-dialog label:not(.inline){margin:8px 0}
 .find-options summary{cursor:pointer;font-size:13px;padding:5px 0}.find-selectors{display:grid;grid-template-columns:1fr 1fr;gap:20px}.find-flags{display:flex;gap:8px 20px;flex-wrap:wrap}.find-scope{padding:5px 8px;margin:8px 0;font-size:11px}.find-scope legend{padding:0 4px}
 .find-results-panel{flex:1 0 130px;min-height:130px;display:flex;flex-direction:column;overflow:hidden}.find-dialog #find-count{margin:12px 0 8px;font-size:13px;line-height:1.3;flex-shrink:0}.find-results-scroll{flex:1;min-height:0;overflow:auto;scrollbar-width:thin;border:1px solid #ddd}

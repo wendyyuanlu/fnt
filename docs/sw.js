@@ -1,6 +1,6 @@
 
-const CACHE='fnt-shell-'+"assets/index-B2tPnZWr.js|assets/index-Ew0LtguH.css|assets/ingredients-import-BA2WLAF-.js|assets/references-import-BB5QkkxW.js|assets/xlsx-BGTTrGT4.js|assets/xlsx-export-CLXCG_Z5.js|assets/xlsx-native-DodHLjCf.js";
-const FILES=["./","./index.html","./icon.svg","./manifest.webmanifest","./testing-workbook.json","./assets/index-Ew0LtguH.css","./assets/index-B2tPnZWr.js","./assets/xlsx-BGTTrGT4.js","./assets/references-import-BB5QkkxW.js","./assets/xlsx-export-CLXCG_Z5.js","./assets/xlsx-native-DodHLjCf.js","./assets/ingredients-import-BA2WLAF-.js"];
+const CACHE='fnt-shell-'+"assets/index-D7SXwd6u.js|assets/index-DrjZeRni.css|assets/ingredients-import-DbXhi9d8.js|assets/references-import-BuBt6LOX.js|assets/xlsx-CTU7xwVa.js|assets/xlsx-export-B-TRdO4T.js|assets/xlsx-native-DZQYpHd5.js";
+const FILES=["./","./index.html","./icon.svg","./manifest.webmanifest","./testing-workbook.json","./assets/index-DrjZeRni.css","./assets/index-D7SXwd6u.js","./assets/xlsx-CTU7xwVa.js","./assets/references-import-BuBt6LOX.js","./assets/xlsx-export-B-TRdO4T.js","./assets/xlsx-native-DZQYpHd5.js","./assets/ingredients-import-DbXhi9d8.js"];
 const loaded=new Map();
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(FILES)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(self.clients.claim().then(()=>self.clients.matchAll()).then(clients=>{for(const client of clients)client.postMessage({type:'fnt-update-ready',files:FILES});})));

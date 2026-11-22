@@ -68,6 +68,7 @@ test('Ctrl+F commits an in-cell draft before opening the search dialog',async({p
 });
 test('Find reuses the existing dialog field and button styles without overflowing the viewport',async({page})=>{
   await fixture(page);
+  await page.locator('#find-text').evaluate(el=>(el as HTMLInputElement).blur());
   const style=async(selector:string)=>page.locator(selector).evaluate(el=>{
     const css=getComputedStyle(el);return {radius:css.borderRadius,border:css.borderColor,padding:css.padding,font:css.fontFamily,size:css.fontSize};
   });
@@ -81,6 +82,15 @@ test('Find reuses the existing dialog field and button styles without overflowin
   expect(button!.x+button!.width).toBeLessThanOrEqual(bounds!.x+bounds!.width);
   expect(button!.y+button!.height).toBeLessThanOrEqual(bounds!.y+bounds!.height);
   await expect(page.locator('#find-all-sheets')).toBeInViewport();
+});
+test('Focused Find input shares the dropdown active treatment without changing layout',async({page})=>{
+  await fixture(page);
+  const input=page.locator('#find-text'),dialog=page.getByRole('dialog'),height=(await dialog.boundingBox())!.height;
+  const colors=async(selector:string)=>page.locator(selector).evaluate(el=>{const css=getComputedStyle(el);return {background:css.backgroundColor,border:css.borderColor};});
+  await expect(input).toBeFocused();const active=await colors('#find-text');
+  await page.getByRole('combobox',{name:'Within',exact:true}).focus();expect(await colors('#find-within-trigger')).toEqual(active);
+  expect(await colors('#find-text')).not.toEqual(active);
+  await input.click();expect(await colors('#find-text')).toEqual(active);expect((await dialog.boundingBox())!.height).toBe(height);
 });
 test('Find dropdowns reuse spreadsheet popup options, synchronize scope and support keyboard dismissal',async({page})=>{
   await fixture(page);
