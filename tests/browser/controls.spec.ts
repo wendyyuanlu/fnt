@@ -66,14 +66,14 @@ test('toolbar tools rearrange with mouse or touch, preserve actions and survive 
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('#save-state')).toContainText(/^Saved/);
   await page.reload();await expect(first()).toHaveAttribute('data-toolbar-tool','action:bold');
   expect((await snapshot()).sheets).toEqual(before.sheets);
-  await page.locator('.reference-manager').click();await expect(page.getByRole('button',{name:'View/hide hypothetical rows/columns'})).toBeVisible();
+  await page.locator('.reference-manager').click();await expect(page.getByRole('button',{name:'View/hide hypo rows/columns'})).toBeVisible();
   await page.getByRole('button',{name:'Arrange toolbar',exact:true}).click();await page.getByRole('button',{name:'Redo',exact:true}).focus();await page.keyboard.press('Alt+ArrowLeft');
   await expect(page.locator('.toolbar [data-toolbar-tool]').nth(1)).toHaveAttribute('data-toolbar-tool','action:redo');
   await expect(page.locator('#save-state')).toContainText(/^Saved/);
   const ddOrder=(await snapshot()).toolbarOrder!;
   expect(ddOrder).toContain('action:quick-add');
   await page.getByRole('button',{name:'Finish arranging toolbar',exact:true}).click();await page.locator('.reference-manager').click();
-  await expect(page.getByRole('button',{name:'View/hide hypothetical rows/columns'})).toBeVisible();expect((await snapshot()).toolbarOrder).toEqual(ddOrder);
+  await expect(page.getByRole('button',{name:'View/hide hypo rows/columns'})).toBeVisible();expect((await snapshot()).toolbarOrder).toEqual(ddOrder);
 });
 test('toolbar scroll stays in place after dragging, keyboard rearrangement and divider edits',async({page})=>{
   await page.setViewportSize({width:500,height:800});await page.goto('/');

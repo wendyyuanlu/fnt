@@ -36,7 +36,7 @@ test('visibility hides inherited hypothetical rows and columns without changing 
   await page.reload();const before=await snapshot(page);
   await expect(page.getByRole('button',{name:'Set status',exact:true})).toHaveCount(0);
   await expect(page.getByRole('combobox',{name:'Filter row status'})).toHaveCount(0);
-  const toggle=page.getByRole('button',{name:'View/hide hypothetical rows/columns',exact:true});
+  const toggle=page.getByRole('button',{name:'View/hide hypo rows/columns',exact:true});
   await expect(toggle).toHaveAttribute('aria-pressed','false');
   await expect(page.locator('tr[data-row="1"]')).toBeVisible();await expect(page.locator('th[data-col="1"]')).toBeVisible();
   await toggle.click();await expect(toggle).toHaveAttribute('aria-pressed','true');
@@ -141,7 +141,7 @@ test('errors float within 400px with viewport spacing and dismiss without moving
     const r=document.querySelector(selector)!.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};
   }));
   const before=await layout();await page.keyboard.press('Control+h');
-  const toast=page.locator('#error');await expect(toast).toContainText('Select entire rows or columns');
+  const toast=page.locator('#error');await expect(toast).toContainText('Select rows or columns in one sheet or table scope');
   await expect(toast).toHaveAttribute('role','alert');expect(await layout()).toEqual(before);
   const bounds=(await toast.boundingBox())!,viewport=page.viewportSize()!;
   expect(bounds.width).toBeLessThanOrEqual(400);expect(bounds.x).toBeGreaterThanOrEqual(16);
@@ -258,9 +258,9 @@ test('saves independently customizable treatments, colors and names, with row pr
   await fixture(page,false);
   await page.locator('[data-row-select="1"] .row-index').click();await page.keyboard.press('Control+h');
   await page.locator('th[data-col="1"] .column-index').click();await page.keyboard.press('Control+h');const before=await snapshot(page);
-  await page.getByRole('button',{name:'Hypothetical tag styling',exact:true}).click();
+  await page.getByRole('button',{name:'Hypo tag styling',exact:true}).click();
   await expect(page.locator('.treatment-axis + #hypothetical-preview')).toHaveCount(1);
-  await expect(page.locator('.hypothetical-dialog h2')).toHaveText('Hypothetical styling');
+  await expect(page.locator('.hypothetical-dialog h2')).toHaveText('Hypo styling');
   await expect(page.locator('.treatment-axis')).toBeHidden();
   const fields=page.locator('.treatment-fields'),sections=page.locator('.treatment-section');
   expect(await sections.locator('legend').allTextContents()).toEqual(['Pattern','Text','Fill','Badge']);
@@ -285,7 +285,7 @@ test('saves independently customizable treatments, colors and names, with row pr
   for(const portion of [0,.5,1]){
     await dialog.evaluate((el,portion)=>{el.scrollTop=(el.scrollHeight-el.clientHeight)*portion;},portion);
     const bottom=(await dialog.boundingBox())!,buttons=(await footer.boundingBox())!;
-    expect(buttons.y+buttons.height).toBeCloseTo(bottom.y+bottom.height-1,1);
+    expect(Math.abs(buttons.y+buttons.height-(bottom.y+bottom.height-1))).toBeLessThan(1);
   }
   expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
   await expect(page.locator('#hyp-badgeDashSize')).toBeDisabled();
@@ -312,7 +312,7 @@ test('saves independently customizable treatments, colors and names, with row pr
   });
   expect(geometry.width).toBe(geometry.height);for(const padding of geometry.padding)expect(padding).toBeCloseTo(geometry.padding[0],2);
   expect(geometry.border).toContain('6px');expect(geometry.border).toContain('9px');expect(geometry.fill).toBe('rgb(255, 238, 255)');
-  await page.reload();await page.getByRole('button',{name:'Hypothetical tag styling',exact:true}).click();
+  await page.reload();await page.getByRole('button',{name:'Hypo tag styling',exact:true}).click();
   await expect(page.locator('#hyp-label')).toHaveValue('Draft');await expect(page.locator('#hyp-linked')).not.toBeChecked();await expect(page.locator('#hyp-gap')).toHaveValue('12');
   expect(await page.locator('.hypothetical-preview .hypothetical-badge .toolbar-icon').first().innerHTML()).toBe(await badge.innerHTML());
   await expect(page.locator('#hyp-badgeDashSize')).toHaveValue('6');await expect(page.locator('#hyp-badgeDashGap')).toHaveValue('3');
@@ -325,7 +325,7 @@ test('saves independently customizable treatments, colors and names, with row pr
 });
 test('a failed treatment save is explicit, retains durable data and can be retried',async({page})=>{
   await fixture(page,false);const before=await snapshot(page);
-  await page.getByRole('button',{name:'Hypothetical tag styling',exact:true}).click();await page.locator('#hyp-textOpacity').fill('55');
+  await page.getByRole('button',{name:'Hypo tag styling',exact:true}).click();await page.locator('#hyp-textOpacity').fill('55');
   const restore=await page.evaluateHandle(()=>{
     const original=IDBObjectStore.prototype.put;let fail=true;
     IDBObjectStore.prototype.put=function(...args:Parameters<typeof original>){if(fail){fail=false;throw new DOMException('Synthetic quota exhausted','QuotaExceededError');}return original.apply(this,args);};

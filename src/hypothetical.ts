@@ -7,7 +7,8 @@ export function defaultHypotheticalTreatment():HypotheticalTreatment{
     badgeColor:'#785a30',badgeBackground:'#fff7e6',badgeBorder:'#98764e',badgeBorderStyle:'solid',badgeDashSize:3,badgeDashGap:2};
 }
 export function getHypotheticalStyle(book:Pick<Workbook,'hypotheticalStyle'>):HypotheticalStyle{
-  return book.hypotheticalStyle??{label:'Hypothetical',linked:true,rows:defaultHypotheticalTreatment(),columns:defaultHypotheticalTreatment()};
+  const style=book.hypotheticalStyle??{label:'Hypo',linked:true,rows:defaultHypotheticalTreatment(),columns:defaultHypotheticalTreatment()};
+  return style.label==='Hypothetical'?{...style,label:'Hypo'}:style;
 }
 const record=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value);
 export function validateHypotheticalStyle(value:unknown):asserts value is HypotheticalStyle{

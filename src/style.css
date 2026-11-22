@@ -4,6 +4,16 @@
 @media(max-width:720px){.app-header{padding:15px;gap:15px;flex-wrap:wrap}.brand{font-size:37px}.workbook-heading{min-width:180px}.workbook-heading button{font-size:13px}.eyebrow{font-size:8px;letter-spacing:1px}.save-area{width:100%;justify-content:flex-end;gap:8px}.save-state{margin-right:auto;max-width:none;font-size:10px}.save-area button{padding:7px 10px;font-size:11px}.notice{padding:9px 15px;gap:8px;font-size:10px}.notice-mark{font-size:8px;padding:3px 4px}.notice button{font-size:9px;max-width:95px;white-space:normal}.sheet-heading{padding:20px 15px 17px;gap:8px}h1{font-size:28px}.sheet-actions{gap:5px}.sheet-actions button{font-size:10px;padding:8px}.toolbar{margin:0 10px;flex-wrap:nowrap;overflow-x:auto;padding:7px 5px;scrollbar-width:thin}.tool-set{flex-shrink:0}.toolbar button{padding:9px 7px}.formula-bar{margin:0 10px;gap:5px;padding:6px}.address{min-width:36px;padding-right:6px}.formula-bar input{font-size:12px;padding:7px 3px}.formula-bar button{padding:7px 5px;font-size:10px}.grid-shell{margin:0 10px}.grid-scroll{height:calc(100dvh - 393px);min-height:235px}.grid td{height:36px}.grid-footer{margin:0 10px;padding:6px;gap:3px}.navigator{gap:1px}.navigator button{padding:6px}.navigator input{width:45px}.selection-count{margin-right:3px;font-size:9px}.desktop{display:none}.tabs{margin:10px 10px 0;gap:3px}.sheet-tab{padding:10px 12px;font-size:11px}.bottom-caption{margin:10px 15px;font-size:7px}.bottom-caption span:last-child{font-size:11px}dialog{padding:18px}.error{margin:8px 10px 0;font-size:11px}button{min-height:30px}}
 dialog{height:fit-content;max-height:var(--dialog-max-height)}
 dialog .picker-results{max-height:none}
+#table-selection-target{max-width:175px;min-height:28px;padding:4px;border:1px solid var(--line);border-radius:4px}
+#table-selection-target[hidden]{display:none}
+#selection-scope-label{margin-right:6px}
+.grid[data-table-selection="true"] th[data-col],.grid[data-table-selection="true"] th[data-col] .column-index{cursor:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M8 2h8v11h5l-9 9-9-9h5z' fill='%23335544' stroke='white'/%3E%3C/svg%3E") 12 20,pointer}
+.grid[data-table-selection="true"] th[data-row-select],.grid[data-table-selection="true"] th[data-row-select] .row-index{cursor:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M2 8v8h11v5l9-9-9-9v5z' fill='%23335544' stroke='white'/%3E%3C/svg%3E") 20 12,pointer}
+.table-group-controls{position:absolute;left:6px;top:0;height:100%;display:flex;align-items:center;gap:2px;z-index:2}
+.table-group-controls .group-control{position:relative;flex-shrink:0}
+.grid td.scoped-hidden{cursor:default}
+.grid td.scoped-hidden .cell-display,.grid td.scoped-hidden .note-dot,.grid td.scoped-hidden .fill-handle{visibility:hidden}
+.grid td.scoped-hidden:after{display:none}
 #app{height:100dvh;display:flex;flex-direction:column;overflow:hidden}
 .app-header{padding:6px 10px;gap:10px;flex-wrap:nowrap;flex-shrink:0}
 .workbook-heading{min-width:0;overflow:hidden}

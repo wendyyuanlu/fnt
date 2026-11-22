@@ -164,8 +164,10 @@ export async function importXlsx(buffer:ArrayBuffer,name:string,options?:{sheets
       if(!sqref)continue;
       if(!formulaText&&(!attr(validation,'type')||attr(validation,'type')==='none'))continue;
       for(const item of sqref.trim().split(/\s+/)){
-        const b=range(item);if(b.r2>=s.rows.length||b.c2>=s.columns.length){report.entries.push('Validation outside materialized sheet bounds retained in original package only.');continue;}
-        s.validations.push({id:uid(),rows:s.rows.slice(b.r1,b.r2+1).map(r=>r.id),columns:s.columns.slice(b.c1,b.c2+1).map(c=>c.id),sheet:s.id,source:formulaText.startsWith('=')?formulaText:'='+formulaText,
+        const b=range(item),lastRow=Math.min(b.r2,s.rows.length-1),lastColumn=Math.min(b.c2,s.columns.length-1);
+        if(b.r1>lastRow||b.c1>lastColumn){report.entries.push('Validation outside materialized sheet bounds retained in original package only.');continue;}
+        if(lastRow!==b.r2||lastColumn!==b.c2)report.entries.push('Validation extending beyond materialized sheet bounds applies to all imported cells in its range; the complete extent remains in the original package.');
+        s.validations.push({id:uid(),rows:s.rows.slice(b.r1,lastRow+1).map(r=>r.id),columns:s.columns.slice(b.c1,lastColumn+1).map(c=>c.id),sheet:s.id,source:formulaText.startsWith('=')?formulaText:'='+formulaText,
           ...(formulaText.startsWith('"')&&formulaText.endsWith('"')?{values:formulaText.slice(1,-1).split(',')}:{})});
       }
     }

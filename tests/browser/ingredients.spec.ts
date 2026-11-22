@@ -10,8 +10,8 @@ function sourceFile():Buffer {
     '_rels/.rels':`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="r1" Type="${r}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
     'xl/workbook.xml':`<workbook xmlns="${ns}" xmlns:r="${r}"><sheets><sheet name="Ingredients" sheetId="1" r:id="r1"/><sheet name="Dropdowns" sheetId="2" r:id="r2"/></sheets></workbook>`,
     'xl/_rels/workbook.xml.rels':`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="r1" Type="${r}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="r2" Type="${r}/worksheet" Target="worksheets/sheet2.xml"/></Relationships>`,
-    'xl/worksheets/sheet1.xml':`<worksheet xmlns="${ns}" xmlns:r="${r}"><sheetData><row r="1">${columns.map((c,i)=>text(String.fromCharCode(65+i)+'1',c)).join('')}</row><row r="2">${text('A2','Invented shelf item')}<c r="B2"><v>100</v></c><c r="C2"><v>250</v></c><c r="D2"><f>[@[Calories (kcal)]]/[@[Serving (g)]]</f></c><c r="E2"><v>12</v></c>${text('F2','g')}${text('G2','Invented type')}</row></sheetData><dataValidations count="1"><dataValidation type="list" sqref="G2"><formula1>INDIRECT("IngredientType[Ingredient type]")</formula1></dataValidation></dataValidations><tableParts count="1"><tablePart r:id="rt"/></tableParts></worksheet>`,
-    'xl/worksheets/sheet2.xml':`<worksheet xmlns="${ns}" xmlns:r="${r}"><sheetData><row r="1">${text('A1','Ingredient type')}</row><row r="2">${text('A2','Invented type')}</row></sheetData><tableParts count="1"><tablePart r:id="rt"/></tableParts></worksheet>`,
+    'xl/worksheets/sheet1.xml':`<worksheet xmlns="${ns}" xmlns:r="${r}"><sheetData><row r="1">${columns.map((c,i)=>text(String.fromCharCode(65+i)+'1',c)).join('')}</row><row r="2">${text('A2','Invented shelf item')}<c r="B2"><v>100</v></c><c r="C2"><v>250</v></c><c r="D2"><f>[@[Calories (kcal)]]/[@[Serving (g)]]</f></c><c r="E2"><v>12</v></c>${text('F2','g')}${text('G2','Seasoning')}</row></sheetData><dataValidations count="1"><dataValidation type="list" sqref="G2:G1048576"><formula1>INDIRECT("IngredientType[Ingredient type]")</formula1></dataValidation></dataValidations><tableParts count="1"><tablePart r:id="rt"/></tableParts></worksheet>`,
+    'xl/worksheets/sheet2.xml':`<worksheet xmlns="${ns}" xmlns:r="${r}"><sheetData><row r="1">${text('A1','Ingredient type')}</row><row r="2">${text('A2','Seasoning')}</row></sheetData><tableParts count="1"><tablePart r:id="rt"/></tableParts></worksheet>`,
     'xl/worksheets/_rels/sheet1.xml.rels':`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rt" Type="${r}/table" Target="../tables/table1.xml"/></Relationships>`,
     'xl/worksheets/_rels/sheet2.xml.rels':`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rt" Type="${r}/table" Target="../tables/table2.xml"/></Relationships>`,
     'xl/tables/table1.xml':`<table xmlns="${ns}" id="1" name="Ingredients" displayName="Ingredients" ref="A1:G2" totalsRowShown="0"><tableColumns count="7">${columns.map((name,i)=>`<tableColumn id="${i+1}" name="${name}"/>`).join('')}</tableColumns></table>`,
@@ -59,4 +59,34 @@ test('targeted Excel import keeps existing data, identifies browser-local state,
   }finally{await separate.close();}
   await page.locator('#import-ingredients').setInputFiles({name:'invented-ingredients.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer});
   await expect(page.locator('#error')).toContainText('avoid duplicate records');
+  await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+  await page.getByRole('button',{name:'Dismiss error',exact:true}).click();
+  await page.getByRole('button',{name:'Ingredients',exact:true}).click();
+  await page.getByRole('button',{name:'Ingredients',exact:true}).click({button:'right'});
+  await page.getByRole('menuitem',{name:'Delete',exact:true}).click();
+  await page.getByRole('dialog').getByRole('button',{name:'Confirm',exact:true}).click();
+  await expect(page.locator('#save-state')).toContainText('Saved');
+  await expect(page.getByRole('button',{name:'Ingredients',exact:true})).toHaveCount(0);
+  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  await page.locator('#import-ingredients').setInputFiles({name:'invented-ingredients.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer});
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.sheet-tab.current')).toHaveText('Ingredients');
+  await expect(page.locator('td[data-r="1"][data-c="6"]')).toHaveText('Seasoning');
+  await expect(page.locator('td[data-r="1"][data-c="6"]')).toHaveClass(/linked/);
+  const linked=await page.evaluate(async()=>{
+    const storage='/src/storage.ts',{Store}=await import(/* @vite-ignore */storage) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,table=state.book.tables.find(t=>t.name==='Ingredients')!,sheet=state.book.sheets.find(s=>s.id===table.sheet)!;
+      const field=table.columns.find(c=>c.name==='Type')!,binding=sheet.cells[`${table.rows[0]}:${field.column}`].binding!;
+      const source=state.book.references!.find(r=>r.table===binding.table&&r.column===binding.column)!;
+      const refs='/src/references.ts',{renameReferenceValue}=await import(/* @vite-ignore */refs) as typeof import('../../src/references');
+      renameReferenceValue(state.book,source,binding.row,'Renamed seasoning');
+      await store.save(state.book,state.version,'Rename linked synthetic DD option');
+      return {rows:table.rows.length,originals:await store.originalCount(),binding};
+    }finally{store.close();}
+  });
+  expect(linked.rows).toBe(1);expect(linked.originals).toBe(1);
+  await page.reload();
+  await expect(page.locator('td[data-r="1"][data-c="6"]')).toHaveText('Renamed seasoning');
+  await expect(page.locator('td[data-r="1"][data-c="3"]')).toHaveText('2.5');
 });

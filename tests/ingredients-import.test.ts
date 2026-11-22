@@ -24,6 +24,15 @@ function fixture():Workbook {
   return book;
 }
 describe('targeted Ingredients import',()=>{
+  it('preserves an all-blank literal validation instead of generating an empty VSTACK source',()=>{
+    const current=seedDropdownCatalog(createDemo()).book,source=fixture(),root=source.tables[0],origin=source.sheets[0];
+    const validation=origin.validations[0];validation.values=['Whole'];validation.source='literal';
+    root.rows.forEach(row=>origin.cells[key(row,root.columns[6].column)].value=null);
+    const result=mergeIngredients(current,source),table=result.book.tables.find(t=>t.name==='Ingredients')!,sheet=result.book.sheets.find(s=>s.id===table.sheet)!;
+    expect(result.linkedDropdownCells).toBe(0);
+    expect(sheet.validations.find(v=>v.values)?.values).toEqual(['Whole']);
+    expect(sheet.validations.some(v=>v.source.includes('"args":[]'))).toBe(false);
+  });
   it('connects verified original validation to the bundled catalog without replacing edited options or identities',()=>{
     const source=fixture(),old=source.sheets.find(s=>s.name==='Dropdowns')!,dropdowns=blankSheet('Dropdowns',60,4);
     dropdowns.id=old.id;source.sheets[source.sheets.indexOf(old)]=dropdowns;
@@ -37,12 +46,71 @@ describe('targeted Ingredients import',()=>{
     }
     const current=seedDropdownCatalog(createDemo()).book,catalog=current.references![0],choice=referenceChoices(current,catalog)[0];
     renameReferenceValue(current,catalog,choice.row,'Edited category');catalog.archivedRows.push(choice.row);
+    const root=source.tables[0],origin=source.sheets.find(s=>s.id===root.sheet)!;
+    root.rows.forEach(row=>origin.cells[key(row,root.columns[6].column)].value='Whole');
     const merged=mergeIngredients(current,source),ingredients=merged.book.tables.find(t=>t.name==='Ingredients')!,sheet=merged.book.sheets.find(s=>s.id===ingredients.sheet)!;
     expect(merged.book.tables.filter(t=>t.name==='IngredientType')).toHaveLength(1);
     const validation=sheet.validations.find(v=>v.originalSource?.includes('IngredientType'))!;
     expect(validation.source).toContain(catalog.table!);
     expect(merged.book.references![0].archivedRows).toEqual([choice.row]);
     expect(referenceChoices(merged.book,merged.book.references![0],true)[0].value).toBe('Edited category');
+    expect(merged.linkedDropdownCells).toBe(2);
+  });
+  it('recreates deleted Ingredients and links records to renamed website DDs, retaining metadata and other sheets',()=>{
+    const current=seedDropdownCatalog(createDemo()).book,removed=current.tables.find(t=>t.name==='Ingredients')!;
+    current.tables=current.tables.filter(t=>t.id!==removed.id);current.sheets=current.sheets.filter(s=>s.id!==removed.sheet);
+    const catalog=current.references![0],backing=current.tables.find(t=>t.id===catalog.table)!;
+    backing.name='Renamed classifications';backing.columns[0].name='Renamed label';catalog.name='My classifications';
+    const source=fixture(),root=source.tables[0],origin=source.sheets.find(s=>s.id===root.sheet)!;
+    root.rows.forEach(row=>origin.cells[key(row,root.columns[6].column)].value='Whole');
+    const original=origin.cells[key(root.rows[0],root.columns[6].column)];
+    original.format={italic:true,wrap:false};original.note='Keep the note';original.link='https://example.invalid/source';
+    original.calculation=compile('=1+2',source,origin.id,root.rows[0],root.columns[6].column);
+    const before=JSON.stringify(current),sourceBefore=JSON.stringify(source),others=JSON.stringify(current.sheets);
+    const result=mergeIngredients(current,source),table=result.book.tables.find(t=>t.name==='Ingredients')!;
+    const sheet=result.book.sheets.find(s=>s.id===table.sheet)!,column=table.columns.find(c=>c.name==='Type')!;
+    const cell=sheet.cells[key(table.rows[0],column.column)],choice=referenceChoices(current,catalog).find(c=>c.value==='Whole')!;
+    expect(table.id).not.toBe(removed.id);expect(result.retainedRows).toBe(0);
+    expect(result.dependencyTables).toBe(0);expect(result.linkedDropdownCells).toBe(2);
+    expect(cell.binding).toEqual(choice.binding);expect(cell.value).toBeUndefined();
+    expect(cell.format).toEqual(original.format);expect(cell.note).toBe(original.note);expect(cell.link).toBe(original.link);expect(cell.calculation).toEqual(original.calculation);
+    expect(JSON.stringify(result.book.sheets.filter(s=>s.id!==sheet.id))).toBe(others);
+    expect(JSON.stringify(current)).toBe(before);expect(JSON.stringify(source)).toBe(sourceBefore);
+    renameReferenceValue(result.book,result.book.references![0],choice.row,'Updated classification');
+    const restored=JSON.parse(JSON.stringify(result.book)) as Workbook;
+    expect(new Engine(restored).cell(sheet.id,table.rows[0],column.column)).toBe('Updated classification');
+    expect(new Engine(restored).cell(sheet.id,table.rows[0],table.columns.find(c=>c.name==='Calories2')!.column)).toBe(2);
+  });
+  it('preserves validated formulas and distinguishes a meaningful space from a blank input',()=>{
+    const current=seedDropdownCatalog(createDemo()).book,source=fixture(),root=source.tables[0],origin=source.sheets.find(s=>s.id===root.sheet)!;
+    setInput(source,origin,root.rows[0],root.columns[6].column,'="Whole"');
+    origin.cells[key(root.rows[1],root.columns[6].column)].value=' ';
+    const result=mergeIngredients(current,source),table=result.book.tables.find(t=>t.name==='Ingredients')!,sheet=result.book.sheets.find(s=>s.id===table.sheet)!;
+    const column=table.columns.find(c=>c.name==='Type')!;
+    expect(result.preservedFormulaCells).toBe(1);expect(result.linkedDropdownCells).toBe(1);
+    expect(sheet.cells[key(table.rows[0],column.column)].formula).toBeDefined();
+    expect(sheet.cells[key(table.rows[0],column.column)].binding).toBeUndefined();
+    const snack=result.book.references!.find(r=>r.catalog?.table==='Table14')!;
+    expect(sheet.cells[key(table.rows[1],column.column)].binding).toEqual(referenceChoices(result.book,snack).find(c=>c.value===' ')!.binding);
+    origin.cells[key(root.rows[1],root.columns[6].column)].value=null;
+    const empty=mergeIngredients(current,source);
+    expect(empty.linkedDropdownCells).toBe(0);expect(empty.preservedFormulaCells).toBe(1);
+  });
+  it('refuses unmatched, archived and ambiguous DD values atomically',()=>{
+    for(const kind of ['unmatched','archived','duplicate'] as const){
+      const current=seedDropdownCatalog(createDemo()).book,source=fixture(),root=source.tables[0],origin=source.sheets.find(s=>s.id===root.sheet)!;
+      root.rows.forEach(row=>origin.cells[key(row,root.columns[6].column)].value='Whole');
+      const catalog=current.references![0],choice=referenceChoices(current,catalog).find(c=>c.value==='Whole')!;
+      if(kind==='unmatched')origin.cells[key(root.rows[0],root.columns[6].column)].value='Not in any website DD';
+      if(kind==='archived')catalog.archivedRows.push(choice.row);
+      if(kind==='duplicate'){
+        const backing=current.tables.find(t=>t.id===catalog.table)!,sheet=current.sheets.find(s=>s.id===backing.sheet)!;
+        const other=backing.rows.find(row=>row!==choice.row)!;sheet.cells[key(other,backing.columns[0].column)].value='Whole';
+      }
+      const before=JSON.stringify(current);
+      expect(()=>mergeIngredients(current,source)).toThrow(kind==='duplicate'?'ambiguous DD value':'unmatched DD value');
+      expect(JSON.stringify(current)).toBe(before);
+    }
   });
   it('preserves current identities, records, freeform edits and other sheets while remapping source formulas and dropdowns',()=>{
     const current=createDemo(),source=fixture(),sourceBefore=JSON.stringify(source);

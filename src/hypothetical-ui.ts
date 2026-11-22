@@ -15,7 +15,7 @@ export function openHypotheticalSettings(host:{
     ['textOpacity','Text opacity (%)',0,100,1],['fillOpacity','Fill opacity (%)',0,100,1],
     ['badgeDashSize','Dash size (px)',.5,12,.5],['badgeDashGap','Dash gap (px)',.5,12,.5]
   ] as const;
-  host.dialog('Hypothetical styling',`<form id="hypothetical-form">
+  host.dialog('Hypo styling',`<form id="hypothetical-form">
     <label class="inline"><input type="checkbox" id="hyp-linked">Use the same treatment for rows and columns</label>
     <div class="button-row treatment-axis"><button type="button" data-treatment-axis="rows">Rows</button><button type="button" data-treatment-axis="columns">Columns</button></div>
     <div id="hypothetical-preview" class="hypothetical-preview" aria-label="Treatment preview"></div>
@@ -43,7 +43,7 @@ export function openHypotheticalSettings(host:{
         </div>
       </fieldset>
     </div>
-    <label class="treatment-name">Display name<input id="hyp-label" required maxlength="40" placeholder="Hypothetical, Planned or Draft"></label>
+    <label class="treatment-name">Display name<input id="hyp-label" required maxlength="40" placeholder="Hypo, Planned or Draft"></label>
     <p class="treatment-error error" role="alert" hidden></p>
     <div class="button-row treatment-footer"><button class="primary" type="submit">Save</button><button id="hyp-cancel" type="button">Cancel</button></div>
   </form>`,d=>{
@@ -66,7 +66,7 @@ export function openHypotheticalSettings(host:{
       const classes=`hypothetical-cell${t.fillOpacity>0?' has-hyp-fill':''}${t.textColor?' custom-hyp-text':''}`;
       field<HTMLDivElement>('hypothetical-preview').innerHTML=`<table><tbody><tr><td><span class="cell-value">Ordinary example</span></td><td><span class="cell-value">120</span></td></tr>${['','selected'].map(state=>`<tr><td class="${classes} ${state}" style="${hypotheticalCss(t)}">${badge}<span class="cell-value" style="${hypotheticalTextCss(t)}"></span></td><td class="${classes} ${state}" style="${hypotheticalCss(t)}"><span class="cell-value" style="${hypotheticalTextCss(t)}">120</span></td></tr>`).join('')}</tbody></table>`;
       const cells=d.querySelectorAll<HTMLElement>('.hypothetical-preview td:first-child .cell-value');
-      cells.forEach((cell,index)=>{if(index)cell.textContent=(draft.label.trim()||'Hypothetical')+' example';});
+      cells.forEach((cell,index)=>{if(index)cell.textContent=(draft.label.trim()||'Hypo')+' example';});
       d.querySelectorAll<HTMLElement>('.hypothetical-preview .hypothetical-badge').forEach(badge=>{badge.setAttribute('aria-label',draft.label);badge.style.cssText=hypotheticalBadgeCss(t);});
     }
     function refresh():void{

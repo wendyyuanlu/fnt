@@ -1,13 +1,91 @@
 import {expect,it} from 'vitest';
-import {addRow,blankSheet,clone,getCell,groupMoveTarget,hypotheticalTagDescendants,insertColumn,moveColumns,moveRows,moveIntoGroup,moveTargetGroups,outlineMembers,setInput,setHypotheticalTag,type Group} from '../src/model';
+import {addRow,blankSheet,clone,duplicateSheet,getCell,groupMoveTarget,hypotheticalTagDescendants,insertColumn,moveColumns,moveRows,moveIntoGroup,moveTargetGroups,outlineMembers,setInput,setHypotheticalTag,summaryMoveMembers,type Group,type Table,type Workbook} from '../src/model';
 import {Engine} from '../src/formula';
-import {hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,ungroupPlainGroups} from '../src/grouping';
+import {groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,ungroupPlainGroups} from '../src/grouping';
 import {validateBook} from '../src/storage';
 import {createDemo} from '../src/model';
 import {exportXlsx} from '../src/xlsx-export';
 import {strFromU8,unzipSync} from 'fflate';
 import {getHypotheticalStyle,validateHypotheticalStyle} from '../src/hypothetical';
 
+function scopedFixture(){
+  const sheet=blankSheet('Scopes',24,10),make=(name:string,row:number,column:number):Table=>({
+    id:'scope-'+name.toLowerCase(),name,sheet:sheet.id,header:sheet.rows[row].id,rows:sheet.rows.slice(row+1,row+6).map(r=>r.id),
+    columns:sheet.columns.slice(column,column+3).map((c,i)=>({id:name+'-field-'+i,name:'Field '+i,column:c.id}))
+  });
+  const tables=[make('Left',2,1),make('Right',2,5),make('Below',12,1)];
+  for(const table of tables)for(const field of table.columns)sheet.cells[`${table.header}:${field.column}`]={value:field.name};
+  const book:Workbook={schema:1,id:'scope-book',title:'Synthetic scopes',revision:0,sheets:[sheet],tables,names:[],pickerSources:{}};
+  return{book,sheet,left:tables[0],right:tables[1],below:tables[2]};
+}
+for(const axis of ['row','column'] as const){
+  it(`keeps table ${axis} hypo inheritance separate from shared sheet axes and other table owners`,()=>{
+    const {book,sheet,left,right,below}=scopedFixture(),other=axis==='row'?right:below,items=axis==='row'?sheet.rows:sheet.columns;
+    const ids=axis==='row'?left.rows.slice(0,4):left.columns.map(c=>c.column);
+    sheet.groups=[
+      {id:'left-summary',axis,kind:'summary',members:ids,collapsed:false,label:'Left',table:left.id},
+      {id:'other-summary',axis,kind:'summary',members:ids,collapsed:false,label:'Other',table:other.id},
+      {id:'sheet-summary',axis,kind:'summary',members:ids,collapsed:false,label:'Sheet'}
+    ];
+    setHypotheticalTag(sheet,axis,[ids[0]],true,false,left.id);
+    const check=(table:Table,id:string)=>axis==='row'?hypotheticalProjection(book,sheet,axis)(id,table.columns[0].column):hypotheticalProjection(book,sheet,axis)(table.header,id);
+    expect(check(left,ids[1])).toBe(true);expect(check(other,ids[1])).toBe(false);
+    expect(hypotheticalMembers(sheet,axis).size).toBe(0);
+    setHypotheticalTag(sheet,axis,[ids[0]],true);
+    expect(check(other,ids[1])).toBe(true);
+    setHypotheticalTag(sheet,axis,[ids[0]],false,false,other.id);
+    expect(check(other,ids[1])).toBe(false);expect(check(left,ids[1])).toBe(true);
+    const child=items.find(item=>item.id===ids[1])!;
+    child.hypothetical=true;child.hypotheticalTables={[left.id]:false,[other.id]:true};
+    expect(check(left,ids[1])).toBe(false);
+    setHypotheticalTag(sheet,axis,[ids[0]],false,true,left.id);
+    expect(child.hypotheticalTables?.[left.id]).toBeUndefined();
+    expect(child.hypotheticalTables?.[other.id]).toBe(true);
+    expect(child.hypothetical).toBe(true);expect(check(left,ids[1])).toBe(false);
+    validateBook(book);
+  });
+}
+it('clips plain-group summary expansion, containment and duplicate identities to their owning table',()=>{
+  const {book,sheet,left,right}=scopedFixture(),ids=left.rows.slice(0,4);
+  const summary:Group={id:'left-summary',axis:'row',kind:'summary',members:ids,collapsed:true,label:'Left',table:left.id};
+  const plain:Group={id:'left-plain',axis:'row',kind:'range',members:[ids[0]],collapsed:true,label:'Left range',table:left.id};
+  sheet.groups=[summary,plain,{...summary,id:'right-summary',table:right.id,members:left.rows}];
+  expect(outlineMembers(plain,sheet.groups)).toEqual(ids);
+  expect(summaryMoveMembers(sheet,'row',[ids[0]])).toEqual([ids[0]]);
+  expect(summaryMoveMembers(sheet,'row',[ids[0]],left.id)).toEqual(ids);
+  expect(groupContainsCell(book,sheet,plain,ids[0],left.columns[0].column)).toBe(true);
+  expect(groupContainsCell(book,sheet,plain,ids[0],right.columns[0].column)).toBe(false);
+  expect(groupContainsCell(book,sheet,{table:'removed'},ids[0],left.columns[0].column)).toBe(false);
+  sheet.rows.find(r=>r.id===ids[0])!.hypotheticalTables={[left.id]:true};
+  const copied=duplicateSheet(book,sheet),copiedOwner=book.tables.find(t=>t.sheet===copied.id&&t.name.startsWith('Left'))!;
+  expect(copied.groups.find(g=>g.label==='Left')!.table).toBe(copiedOwner.id);
+  const flags=copied.rows.find(r=>r.hypotheticalTables)?.hypotheticalTables;
+  expect(flags?.[copiedOwner.id]).toBe(true);expect(flags?.[left.id]).toBeUndefined();
+  validateBook(book);
+});
+it('retains table-scoped groups natively without exporting misleading full-sheet Excel outlines',async()=>{
+  const {book,sheet,left}=scopedFixture();
+  sheet.groups=[{id:'local-outline',axis:'row',kind:'summary',members:[left.rows[0],left.rows[2]],collapsed:true,label:'Local',table:left.id}];
+  const parts=unzipSync(await exportXlsx({format:'fnt-backup',version:1,state:{book,version:1,pending:[],updated:'now'},originals:[]}));
+  const xml=strFromU8(parts['xl/worksheets/sheet1.xml']);
+  expect(xml).not.toContain('outlineLevel=');expect(xml).not.toContain('hidden="1"');
+});
+it('joins newly inserted axes only to groups whose tables actually acquire those identities',()=>{
+  const {book,sheet,left,right,below}=scopedFixture();
+  const make=(id:string,axis:Group['axis'],table:Table,members:string[]):Group=>({id,axis,table:table.id,members,kind:'summary',collapsed:false,label:id});
+  sheet.groups=[
+    make('left-rows','row',left,left.rows.slice(0,4)),make('right-rows','row',right,right.rows.slice(0,4)),
+    make('left-columns','column',left,left.columns.map(c=>c.column)),make('below-columns','column',below,below.columns.map(c=>c.column))
+  ];
+  const row=addRow(book,sheet,5,left);
+  expect(sheet.groups.find(g=>g.id==='left-rows')!.members).toContain(row.id);
+  expect(sheet.groups.find(g=>g.id==='right-rows')!.members).not.toContain(row.id);
+  const column=insertColumn(book,sheet,2,left);
+  expect(sheet.groups.find(g=>g.id==='left-columns')!.members).toContain(column.id);
+  expect(sheet.groups.find(g=>g.id==='below-columns')!.members).not.toContain(column.id);
+  expect(below.columns.some(c=>c.column===column.id)).toBe(false);
+  validateBook(book);
+});
 it('rejects malformed treatment metadata before it can enter a durable workbook',()=>{
   const book=createDemo(),style=getHypotheticalStyle(book);
   validateBook(book);validateHypotheticalStyle(style);

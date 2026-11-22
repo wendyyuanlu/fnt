@@ -1,8 +1,9 @@
 import { outlineGroups, outlineLayer, precedingGroupMember,type SummaryRowLayout } from './grouping';
-import {outlineMembers,type Group,type Sheet} from './model';
+import {outlineMembers,type Group,type Sheet,type Table} from './model';
 
 interface GroupingHost {
   sheet:Sheet;groups:Group[];grid:HTMLElement;rows:string[];columns:string[];tree:boolean;hints:boolean;
+  tables:Table[];
   rowLayouts:Map<string,SummaryRowLayout>;
   menuOpen:boolean;setMenuOpen:(open:boolean)=>void;
   change:(label:string,fn:()=>void)=>boolean;selectAll:()=>void;manage:()=>void;
@@ -15,7 +16,7 @@ let rememberedFocus:string|undefined;
 
 export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:()=>void} {
   if(!host.groups.length){host.setMenuOpen(false);return{drawRows:()=>{},close:()=>{}};}
-  const {sheet,grid}=host,table=grid.querySelector<HTMLTableElement>('.grid')!,entries=outlineGroups(host.groups),summaries=entries.filter(e=>e.group.kind==='summary');
+  const {sheet,grid}=host,table=grid.querySelector<HTMLTableElement>('.grid')!,entries=outlineGroups(host.groups),summaries=entries.filter(e=>e.group.kind==='summary'&&!e.group.table);
   const controller=new AbortController(),corner=table.querySelector<HTMLElement>('.corner')!;
   let menu:HTMLDivElement|undefined;
   function button(group:Group,depth:number):HTMLButtonElement {
@@ -35,7 +36,7 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
   corner.prepend(menuButton);
   corner.querySelector<HTMLElement>('[data-action="select-all"]')?.remove();
   const header=(id:string)=>table.querySelector<HTMLElement>(`thead [data-col="${sheet.columns.findIndex(c=>c.id===id)}"]`);
-  const ranges=entries.filter(e=>e.group.kind!=='summary');
+  const ranges=entries.filter(e=>e.group.kind!=='summary'&&!e.group.table);
   const rowHints=new Map<string,typeof ranges>();
   if(host.hints)for(const entry of ranges){
     const group=entry.group,at=precedingGroupMember(sheet,group,group.axis==='row'?host.rows:host.columns);
@@ -57,7 +58,11 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
     });
   }
   function drawRows():void {
-    table.querySelectorAll('.row-group-controls,.row-outline-rail,.row-plain-hints,.column-summary-controls,.column-summary-rail').forEach(el=>el.remove());
+    table.querySelectorAll('.row-group-controls,.row-outline-rail,.row-plain-hints,.column-summary-controls,.column-summary-rail,.table-group-controls').forEach(el=>el.remove());
+    table.querySelectorAll<HTMLElement>('[data-table-group-inset]').forEach(cell=>{
+      cell.style.setProperty('--summary-text-inset',cell.dataset.tableGroupInset!);
+      cell.classList.toggle('summary-cell',parseFloat(cell.dataset.tableGroupInset!)>0);delete cell.dataset.tableGroupInset;
+    });
     for(const th of table.querySelectorAll<HTMLElement>('tbody [data-row-select]')){
       const id=sheet.rows[Number(th.dataset.rowSelect)].id;
       const parents=summaries.filter(e=>e.group.axis==='row'&&e.group.members[0]===id).sort((a,b)=>a.depth-b.depth);
@@ -106,6 +111,21 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
       const cluster=document.createElement('span');cluster.className='row-plain-hints';
       rowHints.get('')!.forEach(e=>cluster.append(button(e.group,e.depth)));corner.append(cluster);
     }
+    for(const entry of entries.filter(e=>e.group.table&&(e.group.kind==='summary'||host.hints))){
+      const owner=host.tables.find(t=>t.id===entry.group.table&&t.sheet===sheet.id);if(!owner)continue;
+      const ownedRows=host.rows.filter(id=>id===owner.header||owner.rows.includes(id));
+      const ownedColumns=host.columns.filter(id=>owner.columns.some(field=>field.column===id));
+      const anchor=entry.group.kind==='summary'?entry.group.members[0]:precedingGroupMember(sheet,entry.group,entry.group.axis==='row'?ownedRows:ownedColumns);
+      const row=entry.group.axis==='row'?anchor:owner.header,column=entry.group.axis==='column'?anchor:ownedColumns[0];
+      const cell=table.querySelector<HTMLElement>(`td[data-r="${sheet.rows.findIndex(r=>r.id===row)}"][data-c="${sheet.columns.findIndex(c=>c.id===column)}"]`);
+      if(!cell)continue;
+      let controls=cell.querySelector<HTMLElement>('.table-group-controls');
+      if(!controls){controls=document.createElement('span');controls.className='table-group-controls';cell.append(controls);cell.dataset.tableGroupInset=cell.style.getPropertyValue('--summary-text-inset')||'0px';}
+      const control=button(entry.group,entry.depth);
+      control.setAttribute('aria-label',`${control.getAttribute('aria-label')} in ${owner.name}`);
+      controls.append(control);cell.classList.add('summary-cell');
+      cell.style.setProperty('--summary-text-inset',(parseFloat(cell.dataset.tableGroupInset!)+controls.children.length*26)+'px');
+    }
   }
   function closeMenu(focus=false):void {
     menu?.remove();menu=undefined;host.setMenuOpen(false);menuButton.setAttribute('aria-expanded','false');
@@ -123,15 +143,15 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
       line.append(label,toggle);return line;
     };
     menu.append(switchLine('Tree view',host.tree,'tree'));
-    const depth=Math.max(1,...summaries.map(e=>e.depth)),matrix=document.createElement('div');matrix.className='outline-layer-grid';
+    const depth=Math.max(1,...entries.filter(e=>e.group.kind==='summary').map(e=>e.depth)),matrix=document.createElement('div');matrix.className='outline-layer-grid';
     matrix.style.gridTemplateColumns=`50px repeat(${depth===1?1:depth+1},32px)`;
     if(depth>1){matrix.append(document.createElement('span'));for(const text of ['All',...Array.from({length:depth},(_,i)=>outlineLayer(i+1))]){const heading=document.createElement('strong');heading.textContent=text;matrix.append(heading);}}
     for(const axis of ['row','column'] as const){
-      const hidden=new Set(host.groups.filter(g=>g.axis===axis&&g.collapsed).flatMap(g=>outlineMembers(g,sheet.groups)));
+      const hidden=(owner?:string)=>new Set(host.groups.filter(g=>g.table===owner&&g.axis===axis&&g.collapsed).flatMap(g=>outlineMembers(g,sheet.groups)));
       const label=document.createElement('strong');label.textContent=axis==='row'?'Rows':'Columns';label.className='outline-axis-label';matrix.append(label);
       for(const level of depth===1?[0]:[0,...Array.from({length:depth},(_,i)=>i+1)]){
         const targets=entries.filter(e=>e.group.axis===axis&&(!level||e.group.kind==='summary'&&e.depth===level));
-        const collapsed=targets.length>0&&targets.every(e=>e.group.collapsed||!level&&[...e.members].every(id=>hidden.has(id)));
+        const collapsed=targets.length>0&&targets.every(e=>e.group.collapsed||!level&&[...e.members].every(id=>hidden(e.group.table).has(id)));
         const el=document.createElement('button');el.type='button';el.className='group-control';el.innerHTML=chevrons(collapsed,axis);el.disabled=!targets.length;
         el.dataset.outlineAxis=axis;el.dataset.outlineLevel=String(level);el.setAttribute('aria-pressed',String(collapsed));el.setAttribute('aria-label',`${collapsed?'Expand':'Collapse'} ${level?'level '+outlineLayer(level):'all'} ${axis==='row'?'rows':'columns'}`);
         el.onclick=()=>host.change('Toggle outline level',()=>targets.forEach(e=>{e.group.collapsed=!collapsed;}));matrix.append(el);
@@ -141,7 +161,7 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
     const plain=document.createElement('div');plain.className='outline-plain-groups';plain.append(switchLine('Plain group hints',host.hints,'plainGroupHints'));
     for(const axis of ['row','column'] as const){
       const section=document.createElement('div');section.className='outline-plain-axis';const heading=document.createElement('strong');heading.textContent=axis==='row'?'Rows':'Columns';section.append(heading);
-      for(const entry of ranges.filter(e=>e.group.axis===axis)){const line=document.createElement('div');line.className='outline-plain-line';const label=document.createElement('span');label.textContent=entry.group.label;line.append(label,button(entry.group,entry.depth));section.append(line);}
+      for(const entry of entries.filter(e=>e.group.kind!=='summary'&&e.group.axis===axis)){const line=document.createElement('div');line.className='outline-plain-line';const label=document.createElement('span');const owner=host.tables.find(t=>t.id===entry.group.table);label.textContent=entry.group.label+(owner?` (${owner.name})`:'');line.append(label,button(entry.group,entry.depth));section.append(line);}
       plain.append(section);
     }
     menu.append(plain);

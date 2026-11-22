@@ -7,13 +7,46 @@ export function ungroupPlainGroups(book:Workbook):number{
 }
 export function hypotheticalMembers(sheet:Sheet,axis:Group['axis']):Set<string>{
   const items=axis==='row'?sheet.rows:sheet.columns,flags=new Map(items.map(item=>[item.id,item.hypothetical]));
-  const parents=sheet.groups.filter(group=>group.axis===axis&&group.kind==='summary'&&flags.get(group.members[0])!==undefined)
-    .map(group=>({anchor:group.members[0],members:new Set(summaryMoveMembers(sheet,axis,group.members))})).sort((a,b)=>a.members.size-b.members.size);
+  const groups=sheet.groups.filter(g=>!g.table);
+  const parents=groups.filter(group=>group.axis===axis&&group.kind==='summary'&&flags.get(group.members[0])!==undefined)
+    .map(group=>({anchor:group.members[0],members:new Set(summaryMoveMembers({...sheet,groups},axis,group.members))})).sort((a,b)=>a.members.size-b.members.size);
   return new Set(items.filter(item=>{
     if(item.hypothetical!==undefined)return item.hypothetical;
     const parent=parents.find(parent=>parent.anchor!==item.id&&parent.members.has(item.id));
     return parent!==undefined&&flags.get(parent.anchor)===true;
   }).map(item=>item.id));
+}
+export function groupContainsCell(book:Workbook,sheet:Sheet,group:Pick<Group,'table'>,row:string,column:string):boolean{
+  if(!group.table)return true;
+  const table=book.tables.find(t=>t.id===group.table&&t.sheet===sheet.id);
+  return!!table&&(table.header===row||table.rows.includes(row))&&table.columns.some(c=>c.column===column);
+}
+export function hypotheticalProjection(book:Workbook,sheet:Sheet,axis:Group['axis']):(row:string,column:string)=>boolean{
+  const global=hypotheticalMembers(sheet,axis),items=axis==='row'?sheet.rows:sheet.columns;
+  const owners=book.tables.filter(t=>t.sheet===sheet.id).map(table=>{
+    const rows=new Set([table.header,...table.rows]),columns=new Set(table.columns.map(c=>c.column));
+    const owned=axis==='row'?rows:columns,groups=sheet.groups.filter(g=>g.table===table.id);
+    const flags=new Map(items.map(item=>[item.id,item.hypotheticalTables?.[table.id]]));
+    const parents=groups.filter(g=>g.axis===axis&&g.kind==='summary').map(g=>({
+      anchor:g.members[0],members:new Set(summaryMoveMembers({...sheet,groups},axis,g.members,table.id)),
+      enabled:flags.get(g.members[0]),
+      seed:items.find(item=>item.id===g.members[0])?.hypothetical??(global.has(g.members[0])?true:undefined)
+    })).sort((a,b)=>a.members.size-b.members.size);
+    const members=new Set(items.filter(item=>{
+      if(!owned.has(item.id))return false;
+      const explicit=flags.get(item.id);if(explicit!==undefined)return explicit;
+      const parent=parents.find(p=>p.enabled!==undefined&&p.anchor!==item.id&&p.members.has(item.id));
+      if(parent)return parent.enabled!;
+      if(item.hypothetical!==undefined)return item.hypothetical;
+      const seeded=parents.find(p=>p.seed!==undefined&&p.anchor!==item.id&&p.members.has(item.id));
+      return seeded?.seed??global.has(item.id);
+    }).map(item=>item.id));
+    return{rows,columns,members};
+  });
+  return(row,column)=>{
+    const owner=owners.find(t=>t.rows.has(row)&&t.columns.has(column)),id=axis==='row'?row:column;
+    return owner?owner.members.has(id):global.has(id);
+  };
 }
 
 export interface OutlineGroup {group:Group;depth:number;members:Set<string>}
@@ -21,7 +54,7 @@ export function outlineGroups(groups:Group[]):OutlineGroup[] {
   const entries=groups.map(group=>({group,depth:1,members:new Set(group.kind==='summary'?group.members:outlineMembers(group,groups))}));
   const summaries=entries.filter(e=>e.group.kind==='summary').sort((a,b)=>b.members.size-a.members.size);
   for(const entry of summaries){
-    const parents=summaries.filter(parent=>parent.group.axis===entry.group.axis&&parent.members.size>entry.members.size&&[...entry.members].every(id=>parent.members.has(id)));
+    const parents=summaries.filter(parent=>parent.group.table===entry.group.table&&parent.group.axis===entry.group.axis&&parent.members.size>entry.members.size&&[...entry.members].every(id=>parent.members.has(id)));
     entry.depth=1+Math.max(0,...parents.map(parent=>parent.depth));
   }
   return entries;

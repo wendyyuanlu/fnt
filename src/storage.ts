@@ -72,9 +72,10 @@ export function validateBook(value: unknown): asserts value is Workbook {
     if(s.outlineView!==undefined&&(!s.outlineView||typeof s.outlineView!=='object'||Array.isArray(s.outlineView)||Object.entries(s.outlineView).some(([k,v])=>!['tree','plainGroupHints'].includes(k)||typeof v!=='boolean')))throw Error('Invalid sheet outline preferences.');
     s.rows.forEach(r => id(r.id)); s.columns.forEach(c => id(c.id));
     if([...s.rows,...s.columns].some(item=>item.hypothetical!==undefined&&typeof item.hypothetical!=='boolean'))throw Error('Invalid hypothetical tag.');
+    for(const item of [...s.rows,...s.columns])if(item.hypotheticalTables!==undefined&&(!item.hypotheticalTables||typeof item.hypotheticalTables!=='object'||Array.isArray(item.hypotheticalTables)||Object.entries(item.hypotheticalTables).some(([table,value])=>!safeId(table)||typeof value!=='boolean')))throw Error('Invalid table hypo tag.');
     for(const item of [...s.groups,...s.validations])if(!safeId(item.id))throw Error('Invalid layout/source identity.');
     for(const r of s.rows)if(r.height!==undefined&&(!Number.isFinite(r.height)||r.height<=0||r.height>409.5))throw Error('Invalid row height.');
-    for(const g of s.groups)if(!['row','column'].includes(g.axis)||!Array.isArray(g.members)||g.members.some(m=>!safeId(m))||g.kind!==undefined&&!['summary','range'].includes(g.kind)||g.kind==='summary'&&g.members.length<2)throw Error('Invalid outline group.');
+    for(const g of s.groups)if(!['row','column'].includes(g.axis)||!Array.isArray(g.members)||g.members.some(m=>!safeId(m))||g.table!==undefined&&!safeId(g.table)||g.kind!==undefined&&!['summary','range'].includes(g.kind)||g.kind==='summary'&&g.members.length<2)throw Error('Invalid outline group.');
     if(!/^#[0-9a-f]{6}$/i.test(s.color))throw Error('Invalid tab color.');
     for(const c of s.columns)if(typeof c.label!=='string'||(c.width!==undefined&&(!Number.isFinite(c.width)||c.width<40||c.width>1000)))throw Error('Invalid column layout.');
     const rows = new Set(s.rows.map(r => r.id)), columns = new Set(s.columns.map(c => c.id));

@@ -12,23 +12,27 @@ export interface Cell {
   spillHint?: boolean;
   binding?: { table: string; row: string; column: string };
 }
-export interface Column { id: string; label: string; width?: number; hidden?: boolean; hypothetical?:boolean }
-export interface Row { id: string; hidden?: boolean; height?: number; status?: 'real' | 'planned' | 'hypothetical'; hypothetical?:boolean }
-export interface Group { id: string; axis: 'row' | 'column'; members: string[]; collapsed: boolean; label: string; kind?:'summary'|'range' }
-export function hypotheticalTagDescendants(sheet:Sheet,axis:Group['axis'],ids:string[]):Set<string>{
+export interface Column { id: string; label: string; width?: number; hidden?: boolean; hypothetical?:boolean; hypotheticalTables?:Record<string,boolean> }
+export interface Row { id: string; hidden?: boolean; height?: number; status?: 'real' | 'planned' | 'hypothetical'; hypothetical?:boolean; hypotheticalTables?:Record<string,boolean> }
+export interface Group { id: string; axis: 'row' | 'column'; members: string[]; collapsed: boolean; label: string; kind?:'summary'|'range'; table?:string }
+export function hypotheticalTagDescendants(sheet:Sheet,axis:Group['axis'],ids:string[],table?:string):Set<string>{
   const selected=new Set(ids),descendants=new Set<string>();
-  for(const group of sheet.groups)if(group.axis===axis&&group.kind==='summary'&&selected.has(group.members[0])){
-    for(const id of summaryMoveMembers(sheet,axis,group.members))if(id!==group.members[0])descendants.add(id);
+  for(const group of sheet.groups)if(group.table===table&&group.axis===axis&&group.kind==='summary'&&selected.has(group.members[0])){
+    for(const id of summaryMoveMembers({...sheet,groups:sheet.groups.filter(g=>g.table===table)},axis,group.members,table))if(id!==group.members[0])descendants.add(id);
   }
   return descendants;
 }
-export function setHypotheticalTag(sheet:Sheet,axis:Group['axis'],ids:string[],enabled:boolean,overwriteChildren=false):void{
+export function setHypotheticalTag(sheet:Sheet,axis:Group['axis'],ids:string[],enabled:boolean,overwriteChildren=false,table?:string):void{
   const items=axis==='row'?sheet.rows:sheet.columns,selected=new Set(ids);
   if(!ids.length||ids.some(id=>!items.some(item=>item.id===id)))throw Error('Select existing rows or columns to change their hypothetical tag.');
-  const descendants=hypotheticalTagDescendants(sheet,axis,ids);
+  const descendants=hypotheticalTagDescendants(sheet,axis,ids,table);
   for(const item of items){
-    if(descendants.has(item.id)){if(overwriteChildren)delete item.hypothetical;}
-    else if(selected.has(item.id))item.hypothetical=enabled;
+    if(descendants.has(item.id)){
+      if(overwriteChildren){if(table)delete item.hypotheticalTables?.[table];else delete item.hypothetical;}
+    }else if(selected.has(item.id)){
+      if(table){item.hypotheticalTables??={};item.hypotheticalTables[table]=enabled;}
+      else item.hypothetical=enabled;
+    }
   }
 }
 export function outlineMembers(group:Group,groups:readonly Group[]=[]):string[] {
@@ -37,7 +41,7 @@ export function outlineMembers(group:Group,groups:readonly Group[]=[]):string[] 
   let changed=true;
   while(changed){
     changed=false;
-    for(const summary of groups)if(summary.axis===group.axis&&summary.kind==='summary'&&members.has(summary.members[0])){
+    for(const summary of groups)if(summary.table===group.table&&summary.axis===group.axis&&summary.kind==='summary'&&members.has(summary.members[0])){
       for(const id of summary.members)if(!members.has(id)){members.add(id);changed=true;}
     }
   }
@@ -171,7 +175,7 @@ export function deleteColumn(book: Workbook, sheet: Sheet, id: string): void {
 export function addRow(book: Workbook, sheet: Sheet, at: number, table?: Table): Row {
   if(at<0||at>sheet.rows.length)throw Error('Row insertion is outside the sheet.');
   const row: Row = { id: uid() };
-  inheritInsertedGroups(sheet,'row',[{at,id:row.id}]);
+  inheritInsertedGroups(sheet,'row',[{at,id:row.id}],new Set(table?[table.id]:[]));
   sheet.rows.splice(at, 0, row);
   if (table) {
     const before = sheet.rows.slice(0, at).filter(r => table.rows.includes(r.id)).length;
@@ -189,15 +193,15 @@ function stationaryGroupBounds(group:Group,positions:ReadonlyMap<string,number>,
   }
   return {first,last};
 }
-function inheritInsertedGroups(sheet:Sheet,axis:Group['axis'],insertions:{at:number;id:string}[],moving:ReadonlySet<string>=new Set()):void {
+function inheritInsertedGroups(sheet:Sheet,axis:Group['axis'],insertions:{at:number;id:string}[],owners:ReadonlySet<string>=new Set()):void {
   if(!sheet.groups.some(group=>group.axis===axis))return;
   const positions=new Map((axis==='row'?sheet.rows:sheet.columns).map((item,index)=>[item.id,index]));
-  for(const group of sheet.groups.filter(g=>g.axis===axis)){
-    const {first,last}=stationaryGroupBounds(group,positions,moving);
+  for(const group of sheet.groups.filter(g=>g.axis===axis&&(!g.table||owners.has(g.table)))){
+    const {first,last}=stationaryGroupBounds(group,positions,new Set());
     const members=new Set(group.members);
     for(const {at,id}of insertions){
       if(at<=first||at>last||members.has(id))continue;
-      const before=group.members.findIndex((member,index)=>(group.kind!=='summary'||index>0)&&!moving.has(member)&&(positions.get(member)??-1)>=at);
+      const before=group.members.findIndex((member,index)=>(group.kind!=='summary'||index>0)&&(positions.get(member)??-1)>=at);
       group.members.splice(before<0?group.members.length:before,0,id);members.add(id);
     }
   }
@@ -300,7 +304,8 @@ export function expandAdjacentTable(book:Workbook,sheet:Sheet,row:string,column:
 export function insertColumn(book:Workbook,sheet:Sheet,at:number,scope?:Table):Column {
   if(at<0||at>sheet.columns.length)throw Error('Column insertion is outside the sheet.');
   const right=sheet.columns[at]?.id,column:Column={id:uid(),label:'New column',width:145};
-  inheritInsertedGroups(sheet,'column',[{at,id:column.id}]);
+  const owners=new Set(book.tables.filter(t=>t.sheet===sheet.id&&(scope?t.id===scope.id:t.columns.some(field=>field.column===right))).map(t=>t.id));
+  inheritInsertedGroups(sheet,'column',[{at,id:column.id}],owners);
   sheet.columns.splice(at,0,column);
   for(const t of book.tables.filter(t=>t.sheet===sheet.id&&(!scope||t.id===scope.id))){
     const index=scope?t.columns.filter(c=>sheet.columns.findIndex(x=>x.id===c.column)<at).length:t.columns.findIndex(c=>c.column===right);
@@ -311,9 +316,9 @@ export function insertColumn(book:Workbook,sheet:Sheet,at:number,scope?:Table):C
   }
   return column;
 }
-export function summaryMoveMembers(sheet:Sheet,axis:Group['axis'],ids:string[]):string[]{
+export function summaryMoveMembers(sheet:Sheet,axis:Group['axis'],ids:string[],table?:string):string[]{
   const chosen=new Set(ids);let added=true;
-  while(added){added=false;for(const g of sheet.groups)if(g.axis===axis&&g.kind==='summary'&&chosen.has(g.members[0]))for(const id of g.members)if(!chosen.has(id)){chosen.add(id);added=true;}}
+  while(added){added=false;for(const g of sheet.groups)if((g.table===table||!!table&&!g.table)&&g.axis===axis&&g.kind==='summary'&&chosen.has(g.members[0]))for(const id of g.members)if(!chosen.has(id)){chosen.add(id);added=true;}}
   return[...chosen];
 }
 function moveGroupPlan(sheet:Sheet,axis:Group['axis'],ids:string[],boundary:number):{group:Group;inside:boolean;whole:boolean}[]{
@@ -327,6 +332,7 @@ function moveGroupPlan(sheet:Sheet,axis:Group['axis'],ids:string[],boundary:numb
 function applyMoveGroupPlan(sheet:Sheet,axis:Group['axis'],ids:string[],plan:ReturnType<typeof moveGroupPlan>):void{
   const moving=new Set(ids),items=axis==='row'?sheet.rows:sheet.columns,positions=new Map(items.map((item,i)=>[item.id,i])),ordered=items.filter(item=>moving.has(item.id));
   for(const {group,inside,whole} of plan){
+    if(group.table)continue;
     if(whole)continue;
     if(!inside){group.members=group.members.filter(id=>!moving.has(id));continue;}
     for(const item of ordered){
@@ -339,22 +345,27 @@ function applyMoveGroupPlan(sheet:Sheet,axis:Group['axis'],ids:string[],plan:Ret
 export function moveTargetGroups(sheet:Sheet,axis:Group['axis'],ids:string[],boundary:number,scope?:Table):Group[]{
   const items=(axis==='row'?sheet.rows:sheet.columns).map(item=>item.id);
   if(!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!items.includes(id))||boundary<0||boundary>items.length)throw Error('Invalid move preview.');
-  const moving=summaryMoveMembers(sheet,axis,ids);
+  const moving=summaryMoveMembers(sheet,axis,ids,scope?.id);
   if(axis==='row'&&scope&&moving.some(id=>!scope.rows.includes(id)))throw Error('Move options, not the list header.');
-  return moveGroupPlan(sheet,axis,moving,boundary).filter(target=>target.inside&&!target.whole).map(target=>target.group);
+  return moveGroupPlan(sheet,axis,moving,boundary).filter(target=>(!target.group.table||target.group.table===scope?.id)&&target.inside&&!target.whole).map(target=>target.group);
 }
 export function groupMoveTarget(sheet:Sheet,axis:Group['axis'],ids:string[],groupId:string,scope?:Table):{group:Group;members:string[];boundary:number;parents:Group[]}{
   const items=(axis==='row'?sheet.rows:sheet.columns).map(item=>item.id),group=sheet.groups.find(g=>g.id===groupId&&g.axis===axis);
   if(!group||!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!items.includes(id)))throw Error('Invalid group move.');
-  const members=summaryMoveMembers(sheet,axis,ids),coverage=(g:Group)=>new Set(g.kind==='summary'?[g.members[0],...outlineMembers(g,sheet.groups)]:outlineMembers(g,sheet.groups)),target=coverage(group);
+  const members=summaryMoveMembers(sheet,axis,ids,group.table),coverage=(g:Group)=>new Set(g.kind==='summary'?[g.members[0],...outlineMembers(g,sheet.groups)]:outlineMembers(g,sheet.groups)),target=coverage(group);
   if(group.kind==='summary'&&members.includes(group.members[0])||[...target].every(id=>members.includes(id)))throw Error('A group cannot be moved into itself.');
   if(axis==='row'&&scope&&members.some(id=>!scope.rows.includes(id)))throw Error('Move options, not the list header.');
   const positions=items.map((id,i)=>target.has(id)?i:-1).filter(i=>i>=0);if(!positions.length)throw Error('The destination group has no rows or columns.');
-  const parents=sheet.groups.filter(g=>{if(g===group||g.axis!==axis)return false;const parent=coverage(g);return parent.size>target.size&&[...target].every(id=>parent.has(id));});
+  const parents=sheet.groups.filter(g=>{if(g===group||g.table!==group.table||g.axis!==axis)return false;const parent=coverage(g);return parent.size>target.size&&[...target].every(id=>parent.has(id));});
   return {group,members,boundary:positions.reduce((last,position)=>Math.max(last,position),-1)+1,parents};
 }
 export function moveIntoGroup(book:Workbook,sheet:Sheet,axis:Group['axis'],ids:string[],groupId:string,scope?:Table):number{
   const target=groupMoveTarget(sheet,axis,ids,groupId,scope);
+  if(target.group.table){
+    const owner=book.tables.find(t=>t.id===target.group.table&&t.sheet===sheet.id);
+    if(!owner||target.members.some(id=>!(axis==='row'?owner.rows:owner.columns.map(c=>c.column)).includes(id)))throw Error("Move only this table's members into its group. Other table and sheet data will not be joined implicitly.");
+    scope=owner;
+  }
   const at=axis==='row'?moveRows(book,sheet,ids,target.boundary,scope):moveColumns(book,sheet,ids,target.boundary);
   const moving=new Set(target.members),ordered=(axis==='row'?sheet.rows:sheet.columns).map(item=>item.id).filter(id=>moving.has(id));
   for(const group of [target.group,...target.parents])for(const id of ordered)if(!group.members.includes(id))group.members.push(id);
@@ -362,7 +373,7 @@ export function moveIntoGroup(book:Workbook,sheet:Sheet,axis:Group['axis'],ids:s
 }
 export function moveRows(book:Workbook,sheet:Sheet,ids:string[],boundary:number,scope?:Table):number{
   if(!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!sheet.rows.some(r=>r.id===id))||boundary<0||boundary>sheet.rows.length)throw Error('Invalid row move.');
-  ids=summaryMoveMembers(sheet,'row',ids);
+  ids=summaryMoveMembers(sheet,'row',ids,scope?.id);
   const selected=new Set(ids),groups=moveGroupPlan(sheet,'row',ids,boundary);
   if(scope){
     if(ids.some(id=>!scope.rows.includes(id)))throw Error('Move options, not the list header.');
@@ -462,7 +473,7 @@ export function duplicateSheet(book: Workbook, source: Sheet): Sheet {
   const remap = (v: unknown): unknown => {
     if (typeof v === 'string') return mapping.get(v) ?? v;
     if (Array.isArray(v)) return v.map(remap);
-    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, remap(x)]));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [mapping.get(k)??k, remap(x)]));
     return v;
   };
   const copy = remap(source) as Sheet;

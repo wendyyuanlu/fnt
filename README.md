@@ -69,6 +69,26 @@ automatically bundled or published.
   Ctrl/Cmd-click adds cells, rows or columns without losing a Shift-selected
   range. Formatting and clearing affect only the selection, not the gaps;
   operations requiring one rectangle explicitly reject disjoint selections.
+  **Table selection** changes only the existing row-number and column-letter
+  header clicks; there are no Excel-style cell-edge targets or extra handles.
+  Auto uses the active cell's table when it intersects the clicked header, or
+  the sole matching table. Ambiguous headers ask which table to select.
+  The toolbar target picker can lock a particular table instead. With no matching
+  table, the app explains how to switch back to sheet selection rather than
+  silently selecting an entire sheet axis. Shift extends within the same owner.
+  On touch, use the cell-count menu's **Extend row/column selection on next header
+  tap**. DD assignment stays in the chosen owner; assign different scopes
+  separately. Discontiguous table fields never include the intervening cells.
+  The selection owner and mode survive reload and returning from DD in the
+  same browser tab.
+  Summary/plain groups and **hypo** tags inherit the selected table or sheet
+  scope; different table and sheet scopes can coexist on the same physical axes.
+  Table-only collapse/hypo hiding masks only owned cells, preserving neighboring
+  tables and sheet coordinates. Whole-sheet insertion, deletion, movement and
+  hiding are explicitly refused from table-only selections; switch the toggle off
+  and select sheet headers for those operations. Native backups preserve scope.
+  XLSX export emits only sheet-wide Excel outlines; table-scoped groups remain
+  in the embedded native archive, not misleading full-sheet Excel outlines.
   Arrow keys commit an in-cell or formula-bar edit and immediately navigate;
   rejected edits stay open. The expanded editor retains normal text navigation.
   Enter applies formula-bar edits. Ctrl/Cmd+Z, Y, F, S, A, C, X, V work.
@@ -217,10 +237,22 @@ automatically bundled or published.
   first; existing records, custom columns and other sheets are retained. Matching
   columns keep their identities, including the starter's `Ingredient` /
   `Ingredients` and `Calories per g` / `Calories2` equivalents.
-  Referenced Dropdowns tables are imported without overwriting same-named data.
+  If Ingredients was deliberately deleted, import creates a new sheet/table;
+  references to the deleted identities are not silently reconnected.
+  Excel full-column validations apply throughout the imported data. Validated
+  literal values link to existing active website DD records, not copied labels.
+  Original-source provenance identifies DDs even after website renames. Exact
+  matches in the declared DD take priority; otherwise a value must match exactly
+  one active website DD record. Missing, archived or ambiguous matches stop the
+  import without changing the workbook. DD sources can expand to include the
+  additional matched website lists. Formulas remain formulas, and record labels
+  with self/external validations are retained without circular or invented links.
+  Legacy imports without website DDs retain referenced Dropdowns tables without
+  overwriting same-named data.
   Missing dependencies remain explicit reference errors, never links to examples.
   A full pre-import recovery archive is downloadable from Recovery checkpoints.
-  Imports disconnect sync and refuse repeat imports of an unchanged attached file.
+  Imports disconnect sync and refuse repeat imports of an unchanged attached file,
+  except when recreating deleted Ingredients; that reuses the archived original.
   The current tab is remembered across reloads in the same browser tab.
 - **Tables** creates independent tables from selected rectangles, renames tables,
   configures/removes dropdowns, and edits scoped named formulas. Table headers

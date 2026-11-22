@@ -68,15 +68,16 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
     seenNames.add(s.name.toLowerCase());
     if(s.rows.length>100000||s.columns.length>512)throw Error('Workbook exceeds this review build\'s safe XLSX dimensions.');
     const rows=new Map(s.rows.map((r,i)=>[r.id,i])),cols=new Map(s.columns.map((c,i)=>[c.id,i]));
-    for(const g of s.groups)rectangle(g.members.map(id=>(g.axis==='row'?rows:cols).get(id)??-1),[0]);
+    for(const g of s.groups.filter(g=>!g.table))rectangle(g.members.map(id=>(g.axis==='row'?rows:cols).get(id)??-1),[0]);
     const relationships:{id:string;type:string;target:string;external?:boolean}[]=[],tableParts:string[]=[],hyperlinks:string[]=[],comments:{r:number;c:number;text:string}[]=[];
     const rowCells=new Map<number,{c:number;cell:Cell}[]>();
     for(const [address,cell]of Object.entries(s.cells)){const [rid,cid]=address.split(':'),r=rows.get(rid)!,c=cols.get(cid)!;const list=rowCells.get(r)??[];list.push({c,cell});rowCells.set(r,list);}
-    const summaryBefore=(axis:'row'|'column')=>s.groups.some(g=>g.axis===axis&&g.kind==='summary');
-    const outlines=new Map(s.groups.map(g=>[g.id,new Set(outlineMembers(g,s.groups))]));
-    const level=(axis:'row'|'column',id:string)=>s.groups.filter(g=>g.axis===axis&&outlines.get(g.id)!.has(id)).length;
-    const collapsed=(axis:'row'|'column',id:string)=>s.groups.some(g=>g.axis===axis&&g.collapsed&&outlines.get(g.id)!.has(id));
-    const summary=(axis:'row'|'column',position:number)=>s.groups.some(g=>{
+    const sheetGroups=s.groups.filter(g=>!g.table);
+    const summaryBefore=(axis:'row'|'column')=>sheetGroups.some(g=>g.axis===axis&&g.kind==='summary');
+    const outlines=new Map(sheetGroups.map(g=>[g.id,new Set(outlineMembers(g,sheetGroups))]));
+    const level=(axis:'row'|'column',id:string)=>sheetGroups.filter(g=>g.axis===axis&&outlines.get(g.id)!.has(id)).length;
+    const collapsed=(axis:'row'|'column',id:string)=>sheetGroups.some(g=>g.axis===axis&&g.collapsed&&outlines.get(g.id)!.has(id));
+    const summary=(axis:'row'|'column',position:number)=>sheetGroups.some(g=>{
       if(g.axis!==axis||!g.collapsed)return false;
       const positions=g.members.map(id=>(axis==='row'?rows:cols).get(id)!);
       return(g.kind==='summary'?positions[0]:summaryBefore(axis)?Math.min(...positions)-1:Math.max(...positions)+1)===position;
