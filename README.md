@@ -80,14 +80,23 @@ automatically bundled or published.
   Ctrl/Cmd+Alt+Shift+G ungroups plain ranges.
   **Ungroup all plain groups (workbook)** in the group manager removes only plain
   groups on every sheet, preserving summaries, cells and a recovery checkpoint.
-  Ctrl/Cmd+H adds a hypothetical tag to selected entire rows/columns;
+  Ctrl/Cmd+H toggles a hypothetical tag on selected entire rows/columns;
   Ctrl/Cmd+Shift+H removes it. Summary descendants inherit dynamically, so moving
   them out removes inherited tags while explicit tags remain. Explicit clearing
   overrides inheritance, including for a nested summary's descendants.
   Changing a summary tag highlights children with manual tags or explicit
-  clears and asks whether to overwrite them with automatic inheritance, keep
-  the overrides, or cancel. Overwriting removes child flags rather than
+  clears and asks whether to overwrite them with automatic inheritance or
+  cancel. Overwriting removes child flags rather than
   stamping them, so future parent changes and move-out behavior remain dynamic.
+  The confirmation uses one table with shared headers and complete row/column
+  contents, including calculated values and multiline notes. Manually tagged
+  rows/columns reuse their configured hypothetical treatment; manual exclusions
+  stay untreated, without a separate status column.
+  The dialog fits its contents, scrolling only when needed, so reviewing overrides
+  does not depend on seeing the spreadsheet behind it.
+  **Don't show again for … times** repeats **Overwrite** for the next specified
+  number of manual-tag confirmations in the current session. Only successful
+  overwrites consume the count; cancel does not activate it, and reload resets it.
   Tagged rows/columns default to option D: 2px diagonal strokes, 6px clear gaps,
   and existing text colors at 80% opacity, without badges or added row height.
   **Arrange toolbar** enables individual tool dragging, including touch dragging.
@@ -98,8 +107,18 @@ automatically bundled or published.
   click an existing divider to remove it. Gap controls also support touch and
   keyboard activation. All dividers share one fixed-height style, and their
   positions are saved with the toolbar layout.
+  Shift-click selects a range of tools; Ctrl-click (Cmd-click on Mac) toggles
+  individual tools. Drag any selected tool to move the selection together in
+  toolbar order. Rearranging tools or editing dividers preserves the toolbar's
+  current scroll position.
+  The stamp-framed H toggles tags and reflects the selection's effective tags
+  (including inherited and mixed states). The crossed-out, frame-free H toggles
+  visibility of tagged rows and columns; they are visible by default. Hiding is
+  view-only and respects explicit child exclusions without changing workbook
+  contents or saved hidden/collapsed settings. The old status filter and Set status
+  button have been removed without rewriting stored status metadata.
 
-  The boxed H **Hypothetical treatments** toolbar button opens workbook-wide,
+  The dashed-frame H **Hypothetical tag styling** toolbar button opens workbook-wide,
   live-preview settings: pattern family, color, opacity, width, spacing, angle,
   text color/opacity and added emphasis, background fill, optional square H
   badges and colors, solid or dashed badge borders with adjustable dash size
@@ -207,6 +226,10 @@ automatically bundled or published.
   Typing directly below a table extends it using existing row IDs, calculated
   columns, formatting, and adjacent-row validation. A blank separating row, other
   table, or existing content in the target table area prevents auto-expansion.
+  Moving sheet rows between existing table members also joins the destination
+  table, including moved summary/detail blocks. Existing values, formulas, links,
+  notes, formats, and explicit dropdown rules are preserved; empty calculated
+  fields inherit matching table formulas. Conflicting table overlaps are rejected.
   Double-click a table column header to rename it, add/manage/remove its applied
   dropdowns, or edit column formulas. Matching-pattern edits retain other formula
   patterns and manual overrides, updating their saved restore calculations.
@@ -295,8 +318,15 @@ automatically bundled or published.
   exclude rows from existing calculations**.
 - Tabs can be duplicated, renamed (double-click the active tab or use settings),
   reordered, colored, and deleted. Ctrl/Cmd+F commits the current draft and opens
-  the fixed-height Find and Replace dialog. Find has no replacement field;
-  replacement drafts survive tab switches. **All** selects every search sheet.
+  the fixed-height Find and Replace dialog. **Text** combines finding and
+  replacement; drafts survive tab switches. **All** selects every search sheet.
+  **Rows/Columns** scans the workbook for sheet-only rows/columns inside table
+  spans. Select results and **Convert to table** to join the indicated existing
+  table, undoably and without replacing populated cells. This never repairs gaps
+  automatically; table borders continue to expose actual membership.
+  The **Convert to table** toolbar icon joins the selection to its surrounding
+  existing table, not a new table. Selecting a summary includes all nested
+  members, even when collapsed. Multiple possible tables require an explicit choice.
   Fields and buttons reuse the app's common dialog styles. Within and Direction
   use the spreadsheet's shared chevron and custom popup options instead of native
   browser menus. The focused Find input shares the dropdown's active field
@@ -355,6 +385,8 @@ are explicit errors. Compatibility/limit errors are not hidden by IFERROR.
 IndexedDB commits the workbook and pending operation IDs in one transaction.
 The saved indicator appears only after commit. Stale-tab revisions and quota
 errors leave the previous durable workbook intact and show an explicit error.
+Errors appear in a dismissible bottom-corner toast, at most 400px wide, without
+moving the grid. Dismissing a toast never clears unsaved changes.
 Autosave is local; **Save** creates a local checkpoint or attempts connected
 sync. Undo/redo is session-local (up to 30 actions, at most three full structural
 snapshots; ordinary edits use cell deltas).

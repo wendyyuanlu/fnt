@@ -202,35 +202,83 @@ function inheritInsertedGroups(sheet:Sheet,axis:Group['axis'],insertions:{at:num
     }
   }
 }
-function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string,at:number):void {
-  const candidates=[...table.rows.slice(0,at).reverse(),...table.rows.slice(at+1)];
+function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string,at:number,preserve=false,templates?:ReadonlySet<string>):void {
+  const candidates=[...table.rows.slice(0,at).reverse(),...table.rows.slice(at+1)].filter(id=>!templates||templates.has(id));
   const marker=table.columns.find(c=>['ismeal','isday'].includes(c.name.toLowerCase())),label=table.columns.find(c=>['meal','weight'].includes(c.name.toLowerCase()));
   const engine=marker||label?new Engine(book):undefined;
   const isHeader=(id:string)=>{
     if(!engine)return false;
-    const value=scalar(engine.cell(sheet.id,id,(marker??label)!.column));
+    let value=scalar(engine.cell(sheet.id,id,(marker??label)!.column));
     if(isFault(value))throw Error('Fix the meal/day header marker error before adding records.');
-    return marker?value===true:value!==null&&value!=='';
+    if(marker&&value!==null&&value!=='')return value===true;
+    if(marker&&label){value=scalar(engine.cell(sheet.id,id,label.column));if(isFault(value))throw Error('Fix the meal/day header label error before adding records.');}
+    return value!==null&&value!=='';
   };
   const sameKind=candidates.filter(id=>isHeader(id)===isHeader(row));
   for(const col of table.columns){
+    const current=getCell(sheet,row,col.column);
+    if(preserve&&(current.formula||current.calculation||current.binding))continue;
     const matching=col===marker?candidates:sameKind;
     const template=matching.find(id=>getCell(sheet,id,col.column).formula??getCell(sheet,id,col.column).calculation)??matching[0];
     if(!template)continue;
     const source=getCell(sheet,template,col.column);
     const formula=source.formula??source.calculation;
-    sheet.cells[key(row,col.column)]={
-      format:source.format?clone(source.format):undefined,
-      ...(formula?{formula:translate(formula,book,sheet.id,template,col.column,row,col.column),spillHint:maySpill(formula)}:{})
-    };
+    const inherited=formula?translate(formula,book,sheet.id,template,col.column,row,col.column):undefined;
+    sheet.cells[key(row,col.column)]=preserve?{
+      ...current,format:current.format??((current.value==null||current.value==='')&&!current.note&&!current.link&&source.format?clone(source.format):undefined),
+      ...(inherited?current.value!=null&&current.value!==''?{calculation:inherited}:{formula:inherited,spillHint:maySpill(formula!)}:{})
+    }:{format:source.format?clone(source.format):undefined,...(inherited?{formula:inherited,spillHint:maySpill(formula!)}:{})};
   }
   for(const validation of [...sheet.validations]){
-    const columns=validation.columns.filter(c=>table.columns.some(col=>col.column===c));
+    const columns=validation.columns.filter(c=>table.columns.some(col=>col.column===c)&&(!preserve||!sheet.validations.some(v=>v.rows.includes(row)&&v.columns.includes(c))));
     if(columns.length&&validation.rows.includes(candidates[0])&&!validation.rows.includes(row)){
       if(columns.length===validation.columns.length)validation.rows.push(row);
       else sheet.validations.push({...clone(validation),id:uid(),rows:[row],columns});
     }
   }
+}
+function tableRowsToAdd(book:Workbook,sheet:Sheet,table:Table,ids:string[]):string[]{
+  const existing=new Set(sheet.rows.map(r=>r.id));
+  if(!book.tables.includes(table)||table.sheet!==sheet.id||!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!existing.has(id)))throw Error('Select existing rows and a table on their sheet.');
+  if(ids.includes(table.header))throw Error('A table header cannot be converted into a record.');
+  const members=new Set(table.rows),added=ids.filter(id=>!members.has(id)),columns=new Set(table.columns.map(c=>c.column));
+  for(const id of added)if(book.tables.some(t=>t!==table&&t.sheet===sheet.id&&(t.header===id||t.rows.includes(id))&&t.columns.some(c=>columns.has(c.column))))throw Error('These rows already belong to another table using the same columns.');
+  return added;
+}
+export function addTableRows(book:Workbook,sheet:Sheet,table:Table,ids:string[]):void{
+  const added=tableRowsToAdd(book,sheet,table,ids);
+  if(!added.length)throw Error('The selected rows already belong to this table.');
+  const templates=new Set(table.rows),members=new Set([...table.rows,...added]);
+  table.rows=sheet.rows.filter(r=>members.has(r.id)).map(r=>r.id);
+  for(const id of added)inheritTableRow(book,sheet,table,id,table.rows.indexOf(id),true,templates);
+}
+export function addTableColumns(book:Workbook,sheet:Sheet,table:Table,ids:string[]):void{
+  if(!book.tables.includes(table)||table.sheet!==sheet.id||!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!sheet.columns.some(c=>c.id===id)))throw Error('Select existing columns and a table on their sheet.');
+  const added=ids.filter(id=>!table.columns.some(c=>c.column===id)),rows=new Set([table.header,...table.rows]);
+  if(!added.length)throw Error('The selected columns already belong to this table.');
+  if(book.tables.some(t=>t!==table&&t.sheet===sheet.id&&[t.header,...t.rows].some(id=>rows.has(id))&&t.columns.some(c=>added.includes(c.column))))throw Error('These columns already belong to another table using the same rows.');
+  for(const id of added){
+    const column=sheet.columns.find(c=>c.id===id)!,header=getCell(sheet,table.header,id);
+    const name=uniqueName(table.columns.map(c=>c.name),typeof header.value==='string'&&header.value.trim()?header.value.trim():column.label||`Column ${letters(sheet.columns.indexOf(column))}`);
+    table.columns.push({id:uid(),column:id,name});
+    if(header.value==null&&!header.formula&&!header.calculation&&!header.binding)sheet.cells[key(table.header,id)]={...header,value:name};
+  }
+  const positions=new Map(sheet.columns.map((c,i)=>[c.id,i]));
+  table.columns.sort((a,b)=>positions.get(a.column)!-positions.get(b.column)!);
+}
+export type TableMembershipGap={sheet:string;table:string;axis:Group['axis'];member:string;index:number};
+export function tableMembershipGaps(book:Workbook):TableMembershipGap[]{
+  const gaps:TableMembershipGap[]=[];
+  for(const table of book.tables){
+    const sheet=book.sheets.find(s=>s.id===table.sheet)!;
+    for(const axis of ['row','column'] as const){
+      const items=axis==='row'?sheet.rows:sheet.columns,members=new Set(axis==='row'?[table.header,...table.rows]:table.columns.map(c=>c.column));
+      const positions=items.flatMap((item,index)=>members.has(item.id)?[index]:[]);
+      if(!positions.length)continue;
+      for(let index=positions[0]+1;index<positions.at(-1)!;index++)if(!members.has(items[index].id))gaps.push({sheet:sheet.id,table:table.id,axis,member:items[index].id,index});
+    }
+  }
+  return gaps;
 }
 export function expandAdjacentTable(book:Workbook,sheet:Sheet,row:string,column:string):Table|undefined {
   if(tableAt(book,sheet.id,row,column))return;
@@ -329,8 +377,16 @@ export function moveRows(book:Workbook,sheet:Sheet,ids:string[],boundary:number,
     return slots[at];
   }
   const at=sheet.rows.slice(0,boundary).filter(r=>!selected.has(r.id)).length,moving=sheet.rows.filter(r=>selected.has(r.id));
-  sheet.rows=sheet.rows.filter(r=>!selected.has(r.id));sheet.rows.splice(at,0,...moving);
+  const remaining=sheet.rows.filter(r=>!selected.has(r.id)),positions=new Map(remaining.map((row,index)=>[row.id,index]));
+  const targets=book.tables.filter(t=>t.sheet===sheet.id&&!selected.has(t.header)).flatMap(table=>{
+    const members=[table.header,...table.rows].flatMap(id=>positions.has(id)?[positions.get(id)!]:[]);
+    if(!members.length||at<=Math.min(...members)||at>Math.max(...members))return[];
+    const added=tableRowsToAdd(book,sheet,table,ids);return added.length?[{table,added}]:[];
+  });
+  for(let i=0;i<targets.length;i++)for(const other of targets.slice(i+1))if(targets[i].added.some(id=>other.added.includes(id))&&targets[i].table.columns.some(c=>other.table.columns.some(x=>x.column===c.column)))throw Error('The destination overlaps multiple tables using the same columns.');
+  sheet.rows=remaining;sheet.rows.splice(at,0,...moving);
   applyMoveGroupPlan(sheet,'row',ids,groups);
+  for(const target of targets)addTableRows(book,sheet,target.table,target.added);
   for(const table of book.tables.filter(t=>t.sheet===sheet.id))table.rows.sort((a,b)=>sheet.rows.findIndex(r=>r.id===a)-sheet.rows.findIndex(r=>r.id===b));
   return at;
 }

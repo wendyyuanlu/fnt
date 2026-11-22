@@ -38,14 +38,58 @@ test('toolbar tools rearrange with mouse or touch, preserve actions and survive 
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('#save-state')).toContainText(/^Saved/);
   await page.reload();await expect(first()).toHaveAttribute('data-toolbar-tool','action:bold');
   expect((await snapshot()).sheets).toEqual(before.sheets);
-  await page.locator('.reference-manager').click();await expect(page.locator('#status-filter')).toBeHidden();
+  await page.locator('.reference-manager').click();await expect(page.getByRole('button',{name:'View/hide hypothetical rows/columns'})).toBeVisible();
   await page.getByRole('button',{name:'Arrange toolbar',exact:true}).click();await page.getByRole('button',{name:'Redo',exact:true}).focus();await page.keyboard.press('Alt+ArrowLeft');
   await expect(page.locator('.toolbar [data-toolbar-tool]').nth(1)).toHaveAttribute('data-toolbar-tool','action:redo');
   await expect(page.locator('#save-state')).toContainText(/^Saved/);
   const ddOrder=(await snapshot()).toolbarOrder!;
-  expect(ddOrder).toContain('action:row-status');expect(ddOrder).toContain('action:quick-add');
+  expect(ddOrder).toContain('action:quick-add');
   await page.getByRole('button',{name:'Finish arranging toolbar',exact:true}).click();await page.locator('.reference-manager').click();
-  await expect(page.locator('#status-filter')).toBeVisible();expect((await snapshot()).toolbarOrder).toEqual(ddOrder);
+  await expect(page.getByRole('button',{name:'View/hide hypothetical rows/columns'})).toBeVisible();expect((await snapshot()).toolbarOrder).toEqual(ddOrder);
+});
+test('toolbar scroll stays in place after dragging, keyboard rearrangement and divider edits',async({page})=>{
+  await page.setViewportSize({width:500,height:800});await page.goto('/');
+  await page.getByRole('button',{name:'Arrange toolbar',exact:true}).click();
+  const toolbar=page.locator('.toolbar'),scroll=()=>toolbar.evaluate(el=>el.scrollLeft);
+  const order=()=>toolbar.locator('[data-toolbar-tool]').evaluateAll(elements=>elements.map(el=>el.getAttribute('data-toolbar-tool')));
+  await toolbar.evaluate(el=>{el.scrollLeft=180;});expect(await scroll()).toBe(180);
+  const source=toolbar.locator('[data-action="wrap"]'),target=toolbar.locator('[data-action="text-color"]');
+  await source.dragTo(target,{targetPosition:{x:44,y:16}});
+  await expect.poll(async()=>{const ids=await order();return ids.indexOf('action:wrap')>ids.indexOf('action:text-color');}).toBe(true);
+  expect(await scroll()).toBe(180);
+  await toolbar.evaluate(el=>{el.scrollLeft=210;});await source.focus();await page.keyboard.press('Alt+ArrowRight');
+  await expect.poll(async()=>{const ids=await order();return ids.indexOf('action:wrap')>ids.indexOf('action:background-color');}).toBe(true);
+  expect(await scroll()).toBe(210);
+  await page.getByRole('button',{name:'Add divider after Text color',exact:true}).click();expect(await scroll()).toBe(210);
+  await page.getByRole('button',{name:'Remove divider after Text color',exact:true}).click();expect(await scroll()).toBe(210);
+  await page.getByRole('button',{name:'Finish arranging toolbar',exact:true}).click();expect(await scroll()).toBe(210);
+});
+test('Shift ranges and Ctrl toggles move selected toolbar tools together without editing cells',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const cells=()=>page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{return(await store.load())!.book.sheets.map(sheet=>sheet.cells);}finally{store.close();}
+  });
+  const before=await cells();await page.getByRole('button',{name:'Arrange toolbar',exact:true}).click();
+  const bold=page.getByRole('button',{name:'Bold',exact:true}),italic=page.getByRole('button',{name:'Italic',exact:true}),underline=page.getByRole('button',{name:'Underline',exact:true});
+  const selected=()=>page.locator('.toolbar-tool-selected').evaluateAll(elements=>elements.map(el=>el.getAttribute('data-toolbar-tool')));
+  await bold.click();await underline.click({modifiers:['Control']});expect(await selected()).toEqual(['action:bold','action:underline']);
+  await bold.click();await underline.click({modifiers:['Shift']});expect(await selected()).toEqual(['action:bold','action:italic','action:underline']);
+  await italic.click({modifiers:['Control']});expect(await selected()).toEqual(['action:bold','action:underline']);
+  await page.getByRole('button',{name:'Wrap text',exact:true}).click({modifiers:['Control','Shift']});
+  expect(await selected()).toEqual(['action:bold','action:italic','action:underline','action:strikethrough','action:wrap']);
+  for(const name of ['Italic','Strikethrough','Wrap text'])await page.getByRole('button',{name,exact:true}).click({modifiers:['Control']});
+  expect(await selected()).toEqual(['action:bold','action:underline']);
+  await bold.dragTo(page.getByRole('button',{name:'Undo',exact:true}),{targetPosition:{x:2,y:16}});
+  const order=()=>page.locator('.toolbar [data-toolbar-tool]').evaluateAll(elements=>elements.map(el=>el.getAttribute('data-toolbar-tool')));
+  expect((await order()).slice(0,3)).toEqual(['action:bold','action:underline','action:undo']);
+  expect(await selected()).toEqual(['action:bold','action:underline']);
+  await underline.focus();await page.keyboard.press('Alt+ArrowRight');
+  expect((await order()).slice(0,3)).toEqual(['action:undo','action:bold','action:underline']);
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);expect(await cells()).toEqual(before);
+  await page.getByRole('button',{name:'Finish arranging toolbar',exact:true}).click();await page.getByRole('button',{name:'Undo',exact:true}).click();
+  expect((await order()).slice(0,3)).toEqual(['action:bold','action:underline','action:undo']);
+  await page.getByRole('button',{name:'Undo',exact:true}).click();expect((await order()).slice(0,3)).toEqual(['action:undo','action:redo','action:bold']);
 });
 test('toolbar divider gaps add on hover, delete on click and share a durable uniform style',async({page})=>{
   await page.goto('/');

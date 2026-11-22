@@ -1,5 +1,5 @@
 import './style.css';
-import { addRow, blankSheet, clone, columnIndex, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
+import { addRow, addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, columnIndex, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
 import { Store, SyncConflict, syncGitHub, type Backup, type LocalState } from './storage';
 import { parseArchive, stringifyArchive } from './archive';
@@ -83,7 +83,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')hideShortcutHint();}
 document.addEventListener('scroll',()=>{const focused=document.activeElement;if(focused instanceof HTMLButtonElement&&focused.dataset.shortcutKeys)showShortcutHint(focused,100);else hideShortcutHint();},{capture:true});
 window.addEventListener('resize',hideShortcutHint);
 let book: Workbook, state: LocalState, store: Store, engine: Engine;
-let sheetId = '', selected = {r:1,c:0}, anchor = {...selected}, page = 0, filter = 'all';
+let sheetId = '', selected = {r:1,c:0}, anchor = {...selected}, page = 0, showHypothetical=true;
 let selectionKind:'cells'|'rows'|'columns'='cells';
 let extraSelections:SelectionArea[]=[];
 let renderedSheet='',renderedTarget='',scrollTarget:number|undefined,drawRowWindow:(()=>void)|undefined;
@@ -108,7 +108,9 @@ let colorPicker:{pending:boolean;commit:()=>boolean;close:(apply?:boolean)=>bool
 let referenceNotice='';
 let awaitingMutationConfirmation=false;
 let hypotheticalOverridePreview:{sheet:string;axis:Group['axis'];ids:Set<string>}|undefined;
+let hypotheticalOverrideSkips=0;
 let arrangingToolbar=false,closeToolbar:(()=>void)|undefined;
+const toolbarSelection:{ids:Set<string>;anchor?:string}={ids:new Set()};
 let closeCellDropdown:(()=>void)|undefined;
 let groupControls:ReturnType<typeof mountGroupControls>|undefined,groupMenuOpen=false,groupMenuSheet='';
 let groupManager:{refresh:()=>void;paint:()=>void;close:()=>void}|undefined;
@@ -118,7 +120,7 @@ function closeExpandedEditor():void{
 }
 let dropdownAssignmentGrid=true;
 let resizing:{axis:'column'|'row';id:string;sheet:string;start:number;size:number;position:number;pointer:number;capture:HTMLElement}|undefined;
-let workbookView:{sheet:string;selected:typeof selected;anchor:typeof anchor;kind:'cells'|'rows'|'columns';scroll:number;left:number;filter:string}|undefined;
+let workbookView:{sheet:string;selected:typeof selected;anchor:typeof anchor;kind:'cells'|'rows'|'columns';scroll:number;left:number}|undefined;
 const activeReference=()=>book.references?.find(s=>s.id===referenceId);
 const gridReference=()=>{const source=activeReference();return source?referenceView(book,source):undefined;};
 const editableReference=()=>!activeReference()||activeReference()!.kind!=='derived';
@@ -134,6 +136,12 @@ const selectedAxisIndices=(axis:'row'|'column')=>{
   const ranges=currentSelections(),items=axis==='row'?sheet().rows:sheet().columns;
   return items.map((_,i)=>i).filter(i=>ranges.some(r=>axis==='row'?i>=r.r1&&i<=r.r2:i>=r.c1&&i<=r.c2));
 };
+function hypotheticalSelection(){
+  const mode=selectionMode();if(mode!=='rows'&&mode!=='columns')return;
+  const axis:Group['axis']=mode==='rows'?'row':'column',items=axis==='row'?sheet().rows:sheet().columns;
+  const ids=selectedAxisIndices(axis).map(i=>items[i].id),members=hypotheticalMembers(sheet(),axis);
+  return{axis,ids,tagged:ids.filter(id=>members.has(id)).length};
+}
 function beginSelection(e:MouseEvent|PointerEvent,kind:typeof selectionKind):void{
   if(e.ctrlKey||e.metaKey){if(!e.shiftKey||selectionKind!==kind)extraSelections.push(captureSelection(sheet(),bounds(),selectionKind));}
   else extraSelections=[];
@@ -289,10 +297,21 @@ function renderStatus(): void {
   const el = document.querySelector('#save-state');
   if (el) { el.textContent = draft!==undefined?'Editing cell - not saved yet':appendDraft?'Editing new option - not saved yet':colorPicker?.pending?'Previewing color - release to apply':status; el.className = `save-state ${error ? 'bad' : ''}`; }
   const alert = document.querySelector<HTMLElement>('#error');
-  if (alert) { alert.textContent = error; alert.hidden = !error; }
+  if (alert) {
+    alert.querySelector<HTMLElement>('.error-message')!.textContent=error;alert.hidden=!error;
+    alert.querySelector<HTMLButtonElement>('.error-dismiss')!.onclick=()=>{error='';renderStatus();};
+  }
   if(root.querySelector('[data-action="bold"]')){
     const format=inGrid(selected.r,selected.c)?current().format:undefined;
     for(const flag of ['bold','italic','underline','strikethrough','wrap'] as const)root.querySelector(`[data-action="${flag}"]`)?.setAttribute('aria-pressed',String(!!format?.[flag]));
+  }
+  const tag=root.querySelector<HTMLButtonElement>('[data-action="hypothetical"]');
+  if(tag){
+    const selection=hypotheticalSelection(),all=!!selection?.ids.length&&selection.tagged===selection.ids.length,mixed=!!selection?.tagged&&!all;
+    const label=getHypotheticalStyle(book).label;
+    tag.setAttribute('aria-pressed',mixed?'mixed':String(all));
+    tag.dataset.shortcutLabel=`${all?'Remove':'Add'} ${label} tag`;
+    tag.title=mixed?`Add ${label} to the selection (mixed tags)`:`${all?'Remove':'Add'} ${label} tag`;
   }
 }
 function referenceTabsHtml():string{
@@ -301,6 +320,7 @@ function referenceTabsHtml():string{
   return`<div class="tabs">${referenceNavigation(book).map(g=>node(g)).join('')}<button data-action="new-reference" aria-label="Add dropdown source">+</button><span class="tab-drop-marker" hidden></span></div>`;
 }
 function render(): void {
+  const toolbarScroll=root.querySelector<HTMLElement>('.toolbar')?.scrollLeft??0;
   closeToolbar?.();closeToolbar=undefined;
   hideShortcutHint();
   groupControls?.close();groupControls=undefined;
@@ -325,14 +345,14 @@ function render(): void {
   const collapsedRows=new Set(s.groups.filter(g=>g.axis==='row'&&g.collapsed).flatMap(g=>outlineMembers(g,s.groups)));
   const collapsedColumns=new Set(s.groups.filter(g=>g.axis==='column'&&g.collapsed).flatMap(g=>outlineMembers(g,s.groups)));
   const pins=pinnedColumns.get(s.id)??[];
-  const columns = s.columns.map((c,i) => ({...c,i})).filter(c => !c.hidden && !collapsedColumns.has(c.id)&&(!view||view.columns.includes(c.id)));
+  const hypotheticalRows=hypotheticalMembers(s,'row'),hypotheticalColumns=hypotheticalMembers(s,'column');
+  const columns = s.columns.map((c,i) => ({...c,i})).filter(c => !c.hidden && !collapsedColumns.has(c.id)&&(showHypothetical||!hypotheticalColumns.has(c.id))&&(!view||view.columns.includes(c.id)));
   columns.sort((a,b)=>Number(pins.includes(b.id))-Number(pins.includes(a.id)));
-  const rows = s.rows.map((r,i) => ({...r,i})).filter(r => !r.hidden && !collapsedRows.has(r.id) && (!view?filter === 'all' || (r.status ?? 'real') === filter:view.rows.includes(r.id)));
+  const rows = s.rows.map((r,i) => ({...r,i})).filter(r => !r.hidden && !collapsedRows.has(r.id)&&(showHypothetical||!hypotheticalRows.has(r.id))&&(!view||view.rows.includes(r.id)));
   navigationRows=rows.map(r=>r.i);navigationColumns=columns.map(c=>c.i);
   const groups=s.groups.filter(g=>!view||g.members.some(id=>(g.axis==='row'?view.rows:view.columns).includes(id)));
   const tree=!!s.outlineView?.tree,hints=s.outlineView?.plainGroupHints!==false,outlines=outlineGroups(groups),gutter=outlineGutter(outlines,rows.map(r=>r.id),tree,s.rows.length,hints);
   const firstColumn=columns[0],rowLayouts=summaryRowLayout(groups,rows.map(r=>r.id),tree,()=>true);
-  const hypotheticalRows=hypotheticalMembers(s,'row'),hypotheticalColumns=hypotheticalMembers(s,'column');
   const hypotheticalStyle=getHypotheticalStyle(book);
   const tableRightEdges=new Set<string>(),tableBottomEdges=new Set<string>();
   for(const table of book.tables.filter(table=>table.sheet===s.id)){
@@ -383,16 +403,16 @@ function render(): void {
       <div class="workbook-heading"><button id="title" title="Rename workbook">${esc(book.title)}</button></div>
       <div class="save-area"><span id="save-state" class="save-state">${esc(status)}</span><button class="primary" data-action="save">Save <span class="desktop">workbook</span></button><button data-action="file" aria-label="Workbook and backups" title="Import Excel, export and browser-local recovery">File</button></div>
     </header>
-    <div id="error" role="alert" class="error" ${error?'':'hidden'}>${esc(error)}</div>
+    <div id="error" role="alert" class="error" ${error?'':'hidden'}><span class="error-message">${esc(error)}</span><button type="button" class="error-dismiss" aria-label="Dismiss error" title="Dismiss error">${toolbarIcon('close')}</button></div>
     <nav class="toolbar" aria-label="Spreadsheet tools">
       <div class="tool-set">${(['undo','redo'] as const).map(name=>`<button class="icon-button" data-action="${name}" aria-label="${name==='undo'?'Undo':'Redo'}" title="${name==='undo'?'Undo (Ctrl+Z)':'Redo (Ctrl+Y)'}" ${(name==='undo'?undo:redo).length?'':'disabled'}>${toolbarIcon(name)}</button>`).join('')}</div>
       <div class="tool-set">${(['bold','italic','underline','strikethrough','wrap'] as const).map(name=>{const label={bold:'Bold',italic:'Italic',underline:'Underline',strikethrough:'Strikethrough',wrap:'Wrap text'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}<button class="icon-button palette-button" data-action="text-color" title="Text color" aria-label="Text color">${toolbarIcon('text-color',current().format?.color??'#cc1122')}<span class="format-caret"></span></button><button class="icon-button palette-button" data-action="background-color" title="Cell background color" aria-label="Cell background color">${toolbarIcon('background-color',current().format?.background??'#ffdf00')}<span class="format-caret"></span></button><button data-action="format">123</button></div>
-      <div class="tool-set">${referenceId?'<button data-action="reference-settings">DD settings</button>':''}<button data-action="dropdown-source" title="Assign a dropdown without changing cell contents">Assign DD</button></div>
+      <div class="tool-set">${referenceId?'<button data-action="reference-settings">DD settings</button>':''}<button class="icon-button" data-action="dropdown-source" aria-label="Assign DD" title="Assign a dropdown without changing cell contents">${toolbarIcon('dropdown-source')}</button></div>
       <div class="tool-set"><button class="icon-button" data-action="structure" title="Rows & columns" aria-label="Rows & columns">${toolbarIcon('structure')}</button>${referenceId?'<button data-action="archive-options">Hide / show selected options</button>':''}</div>
       <div class="tool-set">${(['find','copy','cut','paste','fill'] as const).map(name=>{const label={find:'Find / replace',copy:'Copy',cut:'Cut',paste:'Paste',fill:'Fill down'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}</div>
-      <div class="tool-set"><button class="icon-button" data-action="pin" aria-pressed="${pins.length>0}" title="${pins.length?'Unpin columns':'Pin selected columns'}" aria-label="${pins.length?'Unpin columns':'Pin selected columns'}">${toolbarIcon('pin')}</button><button class="icon-button" data-action="browse" title="Browse values" aria-label="Browse values">${toolbarIcon('browse')}</button><button class="icon-button" data-action="hypothetical" aria-label="Mark ${esc(hypotheticalStyle.label)}" title="Mark selected rows or columns ${esc(hypotheticalStyle.label)}" data-shortcut-label="Mark ${esc(hypotheticalStyle.label)}" data-shortcut-keys="Ctrl|H" aria-keyshortcuts="Control+H">${toolbarIcon('hypothetical')}</button><button class="icon-button" data-action="hypothetical-settings" aria-label="Hypothetical treatments" title="Customize ${esc(hypotheticalStyle.label)} row and column treatments">${toolbarIcon('hypothetical-settings')}</button><select id="status-filter" ${referenceId?'hidden':''} aria-label="Filter row status"><option value="all">All entries</option>${['real','planned','hypothetical'].map(v => `<option ${v===filter?'selected':''}>${v}</option>`).join('')}</select>${referenceId?'':'<button data-action="row-status">Set status</button>'}</div>
+      <div class="tool-set"><button class="icon-button" data-action="pin" aria-pressed="${pins.length>0}" title="${pins.length?'Unpin columns':'Pin selected columns'}" aria-label="${pins.length?'Unpin columns':'Pin selected columns'}">${toolbarIcon('pin')}</button><button class="icon-button" data-action="browse" title="Browse values" aria-label="Browse values">${toolbarIcon('browse')}</button><button class="icon-button" data-action="hypothetical" aria-label="Add/remove ${esc(hypotheticalStyle.label)} tag" aria-pressed="false" data-shortcut-label="Add/remove ${esc(hypotheticalStyle.label)} tag" data-shortcut-keys="Ctrl|H" aria-keyshortcuts="Control+H">${toolbarIcon('hypothetical')}</button><button class="icon-button" data-action="hypothetical-settings" aria-label="Hypothetical tag styling" title="Customize ${esc(hypotheticalStyle.label)} row and column treatments">${toolbarIcon('hypothetical-settings')}</button><button id="status-filter" class="icon-button" data-action="hypothetical-visibility" data-toolbar-control="status-filter" aria-label="View/hide hypothetical rows/columns" aria-pressed="${!showHypothetical}" title="${showHypothetical?'Hide':'Show'} ${esc(hypotheticalStyle.label)} rows and columns">${toolbarIcon('hypothetical-visibility')}</button></div>
       ${referenceId?'':'<div class="tool-set"><button data-action="quick-add">+ Add entry</button></div>'}
-      ${referenceId?'':'<div class="tool-set"><button data-action="tables">Tables</button><button data-action="block">Meal / day</button></div>'}
+      ${referenceId?'':`<div class="tool-set"><button class="icon-button" data-action="convert-table" aria-label="Convert to table" title="Join selected rows/columns to their surrounding table, including summary descendants">${toolbarIcon('convert-table')}</button><button data-action="tables">Tables</button><button data-action="block">Meal / day</button></div>`}
       <div class="tool-set toolbar-layout-controls"><button class="icon-button" data-action="toolbar-layout" aria-label="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar'}" aria-pressed="${arrangingToolbar}" title="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar: drag tools or use Alt+Left/Right'}">${toolbarIcon('toolbar-layout')}</button></div>
     </nav>
     <form class="formula-bar" id="formula-form"><span class="address">${letters(selected.c)}${selected.r+1}</span><span class="fx">fx</span><input id="formula" aria-label="Cell value or formula" autocomplete="off" spellcheck="false" value="${esc(draft??inputText(current()))}"><span id="calculation-state"></span></form>
@@ -458,7 +478,9 @@ function render(): void {
   if(draft!==undefined)syncDraft(draft,false,draftLiteral);
   expandedEditor?.position();
   renderStatus();
-  closeToolbar=mountToolbar(root.querySelector<HTMLElement>('.toolbar')!,{order:book.toolbarOrder,dividers:book.toolbarDividers,editing:arrangingToolbar,change:(order,dividers)=>commitDraft()&&mutate('Arrange toolbar',()=>{book.toolbarOrder=order;book.toolbarDividers=dividers;})});
+  const toolbar=root.querySelector<HTMLElement>('.toolbar')!;
+  closeToolbar=mountToolbar(toolbar,{order:book.toolbarOrder,dividers:book.toolbarDividers,editing:arrangingToolbar,selection:toolbarSelection,change:(order,dividers)=>commitDraft()&&mutate('Arrange toolbar',()=>{book.toolbarOrder=order;book.toolbarDividers=dividers;})});
+  toolbar.scrollLeft=toolbarScroll;
   rememberView();
 }
 function safeLink(value: string): boolean {
@@ -712,7 +734,6 @@ function bind(): void {
   });
   document.querySelector<HTMLInputElement>('#formula')!.oninput=e=>syncDraft((e.target as HTMLInputElement).value);
   document.querySelector<HTMLInputElement>('#formula')!.onkeydown=editKey;
-  document.querySelector<HTMLSelectElement>('#status-filter')!.onchange=e=>{filter=(e.target as HTMLSelectElement).value;render();};
   document.querySelector<HTMLInputElement>('#row-jump')!.onchange=e=>{
     if(!commitDraft())return;const s=sheet(),view=gridReference(),number=Number((e.target as HTMLInputElement).value),count=view?.rows.length??s.rows.length;if(!Number.isInteger(number)||number<1||number>count){flash(`Enter a row between 1 and ${count}.`);return;}selected.r=view?s.rows.findIndex(r=>r.id===view.rows[number-1]):number-1;anchor={...selected};selectionKind='cells';scrollTarget=selected.r;page=Math.floor(selected.r/60);render();
   };
@@ -998,7 +1019,7 @@ async function action(name:string):Promise<void> {
     });break;
     case 'pin':{const indices=selectedAxisIndices('column');pinnedColumns.set(sheetId,(pinnedColumns.get(sheetId)?.length??0)>0?[]:indices.map(i=>sheet().columns[i].id));render();break;}
     case 'browse':openBrowse();break;
-    case 'toolbar-layout':arrangingToolbar=!arrangingToolbar;render();root.querySelector<HTMLElement>('[data-action="toolbar-layout"]')?.focus({preventScroll:true});break;
+    case 'toolbar-layout':arrangingToolbar=!arrangingToolbar;if(!arrangingToolbar){toolbarSelection.ids.clear();toolbarSelection.anchor=undefined;}render();root.querySelector<HTMLElement>('[data-action="toolbar-layout"]')?.focus({preventScroll:true});break;
     case 'select-all':anchor={r:0,c:0};selected={r:sheet().rows.length-1,c:sheet().columns.length-1};selectionKind='cells';scrollTarget=0;render();break;
     case 'range':{const b=bounds();askText('Select a range (for example A2:C6)',`${letters(b.c1)}${b.r1+1}:${letters(b.c2)}${b.r2+1}`,text=>{
       const m=text.toUpperCase().match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/);if(!m){flash('Use a range such as A2:C6.');return;}
@@ -1017,6 +1038,7 @@ async function action(name:string):Promise<void> {
     case 'sheet-options':openSheetOptions();break;
     case 'structure':openStructure();break;
     case 'tables':openTables();break;
+    case 'convert-table':convertSelectionToTable();break;
     case 'references':if(referenceId)backToWorkbook();else openReferences();break;
     case 'back-workbook':backToWorkbook();break;
     case 'new-reference':newReference(referenceHost());break;
@@ -1035,13 +1057,12 @@ async function action(name:string):Promise<void> {
       }});break;
     }
     case 'hypothetical':case 'clear-hypothetical':{
-      const mode=selectionMode();
-      if(mode!=='rows'&&mode!=='columns'){flash('Select entire rows or columns to change their hypothetical tag.');break;}
-      const axis=mode==='rows'?'row':'column',items=axis==='row'?sheet().rows:sheet().columns;
-      const ids=selectedAxisIndices(axis).map(i=>items[i].id);
-      changeHypotheticalTags(axis,ids,name==='hypothetical');
+      const selection=hypotheticalSelection();
+      if(!selection){flash('Select entire rows or columns to change their hypothetical tag.');break;}
+      changeHypotheticalTags(selection.axis,selection.ids,name==='hypothetical'&&selection.tagged!==selection.ids.length);
       break;
     }
+    case 'hypothetical-visibility':showHypothetical=!showHypothetical;render();break;
     case 'ungroup-plain':{
       if(!book.sheets.some(s=>s.groups.some(g=>g.kind!=='summary'))){flash('There are no plain groups in this workbook.');break;}
       try{
@@ -1056,10 +1077,6 @@ async function action(name:string):Promise<void> {
       const s=sheet(),t=gridReference()?.table??tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??book.tables.find(t=>t.sheet===s.id);
       mutate('Add entry',()=>{const at=t?Math.max(s.rows.findIndex(r=>r.id===t.header)+1,...t.rows.map(id=>s.rows.findIndex(r=>r.id===id)+1)):selected.r+1;addRow(book,s,at,t);selected={r:at,c:t?s.columns.findIndex(c=>c.id===t.columns[0].column):0};anchor={...selected};selectionKind='cells';page=Math.floor(at/60);});document.querySelector<HTMLInputElement>('#formula')?.focus();break;
     }
-    case 'row-status':dialog('Entry status','<p>Metadata only. This does not rewrite dates or change imported formulas. Your formulas must explicitly exclude hypothetical rows if needed.</p><div class="menu">'+['real','planned','hypothetical'].map(x=>`<button data-status="${x}">${x}</button>`).join('')+'</div><hr><div class="button-row"><button id="mark-hypothetical">Mark hypothetical tag</button><button id="clear-hypothetical">Remove hypothetical tag</button></div>',d=>{
-      d.querySelectorAll<HTMLButtonElement>('[data-status]').forEach(el=>el.onclick=()=>{mutate('Set entry status',()=>{selectedAxisIndices('row').forEach(i=>sheet().rows[i].status=el.dataset.status as 'real'|'planned'|'hypothetical');});d.close();});
-      for(const [id,name]of [['mark-hypothetical','hypothetical'],['clear-hypothetical','clear-hypothetical']])d.querySelector<HTMLButtonElement>('#'+id)!.onclick=()=>{d.close();void action(name);};
-    });break;
     case 'file':openFile();break;
     case 'safety':openSafety();break;
     case 'report':dialog('Import compatibility',`<p>Original Excel remains authoritative. Recalculated results have not been comprehensively compared with Excel.</p><pre>${esc(JSON.stringify(book.importReport,null,2))}</pre>`);break;
@@ -1082,17 +1099,42 @@ function changeHypotheticalTags(axis:Group['axis'],ids:string[],enabled:boolean)
     setHypotheticalTag(sheet(),axis,ids,enabled,overwrite);
   });
   if(!overrides.length){apply(false);return;}
-  const preview={sheet:s.id,axis,ids:new Set(overrides.map(item=>item.id))},name=getHypotheticalStyle(book).label;
-  const details=overrides.map(item=>{
-    const index=items.findIndex(candidate=>candidate.id===item.id),coordinate=axis==='row'?`Row ${index+1}`:`Column ${letters(index)}`;
-    const values=axis==='row'?navigationColumns.slice(0,5).map(c=>cellText(getCell(s,item.id,s.columns[c].id),s,index,c)):navigationRows.slice(0,5).map(r=>cellText(getCell(s,s.rows[r].id,item.id),s,r,index));
-    const value=values.find(value=>value.trim())??'';
-    return `<li><strong>${coordinate} — ${item.hypothetical?'Marked':'Cleared'}</strong><span title="${esc(value)}">${esc(value)}</span></li>`;
+  if(hypotheticalOverrideSkips>0){if(apply(true))hypotheticalOverrideSkips--;return;}
+  const preview={sheet:s.id,axis,ids:new Set(overrides.map(item=>item.id))},style=getHypotheticalStyle(book);
+  const overrideIndexes=items.flatMap((item,index)=>preview.ids.has(item.id)?[index]:[]);
+  const rows=axis==='row'?overrideIndexes:s.rows.map((_,index)=>index),columns=axis==='column'?overrideIndexes:s.columns.map((_,index)=>index);
+  const headers=columns.map(c=>{
+    const column=s.columns[c],table=tableAt(book,s.id,s.rows[rows[0]].id,column.id);
+    const label=table?.columns.find(field=>field.column===column.id)?.name??column.label;
+    const heading=label===letters(c)?label:`${letters(c)} - ${label}`;
+    return `<th scope="col">${esc(heading)}</th>`;
   }).join('');
-  const d=dialog('Manual tag overrides',`<p>${overrides.length} child ${axis==='row'?'rows':'columns'} have manual tags or explicit clears. They are highlighted on the sheet.</p><ul class="hypothetical-override-list">${details}</ul><p>${enabled?'Applying':'Removing'} ${esc(name)} on the summary can replace these overrides so its children automatically inherit future parent changes. Cell values, formulas and groups stay unchanged.</p><div class="button-row"><button class="primary" id="inherit-hypothetical">Overwrite and inherit</button><button id="keep-hypothetical">Keep manual tags</button><button id="cancel-hypothetical">Cancel</button></div>`);
+  const contents=rows.map(r=>`<tr><th scope="row">${r+1}</th>${columns.map(c=>{
+    const cell=getCell(s,s.rows[r].id,s.columns[c].id),value=cellText(cell,s,r,c);
+    const treatment=(axis==='row'?s.rows[r].hypothetical:s.columns[c].hypothetical)?style[axis==='row'?'rows':'columns']:undefined;
+    const tagged=treatment&&(axis==='row'?c===columns[0]:r===rows[0]);
+    const badge=tagged&&treatment.badge?`<span class="hypothetical-badge" style="${hypotheticalBadgeCss(treatment)}" role="img" aria-label="${esc(style.label)}">${toolbarIcon('hypothetical-badge')}</span>`:'';
+    const header=book.tables.some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(field=>field.column===s.columns[c].id));
+    const classes=`${treatment?`hypothetical-cell ${treatment.fillOpacity>0?'has-hyp-fill ':''}${treatment.textColor?'custom-hyp-text ':''}`:''}${header?'table-header ':''}${cell.formula?'calculated ':''}${value.startsWith('#')?'cell-error ':''}`;
+    const format=`${cell.format?.background?`background-color:${esc(cell.format.background)};`:''}${cell.format?.color?`color:${esc(cell.format.color)};`:''}${cell.format?.bold?'font-weight:700;':''}${cell.format?.italic?'font-style:italic;':''}${cell.format?.underline||cell.format?.strikethrough?`text-decoration:${[cell.format?.underline?'underline':'',cell.format?.strikethrough?'line-through':''].filter(Boolean).join(' ')};`:''}`;
+    return `<td class="${classes}" style="${treatment?hypotheticalCss(treatment):''}${format}">${badge}<span class="cell-value"${treatment?` style="${hypotheticalTextCss(treatment)}"`:''}>${esc(value)}</span></td>`;
+  }).join('')}</tr>`).join('');
+  const details=`<div class="hypothetical-override-contents"><table class="grid hypothetical-override-grid" aria-label="Manual tag overrides"><colgroup><col style="width:48px">${columns.map(c=>`<col style="width:${s.columns[c].width??145}px">`).join('')}</colgroup><thead><tr><th scope="col">Row</th>${headers}</tr></thead><tbody>${contents}</tbody></table></div>`;
+  const d=dialog('Overwrite manual tagging?',`${details}<div class="hypothetical-override-skip"><label class="inline" title="Overwrite without asking for the next selected number of confirmations in this session."><input type="checkbox" id="skip-hypothetical">Don't show again for</label><input type="number" id="skip-hypothetical-count" aria-label="Number of times to skip" min="1" step="1" max="${Number.MAX_SAFE_INTEGER}" value="1" inputmode="numeric" disabled><span>times</span></div><div class="button-row"><button class="primary" id="inherit-hypothetical">Overwrite</button><button id="cancel-hypothetical">Cancel</button></div>`);
+  d.classList.add('hypothetical-override-dialog');
   const clear=()=>{if(hypotheticalOverridePreview===preview){hypotheticalOverridePreview=undefined;paintHypotheticalOverrides();}};
   hypotheticalOverridePreview=preview;paintHypotheticalOverrides();d.addEventListener('close',clear,{once:true});
-  for(const [id,overwrite]of [['inherit-hypothetical',true],['keep-hypothetical',false]] as const)d.querySelector<HTMLButtonElement>('#'+id)!.onclick=()=>{clear();d.close();apply(overwrite);};
+  const skip=d.querySelector<HTMLInputElement>('#skip-hypothetical')!,count=d.querySelector<HTMLInputElement>('#skip-hypothetical-count')!;
+  skip.onchange=()=>{count.disabled=!skip.checked;if(skip.checked)count.focus({preventScroll:true});};
+  count.oninput=()=>count.setCustomValidity('');
+  d.querySelector<HTMLButtonElement>('#inherit-hypothetical')!.onclick=()=>{
+    const next=skip.checked?count.valueAsNumber:0;
+    if(skip.checked){
+      if(!Number.isSafeInteger(next)||next<1)count.setCustomValidity('Enter a positive whole number of times.');
+      if(!count.reportValidity())return;
+    }
+    clear();d.close();if(apply(true))hypotheticalOverrideSkips=next;
+  };
   d.querySelector<HTMLButtonElement>('#cancel-hypothetical')!.onclick=()=>d.close();
 }
 function openFormat():void {
@@ -1185,10 +1227,10 @@ function openBrowse():void {
     const load=()=>{
       engine.beginPass();entries=[];browseError='';
       try{
-        const c=Number(column.value);
+        const c=Number(column.value),hypothetical=hypotheticalMembers(s,'row');
         for(let r=0;r<s.rows.length;r++){
           const row=s.rows[r];
-          if(row.hidden||filter!=='all'&&(row.status??'real')!==filter||book.tables.some(t=>t.sheet===s.id&&t.header===row.id))continue;
+          if(row.hidden||!showHypothetical&&hypothetical.has(row.id)||book.tables.some(t=>t.sheet===s.id&&t.header===row.id))continue;
           const value=scalar(engine.cell(s.id,row.id,s.columns[c].id));
           if(isFault(value)&&['#LIMIT!','#UNSUPPORTED!'].includes(value.error))throw Error('This column cannot be browsed safely until its calculation/compatibility error is resolved.');
           if(value!==null&&value!=='')entries.push({row:row.id,text:cellText(getCell(s,row.id,s.columns[c].id),s,r,c),index:r});
@@ -1240,6 +1282,29 @@ function openStructure():void {
       });
       if(op>=12)confirmAction(items[op]+'?', 'This changes the selected range. Deleted references become explicit errors.',run);else run();
     });
+  });
+}
+function convertSelectionToTable():void{
+  const s=sheet(),axis:Group['axis']=selectionMode()==='columns'?'column':'row',items=axis==='row'?s.rows:s.columns;
+  const roots=selectedAxisIndices(axis).map(index=>items[index].id),ids=summaryMoveMembers(s,axis,roots);
+  const gaps=tableMembershipGaps(book).filter(gap=>gap.sheet===s.id&&gap.axis===axis),expectedGeneration=generation;
+  const candidates=book.tables.filter(table=>{
+    if(table.sheet!==s.id)return false;
+    const members=new Set(axis==='row'?[table.header,...table.rows]:table.columns.map(c=>c.column)),inside=new Set(gaps.filter(gap=>gap.table===table.id).map(gap=>gap.member));
+    const ownedRoots=s.groups.filter(group=>group.axis===axis&&group.kind==='summary'&&roots.includes(group.members[0])&&(members.has(group.members[0])||inside.has(group.members[0]))).map(group=>group.members[0]);
+    const descendants=new Set(summaryMoveMembers(s,axis,ownedRoots));
+    return ids.some(id=>!members.has(id))&&ids.every(id=>members.has(id)||inside.has(id)||descendants.has(id));
+  });
+  if(!candidates.length){flash('Select sheet rows/columns inside an existing table, or a summary containing them. Already joined members need no conversion.');return;}
+  const join=(tableId:string)=>mutate('Join selected rows/columns to table',()=>{
+    if(generation!==expectedGeneration)throw Error('The workbook changed. Select the rows/columns again.');
+    const table=book.tables.find(t=>t.id===tableId)!;
+    if(axis==='row')addTableRows(book,s,table,ids.filter(id=>id!==table.header&&!table.rows.includes(id)));
+    else addTableColumns(book,s,table,ids.filter(id=>!table.columns.some(c=>c.column===id)));
+  });
+  if(candidates.length===1){join(candidates[0].id);return;}
+  dialog('Join selected rows/columns',`<form id="join-table-form"><label>Table<select id="join-table" required><option value="">Choose a surrounding table</option>${candidates.map(table=>`<option value="${table.id}">${esc(table.name)}</option>`).join('')}</select></label><button class="primary">Convert to table</button><p id="join-table-error" role="alert"></p></form>`,d=>{
+    d.querySelector<HTMLFormElement>('#join-table-form')!.onsubmit=e=>{e.preventDefault();if(join(d.querySelector<HTMLSelectElement>('#join-table')!.value))d.close();else d.querySelector('#join-table-error')!.textContent=error;};
   });
 }
 function openTables():void {
@@ -1422,7 +1487,7 @@ function openBlock():void {
 }
 function openReferences(id?:string,notice=''):void{
   if(!commitDraft())return;
-  if(!referenceId){const grid=root.querySelector<HTMLElement>('#grid-scroll');workbookView={sheet:sheetId,selected:{...selected},anchor:{...anchor},kind:selectionKind,scroll:grid?.scrollTop??0,left:grid?.scrollLeft??0,filter};}
+  if(!referenceId){const grid=root.querySelector<HTMLElement>('#grid-scroll');workbookView={sheet:sheetId,selected:{...selected},anchor:{...anchor},kind:selectionKind,scroll:grid?.scrollTop??0,left:grid?.scrollLeft??0};}
   referenceId=id??referenceId??book.references?.find(s=>s.kind!=='units'&&s.kind!=='conversions')?.id;
   if(!referenceId){newReference(referenceHost());return;}
   document.querySelector<HTMLDialogElement>('dialog')?.close();
@@ -1433,7 +1498,7 @@ function backToWorkbook():void{
   if(!commitDraft())return;
   referenceId=undefined;movingRows=movingColumns=undefined;
   const view=workbookView;workbookView=undefined;
-  if(view&&book.sheets.some(s=>s.id===view.sheet)){sheetId=view.sheet;selected=view.selected;anchor=view.anchor;selectionKind=view.kind;filter=view.filter;}
+  if(view&&book.sheets.some(s=>s.id===view.sheet)){sheetId=view.sheet;selected=view.selected;anchor=view.anchor;selectionKind=view.kind;}
   renderedSheet='';render();const grid=root.querySelector<HTMLElement>('#grid-scroll')!;if(view){grid.scrollTop=view.scroll;grid.scrollLeft=view.left;drawRowWindow?.();}
 }
 function referenceHost():ReferenceHost{return{
@@ -1815,13 +1880,14 @@ async function importReferenceSources(file?:File):Promise<void>{
   finally{busy=false;renderStatus();openReferences(undefined,notice);}
 }
 function openFind():void {
-  dialog('Find and Replace',`<div class="find-tabs" role="tablist" aria-label="Search mode"><button id="find-tab" role="tab" aria-controls="find-controls">Find</button><button id="replace-tab" role="tab" aria-controls="find-controls">Replace</button></div>
+  dialog('Find and Replace',`<div class="find-tabs" role="tablist" aria-label="Search mode"><button id="text-tab" role="tab" aria-controls="find-controls">Text</button><button id="membership-tab" role="tab" aria-controls="membership-panel">Rows/Columns</button></div>
     <div id="find-controls" class="find-controls" role="tabpanel"><label>Find<input id="find-text" type="search" autocomplete="off"></label><div id="replace-fields"></div>
     <details class="find-options" open><summary>Search options</summary><div class="find-selectors"><label>Within<select id="find-within"><option value="selected">Selected sheets</option><option value="workbook">Workbook</option></select></label><label>Direction<select id="find-direction"><option value="down">Down</option><option value="up">Up</option></select></label></div>
     <div class="find-flags"><label class="inline"><input id="find-case" type="checkbox">Match case</label><label class="inline"><input id="find-entire" type="checkbox">Match entire cell contents</label></div>
     <fieldset class="find-scope"><legend>Search sheets</legend><label class="inline"><input id="find-all-sheets" type="checkbox">All</label>${book.sheets.map(s=>`<label class="inline"><input type="checkbox" name="scope" value="${s.id}" ${s.id===sheetId?'checked':''}>${esc(s.name)}</label>`).join('')}</fieldset></details></div>
     <div class="find-results-panel"><p id="find-count" role="status">Results found (0)</p><div id="find-results" class="find-results-scroll"><table class="find-results-table"><colgroup><col style="width:80px"><col></colgroup><thead><tr><th scope="col">Cell</th><th scope="col">Value</th></tr></thead><tbody></tbody></table></div><div class="find-pagination" hidden><button id="find-previous-page" aria-label="Previous results page">Previous</button><span id="find-page-count"></span><button id="find-next-page" aria-label="Next results page">Next</button></div></div>
-    <p id="find-feedback" class="find-feedback" role="status"></p><div class="button-row find-actions"><button id="find-next" class="primary">Find next</button><button id="find-all">Find all</button><span id="replace-actions" class="button-row"></span></div>`,d=>{
+    <p id="find-feedback" class="find-feedback" role="status"></p><div class="button-row find-actions"><button id="find-next" class="primary">Find next</button><button id="find-all">Find all</button><span id="replace-actions" class="button-row"></span></div>
+    <div id="membership-panel" class="membership-panel" role="tabpanel" aria-labelledby="membership-tab" hidden><div class="membership-tools"><button id="membership-scan">Scan workbook</button><span id="membership-count" role="status"></span></div><div class="find-results-scroll membership-results"><table class="find-results-table"><colgroup><col style="width:34px"><col style="width:155px"><col></colgroup><thead><tr><th><input type="checkbox" id="membership-all" aria-label="Select all membership results"></th><th scope="col">Table / position</th><th scope="col">Contents</th></tr></thead><tbody></tbody></table></div><div class="find-pagination" id="membership-pagination" hidden><button id="membership-previous">Previous</button><span id="membership-page"></span><button id="membership-next">Next</button></div><p class="find-feedback" id="membership-feedback" role="status"></p><div class="button-row"><button id="membership-convert" class="primary" disabled>Convert to table</button></div></div>`,d=>{
     d.classList.add('find-dialog');
     const field=<T extends HTMLElement>(id:string)=>d.querySelector<T>('#'+id)!;
     const input=field<HTMLInputElement>('find-text'),scopes=[...d.querySelectorAll<HTMLInputElement>('input[name=scope]')],all=field<HTMLInputElement>('find-all-sheets');
@@ -1877,7 +1943,7 @@ function openFind():void {
       if(row.hidden||column.hidden||hidden.length){
         if(!mutate('Reveal search result',()=>{if(row.hidden)row.hidden=false;if(column.hidden)column.hidden=false;hidden.forEach(g=>g.collapsed=false);})){feedback(error,true);return;}
       }
-      sheetId=s.id;referenceId=undefined;workbookView=undefined;filter='all';extraSelections=[];selected={r:m.r,c:m.c};anchor={...selected};selectionKind='cells';scrollTarget=m.r;page=Math.floor(m.r/60);active=identity(m);resultPage=Math.floor(index/200);render();paint();
+      sheetId=s.id;referenceId=undefined;workbookView=undefined;extraSelections=[];selected={r:m.r,c:m.c};anchor={...selected};selectionKind='cells';scrollTarget=m.r;page=Math.floor(m.r/60);active=identity(m);resultPage=Math.floor(index/200);render();paint();
       d.querySelector<HTMLElement>(`[data-find-match="${index}"]`)?.scrollIntoView({block:'nearest'});
     };
     const next=()=>{
@@ -1900,13 +1966,63 @@ function openFind():void {
       }})){feedback(error,true);return;}
       draw(false);feedback(`${changed} literal cell${changed===1?'':'s'} replaced.${targets.length>editable.length?` ${targets.length-editable.length} other results left unchanged.`:''}`);
     };
-    const mode=(replaceMode:boolean)=>{
-      for(const id of ['find-tab','replace-tab']){const tab=field<HTMLButtonElement>(id),selected=id===(replaceMode?'replace-tab':'find-tab');tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;}
-      field('find-controls').setAttribute('aria-labelledby',replaceMode?'replace-tab':'find-tab');
-      field('replace-fields').innerHTML=replaceMode?`<label id="replace-label">Replace with<input id="replace-text" value="${esc(replacement)}"></label>`:'';
-      field('replace-actions').innerHTML=replaceMode?'<button id="replace-one">Replace</button><button id="replace-all">Replace all</button>':'';
-      if(replaceMode){field<HTMLInputElement>('replace-text').oninput=e=>replacement=(e.target as HTMLInputElement).value;field<HTMLButtonElement>('replace-one').onclick=()=>replace(false);field<HTMLButtonElement>('replace-all').onclick=()=>replace(true);}
-      buttons();
+    field('replace-fields').innerHTML=`<label id="replace-label">Replace with<input id="replace-text"></label>`;
+    field('replace-actions').innerHTML='<button id="replace-one">Replace</button><button id="replace-all">Replace all</button>';
+    field<HTMLInputElement>('replace-text').oninput=e=>replacement=(e.target as HTMLInputElement).value;
+    field<HTMLButtonElement>('replace-one').onclick=()=>replace(false);field<HTMLButtonElement>('replace-all').onclick=()=>replace(true);
+    let gaps:ReturnType<typeof tableMembershipGaps>=[],gapPage=0,gapGeneration=generation;
+    const selectedGaps=new Set<string>(),gapId=(gap:typeof gaps[number])=>`${gap.table}:${gap.axis}:${gap.member}`;
+    const gapButtons=()=>{
+      field<HTMLButtonElement>('membership-convert').disabled=!selectedGaps.size;
+      const all=field<HTMLInputElement>('membership-all');all.disabled=!gaps.length;all.checked=!!gaps.length&&selectedGaps.size===gaps.length;all.indeterminate=!!selectedGaps.size&&selectedGaps.size<gaps.length;
+    };
+    const paintGaps=()=>{
+      let previous='';engine.beginPass();
+      field('membership-panel').querySelector('tbody')!.innerHTML=gaps.slice(gapPage*200,gapPage*200+200).map((gap,j)=>{
+        const index=gapPage*200+j,s=book.sheets.find(s=>s.id===gap.sheet)!,table=book.tables.find(t=>t.id===gap.table)!;
+        const position=gap.axis==='row'?`Row ${gap.index+1}`:`Column ${letters(gap.index)}`;
+        const contents=gap.axis==='row'?table.columns.map(c=>cellText(getCell(s,gap.member,c.column),s,gap.index,s.columns.findIndex(x=>x.id===c.column))).filter(Boolean).join(' · '):cellText(getCell(s,table.header,gap.member),s,s.rows.findIndex(r=>r.id===table.header),gap.index)||s.columns[gap.index].label;
+        const header=previous===s.id?'':`<tr class="find-sheet-header"><th colspan="3">${esc(s.name)}</th></tr>`;previous=s.id;
+        return`${header}<tr data-membership-result="${index}"><td><input type="checkbox" aria-label="${esc(table.name)} ${position}" ${selectedGaps.has(gapId(gap))?'checked':''}></td><th scope="row">${esc(table.name)} · ${position}</th><td title="${esc(contents)}">${esc(contents)}</td></tr>`;
+      }).join('');
+      field('membership-count').textContent=`${gaps.length} sheet-only rows/columns`;
+      field('membership-pagination').hidden=gaps.length<=200;
+      field('membership-page').textContent=`${gapPage*200+1}-${Math.min(gaps.length,gapPage*200+200)} of ${gaps.length}`;
+      field<HTMLButtonElement>('membership-previous').disabled=gapPage===0;field<HTMLButtonElement>('membership-next').disabled=(gapPage+1)*200>=gaps.length;
+      gapButtons();
+    };
+    const scanGaps=()=>{
+      gaps=tableMembershipGaps(book);selectedGaps.clear();gapPage=0;gapGeneration=generation;paintGaps();
+      const feedback=field('membership-feedback');feedback.textContent=gaps.length?'Select rows/columns to add to the indicated table.':'No sheet-only rows or columns found between table members.';feedback.classList.remove('bad');feedback.setAttribute('role','status');
+    };
+    field('membership-panel').querySelector('tbody')!.onchange=e=>{
+      const row=(e.target as HTMLElement).closest<HTMLElement>('[data-membership-result]');
+      if(!row)return;const id=gapId(gaps[Number(row.dataset.membershipResult)]);
+      if((e.target as HTMLInputElement).checked)selectedGaps.add(id);else selectedGaps.delete(id);gapButtons();
+    };
+    field<HTMLInputElement>('membership-all').onchange=e=>{selectedGaps.clear();if((e.target as HTMLInputElement).checked)gaps.forEach(gap=>selectedGaps.add(gapId(gap)));paintGaps();};
+    field<HTMLButtonElement>('membership-scan').onclick=scanGaps;
+    field<HTMLButtonElement>('membership-previous').onclick=()=>{gapPage--;paintGaps();};
+    field<HTMLButtonElement>('membership-next').onclick=()=>{gapPage++;paintGaps();};
+    field<HTMLButtonElement>('membership-convert').onclick=()=>{
+      const chosen=gaps.filter(gap=>selectedGaps.has(gapId(gap)));
+      const ok=mutate('Convert sheet rows/columns to table',()=>{
+        if(generation!==gapGeneration)throw Error('The workbook changed. Scan again before converting.');
+        for(const tableId of new Set(chosen.map(gap=>gap.table))){
+          const table=book.tables.find(t=>t.id===tableId)!,s=book.sheets.find(s=>s.id===table.sheet)!;
+          const columns=chosen.filter(gap=>gap.table===tableId&&gap.axis==='column').map(gap=>gap.member),rows=chosen.filter(gap=>gap.table===tableId&&gap.axis==='row').map(gap=>gap.member);
+          if(columns.length)addTableColumns(book,s,table,columns);if(rows.length)addTableRows(book,s,table,rows);
+        }
+      });
+      if(ok){scanGaps();field('membership-feedback').textContent=`Converted ${chosen.length} row/column memberships.`;}
+      else{field('membership-feedback').textContent=error;field('membership-feedback').classList.add('bad');field('membership-feedback').setAttribute('role','alert');}
+    };
+    const mode=(membership:boolean)=>{
+      for(const id of ['text-tab','membership-tab']){const tab=field<HTMLButtonElement>(id),selected=id===(membership?'membership-tab':'text-tab');tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;}
+      field('find-controls').setAttribute('aria-labelledby','text-tab');
+      for(const el of d.querySelectorAll<HTMLElement>('.find-controls,.find-results-panel,#find-feedback,.find-actions'))el.hidden=membership;
+      field('membership-panel').hidden=!membership;
+      if(membership)scanGaps();else draw(false);
     };
     const syncScope=()=>{const count=scopes.filter(s=>s.checked).length;all.checked=count===scopes.length;all.indeterminate=count>0&&count<scopes.length;field<HTMLSelectElement>('find-within').value=all.checked?'workbook':'selected';within.refresh();};
     all.onchange=()=>{scopes.forEach(s=>s.checked=all.checked);syncScope();draw();};
@@ -1919,8 +2035,8 @@ function openFind():void {
     field<HTMLButtonElement>('find-next-page').onclick=()=>{resultPage++;paint();field('find-results').scrollTop=0;};
     const result=(e:Event)=>{const row=(e.target as HTMLElement).closest<HTMLElement>('[data-find-match]');if(row)go(Number(row.dataset.findMatch));};
     field('find-results').onclick=result;field('find-results').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();result(e);}};
-    field<HTMLButtonElement>('find-tab').onclick=()=>mode(false);field<HTMLButtonElement>('replace-tab').onclick=()=>mode(true);
-    d.querySelector<HTMLElement>('.find-tabs')!.onkeydown=e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const replaceMode=e.key==='ArrowRight'||e.key==='End';mode(replaceMode);field(replaceMode?'replace-tab':'find-tab').focus();}};
+    field<HTMLButtonElement>('text-tab').onclick=()=>mode(false);field<HTMLButtonElement>('membership-tab').onclick=()=>mode(true);
+    d.querySelector<HTMLElement>('.find-tabs')!.onkeydown=e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const membership=e.key==='ArrowRight'||e.key==='End';mode(membership);field(membership?'membership-tab':'text-tab').focus();}};
     mode(false);syncScope();draw();input.focus();
   });
 }
@@ -2015,7 +2131,7 @@ function openFile():void {
         const result=mergeIngredients(book,source.book);
         state=await store.save(result.book,state.version,'Ingredients import',true,source.original,{localOnly:true,recoveryArchive:recovery});
         token='';book=clone(state.book);engine=new Engine(book);generation++;savedGeneration=generation;
-        sheetId=result.sheet;selected={r:1,c:0};anchor={...selected};selectionKind='cells';page=0;filter='all';undo.length=redo.length=0;
+        sheetId=result.sheet;selected={r:1,c:0};anchor={...selected};selectionKind='cells';page=0;undo.length=redo.length=0;
         status=`Imported ${result.rows} Ingredients records locally; ${result.retainedRows} existing records retained - sync disconnected`;
         channel?.postMessage({version:state.version});
         render();d.close();
@@ -2101,7 +2217,7 @@ document.addEventListener('keydown',e=>{
   if(e.isComposing||e.keyCode===229||e.altKey||!(e.ctrlKey||e.metaKey)||e.key.toLowerCase()!=='f')return;
   e.preventDefault();e.stopPropagation();
   const existing=document.querySelector<HTMLInputElement>('.find-dialog[open] #find-text');
-  if(existing){existing.focus();existing.select();return;}
+  if(existing){document.querySelector<HTMLButtonElement>('.find-dialog[open] #text-tab')!.click();existing.focus();existing.select();return;}
   if(!book)return;
   if(document.querySelector('dialog[open]')){flash('Close the current dialog before opening Find and Replace.');return;}
   void action('find');
@@ -2195,7 +2311,7 @@ async function start():Promise<void> {
       }else{book=seedDropdownCatalog(createDemo()).book;state=await store.save(book,0,'Create starter workbook with original Dropdowns catalogs');}
     }
     let remembered:string|null=null;try{remembered=sessionStorage.getItem('fnt-current-sheet');}catch(e){error=`Selected-tab preference unavailable: ${String(e)}`;}
-    stage='rendering the spreadsheet';engine=new Engine(book);sheetId=book.sheets.some(s=>s.id===remembered)?remembered!:book.sheets[0].id;const view=restoreView();if(referenceId&&!workbookView){const s=book.sheets.find(s=>!s.supporting)??book.sheets[0];workbookView={sheet:s.id,selected:{r:0,c:0},anchor:{r:0,c:0},kind:'cells',scroll:0,left:0,filter:'all'};}status=state.sync?`Saved locally - ${state.pending.length} pending changes`:'Saved in this browser';render();if(view){const grid=root.querySelector<HTMLElement>('#grid-scroll')!;grid.scrollTop=view.scroll;grid.scrollLeft=view.left;drawRowWindow?.();rememberView();}
+    stage='rendering the spreadsheet';engine=new Engine(book);sheetId=book.sheets.some(s=>s.id===remembered)?remembered!:book.sheets[0].id;const view=restoreView();if(referenceId&&!workbookView){const s=book.sheets.find(s=>!s.supporting)??book.sheets[0];workbookView={sheet:s.id,selected:{r:0,c:0},anchor:{r:0,c:0},kind:'cells',scroll:0,left:0};}status=state.sync?`Saved locally - ${state.pending.length} pending changes`:'Saved in this browser';render();if(view){const grid=root.querySelector<HTMLElement>('#grid-scroll')!;grid.scrollTop=view.scroll;grid.scrollLeft=view.left;drawRowWindow?.();rememberView();}
     if('serviceWorker'in navigator&&import.meta.env.PROD){
       navigator.serviceWorker.addEventListener('message',e=>{
         if(e.data?.type!=='fnt-update-ready'||!Array.isArray(e.data.files))return;

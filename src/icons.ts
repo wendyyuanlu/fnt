@@ -3,6 +3,9 @@ const stampFrame='M2 2h2.5a1.5 1.5 0 0 0 3 0h3a1.5 1.5 0 0 0 3 0h3a1.5 1.5 0 0 0
 export const toolbarIconPaths={
   undo:'M9 5l-5 5 5 5M4 10h9a7 7 0 0 1 7 7v2',
   redo:'M15 5l5 5-5 5M20 10h-9a7 7 0 0 0-7 7v2',
+  close:'M6 6l12 12M18 6 6 18',
+  'convert-table':'M2 5h6M2 9h6M12 12h10v10H12ZM12 17h10M17 12v10M6 13l5 4m-1-4 1 4-4-1',
+  'dropdown-source':'M2 2h20v7H2ZM16 2v7M5 5.5h8M17.5 4.5l1.5 2 1.5-2M4 9v13h16V9M4 15.5h16M7 12h9M7 19h9',
   'toolbar-layout':'M3 3h18v6H3ZM8 3v6M13 3v6M18 3v6M12 18l8-8 3 3-8 8-4 1 1-4ZM18 12l3 3',
   bold:'M7 5h5a3.5 3.5 0 0 1 0 7H7m5 0h1a3.5 3.5 0 0 1 0 7H7V5',
   italic:'M10 5h8M6 19h8M15 5l-6 14',
@@ -13,6 +16,7 @@ export const toolbarIconPaths={
   hypothetical:boxyH,
   'hypothetical-badge':'M4 4h5v6h6V4h5v16h-5v-6H9v6H4Z',
   'hypothetical-settings':boxyH,
+  'hypothetical-visibility':'M4 4h5v6h6V4h5v16h-5v-6H9v6H4ZM3 21 21 3',
   copy:'M9 9h12v12H9ZM5 15H3V3h12v2',
   cut:'M8 7a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM8 17a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM8 8l12 12M8 16 20 4',
   paste:'M9 4H5v17h14V4h-4M9 2h6v4H9ZM8 11h8M8 15h6',

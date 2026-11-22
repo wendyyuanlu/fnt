@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compile, displayFormula, Engine, flatten } from '../src/formula';
-import { addRow, clone, createDemo, deleteColumn, deleteRows, duplicateSheet, fillCells, getCell, insertColumn, key, move, moveColumns, moveRows, outlineMembers, renameColumn, setInput, translate } from '../src/model';
+import { addRow, addTableRows, addTableColumns, tableMembershipGaps, clone, createDemo, deleteColumn, deleteRows, duplicateSheet, fillCells, getCell, insertColumn, key, move, moveColumns, moveRows, outlineMembers, renameColumn, setInput, translate } from '../src/model';
 
 it('summary identities stay visible, move with their details and do not reanchor after deletion',()=>{
   const b=createDemo(),s=b.sheets[3],rows=s.rows.slice(1,4).map(r=>r.id),columns=s.columns.slice(1,4).map(c=>c.id),cells=clone(s.cells);
@@ -62,6 +62,64 @@ describe('identity-bound calculation',()=>{
     const {book,ingredients,table}=fixture(),row=addRow(book,ingredients,4,table);
     setInput(book,ingredients,row.id,table.columns[1].column,'50');setInput(book,ingredients,row.id,table.columns[2].column,'100');
     expect(new Engine(book).cell(ingredients.id,row.id,table.columns[5].column)).toBe(2);
+  });
+  it('joins populated rows without replacing their cells or using newly joined rows as templates',()=>{
+    const {book,ingredients:s,table:t}=fixture(),[first,second]=s.rows.slice(5,7).map(r=>r.id),columns=t.columns;
+    const original={value:'Joined example',note:'Keep this note',link:'https://example.test/recipe',format:{wrap:false,italic:true}};
+    getCell(s,t.rows.at(-1)!,columns[0].column).format={wrap:true,background:'#abcdef'};
+    s.cells[key(first,columns[0].column)]=clone(original);
+    s.cells[key(first,columns[4].column)]={binding:{table:t.id,row:t.rows[0],column:columns[4].id}};
+    setInput(book,s,first,columns[5].column,'=777');const formula=clone(getCell(s,first,columns[5].column));
+    for(const row of [first,second]){s.cells[key(row,columns[1].column)]={value:50};s.cells[key(row,columns[2].column)]={value:100};}
+    s.validations.push({id:'own-rule',sheet:s.id,rows:[first],columns:[columns[4].column],values:['kg'],source:'="kg"'},{id:'neighbor-rule',sheet:s.id,rows:[t.rows.at(-1)!],columns:[columns[4].column],values:['g'],source:'="g"'});
+    const binding=clone(getCell(s,first,columns[4].column));
+    addTableRows(book,s,t,[first,second]);
+    expect(getCell(s,first,columns[0].column)).toEqual(original);
+    expect(getCell(s,first,columns[4].column)).toEqual(binding);expect(getCell(s,first,columns[5].column)).toEqual(formula);
+    expect(s.validations[0].rows).toEqual([first]);expect(s.validations[1].rows).not.toContain(first);expect(s.validations[1].rows).toContain(second);
+    expect(new Engine(book).cell(s.id,second,columns[5].column)).toBe(2);
+    renameColumn(book,t,columns[1].id,'Serving size');moveColumns(book,s,[columns[1].column],0);
+    expect(new Engine(JSON.parse(JSON.stringify(book))).cell(s.id,second,columns[5].column)).toBe(2);
+  });
+  it('retains manual calculated-field overrides while attaching their inherited restore formula',()=>{
+    const {book,ingredients:s,table:t}=fixture(),row=s.rows[5].id,column=t.columns[5].column;
+    s.cells[key(row,t.columns[1].column)]={value:50};s.cells[key(row,t.columns[2].column)]={value:100};
+    s.cells[key(row,column)]={value:9,note:'Manual override',format:{wrap:false}};
+    addTableRows(book,s,t,[row]);expect(getCell(s,row,column)).toMatchObject({value:9,note:'Manual override',format:{wrap:false}});
+    expect(new Engine(book).cell(s.id,row,column)).toBe(9);
+    expect(flatten(new Engine(book).evaluate(getCell(s,row,column).calculation!,s.id,row,column))[0]).toBe(2);
+  });
+  it('automatically joins complete moved summary blocks only inside destination table spans',()=>{
+    const {book,ingredients:s,table:t}=fixture(),block=s.rows.slice(6,8).map(r=>r.id),outside=s.rows[8].id;
+    for(const [i,row]of block.entries()){s.cells[key(row,t.columns[0].column)]={value:`Moved example ${i}`};s.cells[key(row,t.columns[1].column)]={value:50};s.cells[key(row,t.columns[2].column)]={value:100+i*50};}
+    s.groups.push({id:'moved-block',axis:'row',members:block,kind:'summary',collapsed:true,label:'Moved block'});
+    moveRows(book,s,[block[0]],2);expect(t.rows.slice(1,3)).toEqual(block);expect(s.rows.slice(2,4).map(r=>r.id)).toEqual(block);
+    expect(new Engine(book).cell(s.id,block[0],t.columns[5].column)).toBe(2);expect(new Engine(book).cell(s.id,block[1],t.columns[5].column)).toBe(3);
+    moveRows(book,s,[outside],s.rows.length);expect(t.rows).not.toContain(outside);
+  });
+  it('finds actual row/column membership gaps and adds existing columns without rebinding formulas',()=>{
+    const {book,ingredients:s,table:t,calories}=fixture(),row=t.rows[1],extra=s.columns[7].id,source=s.rows[1].id,notebook=book.sheets[3];
+    s.cells[key(t.header,extra)]={value:t.columns[1].name,note:'Existing header'};
+    setInput(book,s,source,extra,'=B2*2');setInput(book,notebook,notebook.rows[1].id,notebook.columns[0].id,'=Ingredients!H2');
+    const cell=clone(getCell(s,source,extra)),before=calories(),expected=new Engine(book).cell(s.id,source,extra);
+    t.rows=t.rows.filter(id=>id!==row);moveColumns(book,s,[extra],2);
+    expect(tableMembershipGaps(book)).toEqual([{sheet:s.id,table:t.id,axis:'row',member:row,index:2},{sheet:s.id,table:t.id,axis:'column',member:extra,index:2}]);
+    addTableColumns(book,s,t,[extra]);addTableRows(book,s,t,[row]);
+    expect(tableMembershipGaps(book)).toEqual([]);expect(getCell(s,source,extra)).toEqual(cell);expect(getCell(s,t.header,extra)).toEqual({value:t.columns[1].name,note:'Existing header'});
+    const column=t.columns.find(c=>c.column===extra)!;expect(column.name).not.toBe(t.columns.find(c=>c.column===s.columns[1].id)!.name);
+    renameColumn(book,t,column.id,'Added field');moveColumns(book,s,[extra],s.columns.length);
+    expect(new Engine(book).cell(notebook.id,notebook.rows[1].id,notebook.columns[0].id)).toBe(expected);expect(calories()).toBe(before);
+  });
+  it('rejects conflicting enrollment before moving rows or changing table membership',()=>{
+    const {book,ingredients:s,table:t}=fixture(),row=s.rows[5].id;
+    book.tables.push({...clone(t),id:'row-owner',name:'Row owner',header:s.rows[8].id,rows:[row],columns:[clone(t.columns[0])]});
+    const before=clone(book);
+    expect(()=>moveRows(book,s,[row],2)).toThrow('another table');expect(book).toEqual(before);
+    expect(()=>addTableRows(book,s,t,[row])).toThrow('another table');expect(book).toEqual(before);
+    const other=fixture(),extra=other.ingredients.columns[7].id;
+    other.book.tables.push({...clone(other.table),id:'column-owner',name:'Column owner',columns:[{id:'extra-field',column:extra,name:'Extra'}]});
+    const beforeColumns=clone(other.book);
+    expect(()=>addTableColumns(other.book,other.ingredients,other.table,[extra])).toThrow('another table');expect(other.book).toEqual(beforeColumns);
   });
   it('fills relative formulas in both directions without moving absolute references',()=>{
     const {book}=fixture(),s=book.sheets[3];s.cells={};

@@ -22,7 +22,120 @@ async function snapshot(page:Page){
   await expect(page.locator('#save-state')).toContainText('Saved');
   return page.evaluate(async()=>{const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();try{return(await store.load())!.book;}finally{store.close();}});
 }
-test('global errors overlay the bottom edge without moving the spreadsheet',async({page})=>{
+test('visibility hides inherited hypothetical rows and columns without changing workbook data',async({page})=>{
+  await fixture(page);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0];
+      s.rows[1].hypothetical=true;s.rows[2].hypothetical=false;s.rows[4].status='hypothetical';s.rows[7].status='planned';
+      s.columns[1].hypothetical=true;s.columns[2].hypothetical=false;
+      await store.save(state.book,state.version,'Synthetic tag visibility fixture');
+    }finally{store.close();}
+  });
+  await page.reload();const before=await snapshot(page);
+  await expect(page.getByRole('button',{name:'Set status',exact:true})).toHaveCount(0);
+  await expect(page.getByRole('combobox',{name:'Filter row status'})).toHaveCount(0);
+  const toggle=page.getByRole('button',{name:'View/hide hypothetical rows/columns',exact:true});
+  await expect(toggle).toHaveAttribute('aria-pressed','false');
+  await expect(page.locator('tr[data-row="1"]')).toBeVisible();await expect(page.locator('th[data-col="1"]')).toBeVisible();
+  await toggle.click();await expect(toggle).toHaveAttribute('aria-pressed','true');
+  for(const index of [1,3]){await expect(page.locator(`tr[data-row="${index}"]`)).toHaveCount(0);await expect(page.locator(`th[data-col="${index}"]`)).toHaveCount(0);}
+  await expect(page.locator('tr[data-row="2"]')).toBeVisible();await expect(page.locator('th[data-col="2"]')).toBeVisible();
+  await expect(page.locator('tr[data-row="4"]')).toBeVisible();await expect(page.locator('tr[data-row="7"]')).toBeVisible();
+  await toggle.click();await expect(toggle).toHaveAttribute('aria-pressed','false');
+  await expect(page.locator('tr[data-row="1"]')).toBeVisible();await expect(page.locator('th[data-col="1"]')).toBeVisible();
+  expect(await snapshot(page)).toEqual(before);
+  await page.reload();await expect(toggle).toHaveAttribute('aria-pressed','false');
+});
+for(const axis of ['row','column'] as const)test(`tag toggle reflects ${axis} inheritance, explicit exclusions and mixed selections`,async({page})=>{
+  await fixture(page);const before=await snapshot(page),toggle=page.locator('[data-action="hypothetical"]');
+  const select=async(index:number,shift=false)=>page.locator(axis==='row'?`[data-row-select="${index}"] .row-index`:`th[data-col="${index}"] .column-index`).click({modifiers:shift?['Shift']:[]});
+  await select(1);await expect(toggle).toHaveAttribute('aria-pressed','false');await toggle.click();await expect(toggle).toHaveAttribute('aria-pressed','true');
+  await select(2);await expect(toggle).toHaveAttribute('aria-pressed','true');await toggle.click();await expect(toggle).toHaveAttribute('aria-pressed','false');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(toggle).toHaveAttribute('aria-pressed','true');
+  await select(1);await toggle.click();await expect(toggle).toHaveAttribute('aria-pressed','false');
+  await select(2);await toggle.click();await select(1);await select(3,true);await expect(toggle).toHaveAttribute('aria-pressed','mixed');
+  await toggle.click();await page.getByRole('button',{name:'Overwrite',exact:true}).click();await expect(toggle).toHaveAttribute('aria-pressed','true');
+  const after=await snapshot(page);expect(after.sheets[0].cells).toEqual(before.sheets[0].cells);expect(after.sheets[0].groups).toEqual(before.sheets[0].groups);
+});
+test('override confirmation shares headers and sizes to complete labeled contents',async({page})=>{
+  await fixture(page);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    const model='/src/model.ts',{setInput}=await import(/* @vite-ignore */model) as typeof import('../../src/model');
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0];
+      s.rows[2].hypothetical=true;setInput(state.book,s,s.rows[2].id,s.columns[5].id,'=40+2');
+      s.rows[3].hypothetical=false;s.rows[4].hypothetical=false;s.groups.find(g=>g.id==='summary')!.members.push(s.rows[4].id);
+      state.book.hypotheticalStyle!.linked=false;
+      Object.assign(state.book.hypotheticalStyle!.rows,{pattern:'dots',patternColor:'#556699',textColor:'#112244',textOpacity:.55,fillColor:'#cceedd',fillOpacity:.2,bold:true,underline:true});
+      s.cells[`${s.rows[2].id}:${s.columns.at(-1)!.id}`]={value:'Later column review note\nSecond line',format:{wrap:false}};
+      await store.save(state.book,state.version,'Synthetic full row preview');
+    }finally{store.close();}
+  });
+  await page.reload();const before=await snapshot(page);
+  const effects=(el:Element)=>{const cell=getComputedStyle(el),text=getComputedStyle(el.querySelector('.cell-value')!);return{background:cell.backgroundImage,size:cell.backgroundSize,color:text.color,opacity:text.opacity,bold:text.fontWeight,underline:text.textDecorationLine};};
+  const sourceEffects=await page.locator('td[data-r="2"][data-c="5"]').evaluate(effects);
+  await page.locator('[data-row-select="1"] .row-index').click();await page.locator('[data-action="hypothetical"]').click();
+  const dialog=page.getByRole('dialog'),preview=dialog.getByRole('table',{name:'Manual tag overrides'});
+  await expect(dialog.getByRole('table')).toHaveCount(1);await expect(preview.locator('thead tr')).toHaveCount(1);
+  await expect(preview.locator('tbody tr')).toHaveCount(3);expect(await preview.locator('tbody th').allTextContents()).toEqual(['3','4','5']);
+  const row=preview.locator('tbody tr').first();
+  await expect(row.locator('td')).toHaveCount(before.sheets[0].columns.length);
+  await expect(row.locator('td').nth(5)).toHaveText('42');
+  await expect(row.locator('td').last()).toHaveText('Later column review note\nSecond line');
+  await expect(preview.getByRole('columnheader',{name:'Hypothetical?',exact:true})).toHaveCount(0);
+  await expect(row.locator('td.hypothetical-cell')).toHaveCount(before.sheets[0].columns.length);
+  await expect(preview.locator('tbody tr').nth(1).locator('.hypothetical-cell')).toHaveCount(0);
+  await expect(preview.locator('tbody tr').nth(2).locator('.hypothetical-cell')).toHaveCount(0);
+  expect(await row.locator('td').nth(5).evaluate(effects)).toEqual(sourceEffects);
+  await expect(row.locator('.hypothetical-badge')).toHaveCount(1);
+  await expect(dialog).not.toContainText('excluded');await expect(dialog.locator('li')).toHaveCount(0);
+  await expect(dialog.locator(':scope > p')).toHaveCount(0);
+  const rect=(await dialog.boundingBox())!;expect(rect.y).toBeGreaterThan(0);expect(rect.height).toBeLessThan(page.viewportSize()!.height/2);
+  expect(await dialog.evaluate(el=>el.scrollHeight<=el.clientHeight)).toBe(true);
+  expect(await dialog.locator('.hypothetical-override-contents').evaluate(el=>el.scrollHeight<=el.clientHeight)).toBe(true);
+  await dialog.getByRole('button',{name:'Cancel',exact:true}).click();expect(await snapshot(page)).toEqual(before);
+});
+test('skipping confirmations overwrites exactly the requested number of subsequent row and column overrides',async({page})=>{
+  await fixture(page);
+  const select=async(axis:'row'|'column',index:number)=>page.locator(axis==='row'?`[data-row-select="${index}"] .row-index`:`th[data-col="${index}"] .column-index`).click();
+  const change=async(axis:'row'|'column')=>{await select(axis,2);await page.keyboard.press('Control+h');await select(axis,1);await page.keyboard.press('Control+h');};
+  const before=await snapshot(page);await change('row');
+  const dialog=page.getByRole('dialog');
+  await dialog.getByRole('checkbox',{name:"Don't show again for",exact:true}).check();
+  await dialog.getByRole('spinbutton',{name:'Number of times to skip'}).fill('2');
+  await dialog.getByRole('button',{name:'Overwrite',exact:true}).click();
+  for(const axis of ['column','row'] as const){
+    await change(axis);await expect(dialog).toHaveCount(0);
+    const s=(await snapshot(page)).sheets[0];expect((axis==='row'?s.rows:s.columns)[2].hypothetical).toBeUndefined();
+  }
+  await change('column');await expect(dialog).toBeVisible();await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+  expect((await snapshot(page)).sheets[0].cells).toEqual(before.sheets[0].cells);
+  await page.keyboard.press('Control+h');
+  await dialog.getByRole('checkbox',{name:"Don't show again for",exact:true}).check();
+  await dialog.getByRole('spinbutton',{name:'Number of times to skip'}).fill('2');
+  await dialog.getByRole('button',{name:'Overwrite',exact:true}).click();
+  await page.reload();await change('row');await expect(dialog).toBeVisible();
+});
+test('invalid skip counts and cancellation never change tags or activate suppression',async({page})=>{
+  await fixture(page);
+  await page.locator('[data-row-select="2"] .row-index').click();await page.keyboard.press('Control+h');
+  const before=await snapshot(page);
+  await page.locator('[data-row-select="1"] .row-index').click();await page.keyboard.press('Control+h');
+  const dialog=page.getByRole('dialog'),count=dialog.getByRole('spinbutton',{name:'Number of times to skip'});
+  await expect(count).toBeDisabled();await dialog.getByRole('checkbox',{name:"Don't show again for",exact:true}).check();
+  for(const value of ['0','2.5','']){
+    await count.fill(value);await dialog.getByRole('button',{name:'Overwrite',exact:true}).click();
+    await expect(dialog).toBeVisible();await expect(count).toBeFocused();expect(await snapshot(page)).toEqual(before);
+  }
+  await count.fill('2');await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+  await page.keyboard.press('Control+h');await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('checkbox',{name:"Don't show again for",exact:true})).not.toBeChecked();
+  expect(await snapshot(page)).toEqual(before);
+});
+test('errors float within 400px with viewport spacing and dismiss without moving the spreadsheet',async({page})=>{
   await fixture(page,false);await page.locator('td[data-r="2"][data-c="0"]').click();
   const layout=()=>page.evaluate(()=>['.app-header','#grid-scroll','.tabs'].map(selector=>{
     const r=document.querySelector(selector)!.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};
@@ -31,8 +144,12 @@ test('global errors overlay the bottom edge without moving the spreadsheet',asyn
   const toast=page.locator('#error');await expect(toast).toContainText('Select entire rows or columns');
   await expect(toast).toHaveAttribute('role','alert');expect(await layout()).toEqual(before);
   const bounds=(await toast.boundingBox())!,viewport=page.viewportSize()!;
-  expect(bounds.x).toBe(0);expect(bounds.width).toBe(viewport.width);expect(bounds.y+bounds.height).toBeCloseTo(viewport.height,1);
+  expect(bounds.width).toBeLessThanOrEqual(400);expect(bounds.x).toBeGreaterThanOrEqual(16);
+  expect(viewport.width-bounds.x-bounds.width).toBeGreaterThanOrEqual(15.9);
+  expect(viewport.height-bounds.y-bounds.height).toBeGreaterThanOrEqual(15.9);
   expect(await toast.evaluate(el=>getComputedStyle(el).position)).toBe('fixed');
+  await toast.getByRole('button',{name:'Dismiss error',exact:true}).click();await expect(toast).toBeHidden();
+  expect(await layout()).toEqual(before);await page.keyboard.press('Control+h');await expect(toast).toBeVisible();
   await page.locator('[data-row-select="1"] .row-index').click();await page.keyboard.press('Control+h');
   await expect(toast).toBeHidden();
 });
@@ -45,29 +162,41 @@ test('row tags inherit, clear, persist and sit between the summary chevron and v
   expect(badge.x).toBeGreaterThanOrEqual(chevron.x+chevron.width);expect(value.x).toBeGreaterThanOrEqual(badge.x+badge.width);
   await page.reload();await expect(page.locator('td[data-c="0"] .hypothetical-badge')).toHaveCount(3);
   await page.locator('[data-row-select="2"] .row-index').click();await page.keyboard.press('Control+Shift+h');await expect(page.locator('td[data-r="2"] .hypothetical-badge')).toHaveCount(0);
-  await page.locator('[data-row-select="1"] .row-index').click();await page.keyboard.press('Control+Shift+h');await page.getByRole('button',{name:'Overwrite and inherit',exact:true}).click();await expect(page.locator('.hypothetical-badge')).toHaveCount(0);
+  await page.locator('[data-row-select="1"] .row-index').click();await page.keyboard.press('Control+Shift+h');await page.getByRole('button',{name:'Overwrite',exact:true}).click();await expect(page.locator('.hypothetical-badge')).toHaveCount(0);
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('.hypothetical-badge')).toHaveCount(2);
 });
-for(const axis of ['row','column'] as const)test(`summary ${axis} changes preview manual overrides and support cancel, preserve, inherit, undo and reload`,async({page})=>{
+for(const axis of ['row','column'] as const)test(`summary ${axis} changes preview manual overrides and support cancel, overwrite, undo and reload`,async({page})=>{
   await fixture(page);
   const select=async(index:number)=>{await page.locator(axis==='row'?`[data-row-select="${index}"] .row-index`:`th[data-col="${index}"] .column-index`).click();};
   const items=(book:Awaited<ReturnType<typeof snapshot>>)=>axis==='row'?book.sheets[0].rows:book.sheets[0].columns;
   const tagged=page.locator(axis==='row'?'td[data-c="0"] .hypothetical-badge':'td[data-r="0"] .hypothetical-badge');
   await select(2);await page.keyboard.press('Control+h');await select(3);await page.keyboard.press('Control+Shift+h');
   const before=await snapshot(page);await select(1);await page.keyboard.press('Control+h');
-  const dialog=page.getByRole('dialog');await expect(dialog.locator('h2')).toHaveText('Manual tag overrides');
-  await expect(dialog.locator('.hypothetical-override-list li')).toHaveCount(2);
+  const dialog=page.getByRole('dialog');await expect(dialog.locator('h2')).toHaveText('Overwrite manual tagging?');
+  await expect(dialog.getByRole('button',{name:'Keep manual tags',exact:true})).toHaveCount(0);
+  await expect(dialog.getByRole('table')).toHaveCount(1);await expect(dialog.locator('thead tr')).toHaveCount(1);
+  if(axis==='row'){
+    await expect(dialog.locator('tbody tr')).toHaveCount(2);
+    await expect(dialog.locator('tbody tr').first().locator('td.hypothetical-cell')).toHaveCount(before.sheets[0].columns.length);
+    await expect(dialog.locator('tbody tr').last().locator('td.hypothetical-cell')).toHaveCount(0);
+  }else{
+    await expect(dialog.locator('tbody tr')).toHaveCount(before.sheets[0].rows.length);
+    await expect(dialog.locator('tbody td:nth-of-type(1).hypothetical-cell')).toHaveCount(before.sheets[0].rows.length);
+    await expect(dialog.locator('tbody td:nth-of-type(2).hypothetical-cell')).toHaveCount(0);
+    await expect(dialog.locator('.hypothetical-badge')).toHaveCount(1);
+  }
   await expect(page.locator(axis==='row'?'td[data-r="2"].hypothetical-override-preview':'td[data-c="2"].hypothetical-override-preview').first()).toBeVisible();
   await expect(page.locator(axis==='row'?'td[data-r="3"].hypothetical-override-preview':'td[data-c="3"].hypothetical-override-preview').first()).toBeVisible();
   expect((await snapshot(page))).toEqual(before);
   await dialog.getByRole('button',{name:'Cancel',exact:true}).click();await expect(page.locator('.hypothetical-override-preview')).toHaveCount(0);
   expect((await snapshot(page))).toEqual(before);
-  await page.keyboard.press('Control+h');await page.getByRole('button',{name:'Keep manual tags',exact:true}).click();
-  await expect(tagged).toHaveCount(2);expect(items(await snapshot(page))[3].hypothetical).toBe(false);
-  await page.keyboard.press('Control+Shift+h');await page.getByRole('button',{name:'Overwrite and inherit',exact:true}).click();
+  await page.keyboard.press('Control+h');await page.getByRole('button',{name:'Overwrite',exact:true}).click();await expect(tagged).toHaveCount(3);
+  await select(3);await page.keyboard.press('Control+Shift+h');await select(1);
+  await page.keyboard.press('Control+Shift+h');await page.getByRole('button',{name:'Overwrite',exact:true}).click();
   await expect(tagged).toHaveCount(0);expect(items(await snapshot(page)).slice(2,4).map(item=>item.hypothetical)).toEqual([undefined,undefined]);
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(tagged).toHaveCount(2);
-  await page.keyboard.press('Control+h');await page.getByRole('button',{name:'Overwrite and inherit',exact:true}).click();
+  await page.keyboard.press('Control+h');await page.getByRole('button',{name:'Overwrite',exact:true}).click();
+  await expect(tagged).toHaveCount(0);await page.keyboard.press('Control+h');
   await expect(tagged).toHaveCount(3);
   const after=await snapshot(page);expect(items(after).slice(2,4).map(item=>item.hypothetical)).toEqual([undefined,undefined]);
   expect(after.sheets[0].cells).toEqual(before.sheets[0].cells);expect(after.sheets[0].groups).toEqual(before.sheets[0].groups);
@@ -129,7 +258,7 @@ test('saves independently customizable treatments, colors and names, with row pr
   await fixture(page,false);
   await page.locator('[data-row-select="1"] .row-index').click();await page.keyboard.press('Control+h');
   await page.locator('th[data-col="1"] .column-index').click();await page.keyboard.press('Control+h');const before=await snapshot(page);
-  await page.getByRole('button',{name:'Hypothetical treatments',exact:true}).click();
+  await page.getByRole('button',{name:'Hypothetical tag styling',exact:true}).click();
   await expect(page.locator('.treatment-axis + #hypothetical-preview')).toHaveCount(1);
   await expect(page.locator('.hypothetical-dialog h2')).toHaveText('Hypothetical styling');
   await expect(page.locator('.treatment-axis')).toBeHidden();
@@ -183,7 +312,7 @@ test('saves independently customizable treatments, colors and names, with row pr
   });
   expect(geometry.width).toBe(geometry.height);for(const padding of geometry.padding)expect(padding).toBeCloseTo(geometry.padding[0],2);
   expect(geometry.border).toContain('6px');expect(geometry.border).toContain('9px');expect(geometry.fill).toBe('rgb(255, 238, 255)');
-  await page.reload();await page.getByRole('button',{name:'Hypothetical treatments',exact:true}).click();
+  await page.reload();await page.getByRole('button',{name:'Hypothetical tag styling',exact:true}).click();
   await expect(page.locator('#hyp-label')).toHaveValue('Draft');await expect(page.locator('#hyp-linked')).not.toBeChecked();await expect(page.locator('#hyp-gap')).toHaveValue('12');
   expect(await page.locator('.hypothetical-preview .hypothetical-badge .toolbar-icon').first().innerHTML()).toBe(await badge.innerHTML());
   await expect(page.locator('#hyp-badgeDashSize')).toHaveValue('6');await expect(page.locator('#hyp-badgeDashGap')).toHaveValue('3');
@@ -196,7 +325,7 @@ test('saves independently customizable treatments, colors and names, with row pr
 });
 test('a failed treatment save is explicit, retains durable data and can be retried',async({page})=>{
   await fixture(page,false);const before=await snapshot(page);
-  await page.getByRole('button',{name:'Hypothetical treatments',exact:true}).click();await page.locator('#hyp-textOpacity').fill('55');
+  await page.getByRole('button',{name:'Hypothetical tag styling',exact:true}).click();await page.locator('#hyp-textOpacity').fill('55');
   const restore=await page.evaluateHandle(()=>{
     const original=IDBObjectStore.prototype.put;let fail=true;
     IDBObjectStore.prototype.put=function(...args:Parameters<typeof original>){if(fail){fail=false;throw new DOMException('Synthetic quota exhausted','QuotaExceededError');}return original.apply(this,args);};

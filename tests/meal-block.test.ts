@@ -1,7 +1,7 @@
 import { expect,it } from 'vitest';
 import { Engine } from '../src/formula';
 import { defaultHeaderFormula,groupBlockToTop,positionalBlock } from '../src/meal-block';
-import { blankSheet,clone,key,move,outlineMembers,setInput,uid,type Workbook } from '../src/model';
+import { addTableRows,blankSheet,clone,key,move,outlineMembers,setInput,uid,type Workbook } from '../src/model';
 
 function fixture(){
   const s=blankSheet('Invented meals',12,6),b:Workbook={schema:1,id:uid(),title:'Synthetic meals',revision:0,sheets:[s],tables:[],names:[],pickerSources:{}};
@@ -21,6 +21,15 @@ it('safely totals final, consecutive-empty and one-record headers without alteri
   const{b,s,t,value}=fixture();expect(value(s.rows[1].id)).toBe(150);expect(value(s.rows[4].id)).toBe(50);expect(value(s.rows[6].id)).toBe(0);expect(value(s.rows[7].id)).toBe(0);
   t.rows=[s.rows[7].id];expect(value(s.rows[7].id)).toBe(0);
   expect(new Engine(b).evaluate({kind:'call',name:'XMATCH',args:[{kind:'literal',value:true},{kind:'literal',value:false},{kind:'literal',value:0}]},s.id,s.rows[7].id,s.columns[5].id)).toMatchObject({error:'#N/A'});
+});
+it('inherits a header formula for a joined named meal whose marker has not been populated',()=>{
+  const {b,s,t,value}=fixture(),header=s.rows[8].id,detail=s.rows[9].id;
+  setInput(b,s,t.rows[0],t.columns[3].column,'=[@Meal]<>""');
+  s.cells[key(header,t.columns[0].column)]={value:'Joined meal',note:'Recipe notes',format:{wrap:false}};
+  s.cells[key(header,t.columns[2].column)]={value:2};s.cells[key(detail,t.columns[1].column)]={value:100};
+  addTableRows(b,s,t,[header,detail]);
+  expect(new Engine(b).cell(s.id,header,t.columns[3].column)).toBe(true);expect(value(header)).toBe(50);expect(value(detail)).toBe(100);
+  expect(s.cells[key(header,t.columns[0].column)]).toMatchObject({value:'Joined meal',note:'Recipe notes',format:{wrap:false}});
 });
 it('moves the selected ingredient owning block, collapses only its details, and retains notes, validation and other groups',()=>{
   const{b,s,t,value}=fixture(),header=s.rows[4].id,ingredient=s.rows[5].id,other=clone(s.groups[0]),validation=clone(s.validations),cells=clone(s.cells),next=s.rows[6].id;
