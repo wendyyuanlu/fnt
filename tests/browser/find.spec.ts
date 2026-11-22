@@ -87,8 +87,11 @@ test('Focused Find input shares the dropdown active treatment without changing l
   await fixture(page);
   const input=page.locator('#find-text'),dialog=page.getByRole('dialog'),height=(await dialog.boundingBox())!.height;
   const colors=async(selector:string)=>page.locator(selector).evaluate(el=>{const css=getComputedStyle(el);return {background:css.backgroundColor,border:css.borderColor};});
+  const stroke=async(selector:string)=>page.locator(selector).evaluate(el=>{const css=getComputedStyle(el);return {border:css.borderWidth,outline:css.outlineWidth,offset:css.outlineOffset};});
   await expect(input).toBeFocused();const active=await colors('#find-text');
+  expect(await stroke('#find-text')).toEqual({border:'1px',outline:'0px',offset:'0px'});
   await page.getByRole('combobox',{name:'Within',exact:true}).focus();expect(await colors('#find-within-trigger')).toEqual(active);
+  expect(await stroke('#find-within-trigger')).toEqual({border:'1px',outline:'0px',offset:'0px'});
   expect(await colors('#find-text')).not.toEqual(active);
   await input.click();expect(await colors('#find-text')).toEqual(active);expect((await dialog.boundingBox())!.height).toBe(height);
 });

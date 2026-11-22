@@ -262,7 +262,7 @@ automatically bundled or published.
   Fields and buttons reuse the app's common dialog styles. Within and Direction
   use the spreadsheet's shared chevron and custom popup options instead of native
   browser menus. The focused Find input shares the dropdown's active field
-  treatment. Copilot's shared Browser
+  treatment: a single 1px border, with no offset outer focus ring. Copilot's shared Browser
   panel intercepts Ctrl/Cmd+F before forwarding it to the page; use the
   **Find / replace** toolbar button there. The shortcut works in a normal browser.
   Results have Cell/Value columns with one subheader per sheet; long result sets
