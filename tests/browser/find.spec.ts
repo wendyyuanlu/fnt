@@ -65,3 +65,19 @@ test('Ctrl+F commits an in-cell draft before opening the search dialog',async({p
   await page.locator('td[data-r="6"][data-c="2"]').click();await page.keyboard.type('committed search draft');await page.keyboard.press('Control+f');
   await expect(page.getByRole('dialog')).toBeVisible();await page.locator('#find-text').fill('committed search draft');await expect(page.locator('#find-count')).toHaveText('Results found (1)');
 });
+test('Find reuses the existing dialog field and button styles without overflowing the viewport',async({page})=>{
+  await fixture(page);
+  const style=async(selector:string)=>page.locator(selector).evaluate(el=>{
+    const css=getComputedStyle(el);return {radius:css.borderRadius,border:css.borderColor,padding:css.padding,font:css.fontFamily,size:css.fontSize};
+  });
+  const find={input:await style('#find-text'),select:await style('#find-within'),button:await style('#find-next'),close:await style('.find-dialog .close')};
+  await page.getByRole('button',{name:'Close dialog'}).click();await page.getByRole('button',{name:'Browse values',exact:true}).click();
+  expect(await style('#browse-search')).toEqual(find.input);expect(await style('#browse-column')).toEqual(find.select);
+  expect(await style('#browse-go')).toEqual(find.button);expect(await style('dialog .close')).toEqual(find.close);
+  await page.getByRole('button',{name:'Close dialog'}).click();await page.keyboard.press('Control+f');await page.getByRole('tab',{name:'Replace',exact:true}).click();
+  const bounds=await page.getByRole('dialog').boundingBox(),button=await page.locator('#replace-all').boundingBox(),viewport=page.viewportSize()!;
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);expect(bounds!.x+bounds!.width).toBeLessThanOrEqual(viewport.width);
+  expect(button!.x+button!.width).toBeLessThanOrEqual(bounds!.x+bounds!.width);
+  expect(button!.y+button!.height).toBeLessThanOrEqual(bounds!.y+bounds!.height);
+  await expect(page.locator('#find-all-sheets')).toBeInViewport();
+});

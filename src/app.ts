@@ -1757,12 +1757,12 @@ async function importReferenceSources(file?:File):Promise<void>{
 function openFind():void {
   dialog('Find and Replace',`<div class="find-tabs" role="tablist" aria-label="Search mode"><button id="find-tab" role="tab" aria-controls="find-controls">Find</button><button id="replace-tab" role="tab" aria-controls="find-controls">Replace</button></div>
     <div id="find-controls" class="find-controls" role="tabpanel"><label>Find<input id="find-text" type="search" autocomplete="off"></label><div id="replace-fields"></div>
-    <p class="find-help">Use * for any text, ? for one character, and ~ to escape a wildcard.</p>
+    <p id="find-help" class="muted find-help">Use * for any text, ? for one character, and ~ to escape a wildcard.</p>
     <details class="find-options" open><summary>Search options</summary><div class="find-selectors"><label>Within<select id="find-within"><option value="selected">Selected sheets</option><option value="workbook">Workbook</option></select></label><label>Direction<select id="find-direction"><option value="down">Down</option><option value="up">Up</option></select></label></div>
     <div class="find-flags"><label class="inline"><input id="find-case" type="checkbox">Match case</label><label class="inline"><input id="find-entire" type="checkbox">Match entire cell contents</label></div>
     <fieldset class="find-scope"><legend>Search sheets</legend><label class="inline"><input id="find-all-sheets" type="checkbox">All</label>${book.sheets.map(s=>`<label class="inline"><input type="checkbox" name="scope" value="${s.id}" ${s.id===sheetId?'checked':''}>${esc(s.name)}</label>`).join('')}</fieldset></details></div>
     <div class="find-results-panel"><p id="find-count" role="status">Results found (0)</p><div id="find-results" class="find-results-scroll"><table class="find-results-table"><colgroup><col style="width:80px"><col></colgroup><thead><tr><th scope="col">Cell</th><th scope="col">Value</th></tr></thead><tbody></tbody></table></div><div class="find-pagination" hidden><button id="find-previous-page" aria-label="Previous results page">Previous</button><span id="find-page-count"></span><button id="find-next-page" aria-label="Next results page">Next</button></div></div>
-    <p id="find-feedback" class="find-feedback" role="status"></p><div class="find-actions"><button id="find-next" class="primary">Find next</button><button id="find-all">Find all</button><span id="replace-actions"></span></div>`,d=>{
+    <p id="find-feedback" class="find-feedback" role="status"></p><div class="button-row find-actions"><button id="find-next" class="primary">Find next</button><button id="find-all">Find all</button><span id="replace-actions" class="button-row"></span></div>`,d=>{
     d.classList.add('find-dialog');
     const field=<T extends HTMLElement>(id:string)=>d.querySelector<T>('#'+id)!;
     const input=field<HTMLInputElement>('find-text'),scopes=[...d.querySelectorAll<HTMLInputElement>('input[name=scope]')],all=field<HTMLInputElement>('find-all-sheets');
@@ -1842,7 +1842,8 @@ function openFind():void {
     const mode=(replaceMode:boolean)=>{
       for(const id of ['find-tab','replace-tab']){const tab=field<HTMLButtonElement>(id),selected=id===(replaceMode?'replace-tab':'find-tab');tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;}
       field('find-controls').setAttribute('aria-labelledby',replaceMode?'replace-tab':'find-tab');
-      field('replace-fields').innerHTML=replaceMode?`<label id="replace-label">Replace with<input id="replace-text" value="${esc(replacement)}"></label><p class="find-help">Replaces literal text only; formulas and linked records stay intact.</p>`:'';
+      field('replace-fields').innerHTML=replaceMode?`<label id="replace-label">Replace with<input id="replace-text" value="${esc(replacement)}"></label>`:'';
+      field('find-help').textContent='Use * for any text, ? for one character, and ~ to escape a wildcard.'+(replaceMode?' Replace changes literal text only; formulas and linked records stay intact.':'');
       field('replace-actions').innerHTML=replaceMode?'<button id="replace-one">Replace</button><button id="replace-all">Replace all</button>':'';
       if(replaceMode){field<HTMLInputElement>('replace-text').oninput=e=>replacement=(e.target as HTMLInputElement).value;field<HTMLButtonElement>('replace-one').onclick=()=>replace(false);field<HTMLButtonElement>('replace-all').onclick=()=>replace(true);}
       buttons();

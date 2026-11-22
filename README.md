@@ -259,6 +259,10 @@ automatically bundled or published.
   reordered, colored, and deleted. Ctrl/Cmd+F commits the current draft and opens
   the fixed-height Find and Replace dialog. Find has no replacement field;
   replacement drafts survive tab switches. **All** selects every search sheet.
+  Fields and buttons reuse the app's common dialog styles; only the tabs, layout
+  and results presentation have Find-specific variants. Copilot's shared Browser
+  panel intercepts Ctrl/Cmd+F before forwarding it to the page; use the
+  **Find / replace** toolbar button there. The shortcut works in a normal browser.
   Results have Cell/Value columns with one subheader per sheet; long result sets
   have explicit pagination. Case, entire-cell matching, `*`, `?`, escaped
   wildcards and upward/downward Find next are supported. Replace/Replace all are
