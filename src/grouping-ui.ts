@@ -74,7 +74,7 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
         const rail=document.createElement('span');rail.className='row-outline-rail';rail.dataset.groupId=entry.group.id;rail.style.left=entry.left+'px';
         if(entry.start)rail.classList.add('outline-start');
         if(entry.end)rail.classList.add('outline-end');
-        if(entry.branch&&(entry.end||cell?.querySelector('.cell-display')?.textContent?.trim())){const branch=document.createElement('span');branch.className='row-outline-branch';branch.style.width=entry.width+'px';rail.append(branch);}
+        if(entry.branch&&(entry.end||cell?.querySelector('.cell-value')?.textContent?.trim())){const branch=document.createElement('span');branch.className='row-outline-branch';branch.style.width=entry.width+'px';rail.append(branch);}
         cell?.append(rail);
       }
       const firstRow=table.querySelector<HTMLElement>(`tbody [data-row-select="${sheet.rows.findIndex(r=>r.id===host.rows[0])}"]`)?.parentElement;

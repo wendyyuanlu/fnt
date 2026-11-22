@@ -112,10 +112,11 @@ test('collapsed row targets show only a highlight and accept whole blocks withou
   await expect(page.locator('.move-drop-guide')).toHaveCount(0);
   await page.locator('[data-insert-row="4"]').click();
   await expect(page.locator('#save-state')).toContainText(/^Saved/);
-  const after=(await snapshot(page)).sheets[0],id=before.sheets[0].rows[13].id;
-  expect(after.groups.find(g=>g.id==='inner')).toMatchObject({collapsed:true,members:expect.arrayContaining([id])});
-  expect(after.groups.find(g=>g.id==='outer')!.members).toContain(id);
-  expect(after.cells).toEqual(before.sheets[0].cells);
+  const id=before.sheets[0].rows[13].id;
+  await expect.poll(async()=>(await snapshot(page)).sheets[0].groups.find(g=>g.id==='inner')).toMatchObject({collapsed:true,members:expect.arrayContaining([id])});
+  const saved=(await snapshot(page)).sheets[0];
+  expect(saved.groups.find(g=>g.id==='outer')!.members).toContain(id);
+  expect(saved.cells).toEqual(before.sheets[0].cells);
   await expect(page.locator('.move-drop-guide,.group-drop-target,.moving')).toHaveCount(0);
 });
 test('collapsed column targets show no stroke and accept native drops without expanding',async({page})=>{
@@ -299,6 +300,7 @@ test('popover is content-sized, single levels omit duplicate controls and icons 
       await page.locator(`.grid [data-group-id="${child}"]`).click();
       await page.locator(axis==='row'?'[data-row-select="1"] .row-index':'th[data-col="0"]').click();
       await page.keyboard.press('Control+Alt+g');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+      await expect.poll(async()=>{const group=(await snapshot(page)).sheets[0].groups.at(-1)!;return{axis:group.axis,kind:group.kind,members:group.members.length};}).toEqual({axis,kind:'range',members:1});
       const sheet=(await snapshot(page)).sheets[0],plain=sheet.groups.at(-1)!;
       expect(plain.axis).toBe(axis);expect(plain.kind).toBe('range');expect(plain.members).toHaveLength(1);
       await page.locator(`.grid [data-group-id="${plain.id}"]`).click();

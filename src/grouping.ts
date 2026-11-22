@@ -1,4 +1,20 @@
-import {outlineMembers,type Group,type Sheet} from './model';
+import {outlineMembers,summaryMoveMembers,type Group,type Sheet,type Workbook} from './model';
+
+export function ungroupPlainGroups(book:Workbook):number{
+  let count=0;
+  for(const sheet of book.sheets){const summaries=sheet.groups.filter(group=>group.kind==='summary');count+=sheet.groups.length-summaries.length;sheet.groups=summaries;}
+  return count;
+}
+export function hypotheticalMembers(sheet:Sheet,axis:Group['axis']):Set<string>{
+  const items=axis==='row'?sheet.rows:sheet.columns,flags=new Map(items.map(item=>[item.id,item.hypothetical]));
+  const parents=sheet.groups.filter(group=>group.axis===axis&&group.kind==='summary'&&flags.get(group.members[0])!==undefined)
+    .map(group=>({anchor:group.members[0],members:new Set(summaryMoveMembers(sheet,axis,group.members))})).sort((a,b)=>a.members.size-b.members.size);
+  return new Set(items.filter(item=>{
+    if(item.hypothetical!==undefined)return item.hypothetical;
+    const parent=parents.find(parent=>parent.anchor!==item.id&&parent.members.has(item.id));
+    return parent!==undefined&&flags.get(parent.anchor)===true;
+  }).map(item=>item.id));
+}
 
 export interface OutlineGroup {group:Group;depth:number;members:Set<string>}
 export function outlineGroups(groups:Group[]):OutlineGroup[] {

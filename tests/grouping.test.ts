@@ -1,11 +1,44 @@
 import {expect,it} from 'vitest';
-import {addRow,blankSheet,clone,getCell,groupMoveTarget,insertColumn,moveColumns,moveRows,moveIntoGroup,moveTargetGroups,outlineMembers,setInput,type Group} from '../src/model';
+import {addRow,blankSheet,clone,getCell,groupMoveTarget,insertColumn,moveColumns,moveRows,moveIntoGroup,moveTargetGroups,outlineMembers,setInput,setHypotheticalTag,type Group} from '../src/model';
 import {Engine} from '../src/formula';
-import {outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout} from '../src/grouping';
+import {hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,ungroupPlainGroups} from '../src/grouping';
 import {validateBook} from '../src/storage';
 import {createDemo} from '../src/model';
 import {exportXlsx} from '../src/xlsx-export';
 import {strFromU8,unzipSync} from 'fflate';
+
+it('ungroups only plain ranges across the workbook and preserves all contents and summary state',()=>{
+  const book=createDemo(),s=book.sheets[0],other=book.sheets[1];
+  s.groups=[{id:'plain',axis:'row',members:s.rows.slice(1,4).map(r=>r.id),collapsed:true,label:'Plain'},
+    {id:'summary',axis:'row',members:s.rows.slice(4,7).map(r=>r.id),kind:'summary',collapsed:true,label:'Summary'}];
+  other.groups=[{id:'plain-column',axis:'column',kind:'range',members:other.columns.slice(0,2).map(c=>c.id),collapsed:true,label:'Columns'}];
+  const expected=clone(book);expected.sheets[0].groups=expected.sheets[0].groups.filter(g=>g.kind==='summary');expected.sheets[1].groups=[];
+  expect(ungroupPlainGroups(book)).toBe(2);expect(book).toEqual(expected);expect(ungroupPlainGroups(book)).toBe(0);validateBook(book);
+});
+for(const axis of ['row','column'] as const){
+  it(`inherits ${axis} tags through nested summaries without stamping descendants, with explicit clear overrides`,()=>{
+    const book=createDemo(),s=book.sheets[0],items=axis==='row'?s.rows:s.columns;
+    s.groups=[{id:'outer',axis,kind:'summary',members:items.slice(0,5).map(item=>item.id),collapsed:false,label:'Outer'},
+      {id:'inner',axis,kind:'summary',members:items.slice(2,5).map(item=>item.id),collapsed:false,label:'Inner'}];
+    s.rows[1].status='planned';const cells=clone(s.cells);
+    setHypotheticalTag(s,axis,[items[0].id],true);
+    expect([...hypotheticalMembers(s,axis)]).toEqual(items.slice(0,5).map(item=>item.id));expect(items[1].hypothetical).toBeUndefined();
+    setHypotheticalTag(s,axis,[items[2].id],false);expect([...hypotheticalMembers(s,axis)]).toEqual(items.slice(0,2).map(item=>item.id));
+    setHypotheticalTag(s,axis,[items[2].id],true);setHypotheticalTag(s,axis,[items[0].id],false);
+    expect([...hypotheticalMembers(s,axis)]).toEqual(items.slice(2,5).map(item=>item.id));expect(s.cells).toEqual(cells);expect(s.rows[1].status).toBe('planned');validateBook(book);
+  });
+  it(`drops inherited ${axis} tags on move-out and inherits them on move-in while preserving explicit tags`,()=>{
+    const book=createDemo(),s=book.sheets[0],items=axis==='row'?s.rows:s.columns,anchor=items[0].id,child=items[1].id;
+    s.groups=[{id:'parent',axis,kind:'summary',members:items.slice(0,4).map(item=>item.id),collapsed:false,label:'Parent'}];
+    setHypotheticalTag(s,axis,[anchor],true);
+    if(axis==='row')moveRows(book,s,[child],6);else moveColumns(book,s,[child],6);
+    expect(hypotheticalMembers(s,axis).has(child)).toBe(false);
+    moveIntoGroup(book,s,axis,[child],'parent');expect(hypotheticalMembers(s,axis).has(child)).toBe(true);
+    setHypotheticalTag(s,axis,[child],true);
+    if(axis==='row')moveRows(book,s,[child],s.rows.length);else moveColumns(book,s,[child],s.columns.length);
+    expect(hypotheticalMembers(s,axis).has(child)).toBe(true);
+  });
+}
 
 it('derives summary depth from identity containment without treating overlapping or plain ranges as parents',()=>{
   const groups:Group[]=[

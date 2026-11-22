@@ -12,9 +12,14 @@ export interface Cell {
   spillHint?: boolean;
   binding?: { table: string; row: string; column: string };
 }
-export interface Column { id: string; label: string; width?: number; hidden?: boolean }
-export interface Row { id: string; hidden?: boolean; height?: number; status?: 'real' | 'planned' | 'hypothetical' }
+export interface Column { id: string; label: string; width?: number; hidden?: boolean; hypothetical?:boolean }
+export interface Row { id: string; hidden?: boolean; height?: number; status?: 'real' | 'planned' | 'hypothetical'; hypothetical?:boolean }
 export interface Group { id: string; axis: 'row' | 'column'; members: string[]; collapsed: boolean; label: string; kind?:'summary'|'range' }
+export function setHypotheticalTag(sheet:Sheet,axis:Group['axis'],ids:string[],enabled:boolean):void{
+  const items=axis==='row'?sheet.rows:sheet.columns,selected=new Set(ids);
+  if(!ids.length||ids.some(id=>!items.some(item=>item.id===id)))throw Error('Select existing rows or columns to change their hypothetical tag.');
+  for(const item of items)if(selected.has(item.id))item.hypothetical=enabled;
+}
 export function outlineMembers(group:Group,groups:readonly Group[]=[]):string[] {
   if(group.kind==='summary')return group.members.slice(1);
   const members=new Set(group.members);

@@ -1,5 +1,5 @@
 import './style.css';
-import { addRow, blankSheet, clone, columnIndex, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, setInput, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
+import { addRow, blankSheet, clone, columnIndex, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
 import { Store, SyncConflict, syncGitHub, type Backup, type LocalState } from './storage';
 import { parseArchive, stringifyArchive } from './archive';
@@ -16,7 +16,7 @@ import { duplicateReference,moveReferenceGroup,referenceCaption,referenceChoices
 import { appendReferenceOption,conversionEditImpact,deleteReferenceColumns,referenceView,writeGridCell } from './reference-grid';
 import { hexToHsv,hsvToHex,normalizeHex } from './colors';
 import { dropdownCatalog,dropdownFormatMigration,dropdownGroupMigration,seedDropdownCatalog,verifiedCatalogOrigins } from './dropdown-catalog';
-import { outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout } from './grouping';
+import { hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,ungroupPlainGroups } from './grouping';
 import { mountGroupControls } from './grouping-ui';
 import {createTextSearch} from './find';
 import {loadPublishedTesting,untouchedStarter} from './published';
@@ -33,6 +33,7 @@ const toolbarIconPaths={
   strikethrough:'M17 7c-1-1.5-3-2-5-2-3 0-5 1.5-5 3.5 0 5 10 2 10 7 0 2-2 3.5-5 3.5-2 0-4-.5-5-2M4 12h16',
   wrap:'M4 5h16M4 10h12a4 4 0 0 1 0 8h-4m2-2-2 2 2 2M4 15h3',
   find:'M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Zm-2 5 6 6',
+  hypothetical:'M8 5v14M16 5v14M8 12h8',
   copy:'M9 9h12v12H9ZM5 15H3V3h12v2',
   cut:'M8 7a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM8 17a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM8 8l12 12M8 16 20 4',
   paste:'M9 4H5v17h14V4h-4M9 2h6v4H9ZM8 11h8M8 15h6',
@@ -345,6 +346,7 @@ function render(): void {
   const groups=s.groups.filter(g=>!view||g.members.some(id=>(g.axis==='row'?view.rows:view.columns).includes(id)));
   const tree=!!s.outlineView?.tree,hints=s.outlineView?.plainGroupHints!==false,outlines=outlineGroups(groups),gutter=outlineGutter(outlines,rows.map(r=>r.id),tree,s.rows.length,hints);
   const firstColumn=columns[0],rowLayouts=summaryRowLayout(groups,rows.map(r=>r.id),tree,()=>true);
+  const hypotheticalRows=hypotheticalMembers(s,'row'),hypotheticalColumns=hypotheticalMembers(s,'column');
   const columnSummaries=new Map<string,number>();
   for(const entry of outlines.filter(e=>e.group.axis==='column'&&e.group.kind==='summary')){
     const id=entry.group.members[0];columnSummaries.set(id,(columnSummaries.get(id)??0)+1);
@@ -392,7 +394,7 @@ function render(): void {
       <div class="tool-set">${referenceId?'<button data-action="reference-settings">DD settings</button>':''}<button data-action="dropdown-source" title="Assign a dropdown without changing cell contents">Assign DD</button></div>
       <div class="tool-set"><button class="icon-button" data-action="structure" title="Rows & columns" aria-label="Rows & columns">${toolbarIcon('structure')}</button>${referenceId?'<button data-action="archive-options">Hide / show selected options</button>':''}</div>
       <div class="tool-set">${(['find','copy','cut','paste','fill'] as const).map(name=>{const label={find:'Find / replace',copy:'Copy',cut:'Cut',paste:'Paste',fill:'Fill down'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}</div>
-      <div class="tool-set"><button class="icon-button" data-action="pin" aria-pressed="${pins.length>0}" title="${pins.length?'Unpin columns':'Pin selected columns'}" aria-label="${pins.length?'Unpin columns':'Pin selected columns'}">${toolbarIcon('pin')}</button><button class="icon-button" data-action="browse" title="Browse values" aria-label="Browse values">${toolbarIcon('browse')}</button><select id="status-filter" ${referenceId?'hidden':''} aria-label="Filter row status"><option value="all">All entries</option>${['real','planned','hypothetical'].map(v => `<option ${v===filter?'selected':''}>${v}</option>`).join('')}</select>${referenceId?'':'<button data-action="row-status">Set status</button>'}</div>
+      <div class="tool-set"><button class="icon-button" data-action="pin" aria-pressed="${pins.length>0}" title="${pins.length?'Unpin columns':'Pin selected columns'}" aria-label="${pins.length?'Unpin columns':'Pin selected columns'}">${toolbarIcon('pin')}</button><button class="icon-button" data-action="browse" title="Browse values" aria-label="Browse values">${toolbarIcon('browse')}</button><button class="icon-button" data-action="hypothetical" aria-label="Mark hypothetical" title="Mark selected rows or columns hypothetical" data-shortcut-label="Mark hypothetical" data-shortcut-keys="Ctrl|H" aria-keyshortcuts="Control+H">${toolbarIcon('hypothetical')}</button><select id="status-filter" ${referenceId?'hidden':''} aria-label="Filter row status"><option value="all">All entries</option>${['real','planned','hypothetical'].map(v => `<option ${v===filter?'selected':''}>${v}</option>`).join('')}</select>${referenceId?'':'<button data-action="row-status">Set status</button>'}</div>
       ${referenceId?'':'<div class="tool-set"><button data-action="quick-add">+ Add entry</button></div>'}
       ${referenceId?'':'<div class="tool-set"><button data-action="tables">Tables</button><button data-action="block">Meal / day</button></div>'}
     </nav>
@@ -424,7 +426,9 @@ function render(): void {
     body.innerHTML=spacer(window.before,'before')+rows.slice(window.start,window.end).map((r,index)=>{const rowNumber=view?window.start+index+1:r.i+1;return`<tr data-row="${r.i}"${r.height?` style="--row-height:${r.height*4/3}px"`:''} class="${activeReference()?.archivedRows.includes(r.id)?'archived ':''}${r.status&&r.status!=='real'?r.status:''}"><th data-row-select="${r.i}" class="${r.i>=b.r1&&r.i<=b.r2?'row-selected':''}"><span class="row-index">${rowNumber}</span>${editableReference()&&(!view||r.id!==view.table?.header)?`<button class="row-move-control" data-move-row="${r.i}" draggable="true" aria-label="Move row ${rowNumber}" title="Drag row, or tap then tap destination">${grip(false)}</button>`:''}<button class="boundary-control row-boundary" data-insert-row="${r.i+1}" aria-label="${movingRows?'Move rows':'Insert row'} after ${rowNumber}">+</button>${index===0||view&&r.id===view.table?.rows[0]?`<button class="boundary-control row-start" data-insert-row="${r.i}" aria-label="Insert row before ${rowNumber}">+</button>`:''}<button class="resize-edge resize-row" data-resize-row="${r.i}" aria-label="Resize row ${rowNumber}" title="Drag to resize; double-click to fit"></button></th>${columns.map(c=>{
       const cell=getCell(s,r.id,c.id),val=cellText(cell,s,r.i,c.i),header=book.tables.some(t=>t.sheet===s.id&&t.header===r.id&&t.columns.some(x=>x.column===c.id)),inSelection=ranges.some(b=>r.i>=b.r1&&r.i<=b.r2&&c.i>=b.c1&&c.i<=b.c2),copying=copied?.sheet===s.id&&r.i>=copied.r&&r.i<copied.r+copied.cells.length&&c.i>=copied.c&&c.i<copied.c+copied.cells[0].length;
       const inset=(c.id===firstColumn?.id?rowLayouts.get(r.id)?.inset??0:0)+(r.id===rows[0]?.id?(columnSummaries.get(c.id)??0)*24:0);
-      return `<td tabindex="-1" data-r="${r.i}" data-c="${c.i}" class="${inset?'summary-cell ':''}${header?'table-header ':''}${inSelection?'selected ':''}${selected.r===r.i&&selected.c===c.i?'active ':''}${copying?'copying ':''}${cell.formula?'calculated ':''}${val.startsWith('#')?'cell-error ':''}${cell.binding?'linked ':''}" style="${inset?`--summary-text-inset:${inset}px;`:''}${pinnedStyle(c.id)}${cell.format?.bold?'font-weight:700;':''}${cell.format?.italic?'font-style:italic;':''}${cell.format?.underline||cell.format?.strikethrough?`text-decoration:${[cell.format?.underline?'underline':'',cell.format?.strikethrough?'line-through':''].filter(Boolean).join(' ')};`:''}${cell.format?.wrap?'white-space:pre-wrap;overflow-wrap:anywhere;':''}${cell.format?.background?`background-color:${esc(cell.format.background)};`:''}${cell.format?.color?`color:${esc(cell.format.color)};`:''}" title="${esc(cell.formula?displayFormula(cell.formula,book):val)}"><span class="cell-display">${safeLink(cell.link??val)?`<a href="${esc(cell.link??val)}" target="_blank" rel="noopener noreferrer">${esc(val)}</a>`:esc(val)}</span>${cell.note?'<span class="note-dot" title="Cell has a note"></span>':''}${r.i===b.r2&&c.i===b.c2?'<button type="button" class="fill-handle" data-fill-handle aria-label="Drag to fill"></button>':''}</td>`;
+      const tagged=hypotheticalRows.has(r.id)&&c.id===firstColumn?.id||hypotheticalColumns.has(c.id)&&r.id===rows[0]?.id;
+      const badge=tagged?'<span class="hypothetical-badge" aria-label="Hypothetical" title="Hypothetical">H</span>':'';
+      return `<td tabindex="-1" data-r="${r.i}" data-c="${c.i}" class="${inset?'summary-cell ':''}${header?'table-header ':''}${inSelection?'selected ':''}${selected.r===r.i&&selected.c===c.i?'active ':''}${copying?'copying ':''}${cell.formula?'calculated ':''}${val.startsWith('#')?'cell-error ':''}${cell.binding?'linked ':''}" style="${inset?`--summary-text-inset:${inset}px;`:''}${pinnedStyle(c.id)}${cell.format?.bold?'font-weight:700;':''}${cell.format?.italic?'font-style:italic;':''}${cell.format?.underline||cell.format?.strikethrough?`text-decoration:${[cell.format?.underline?'underline':'',cell.format?.strikethrough?'line-through':''].filter(Boolean).join(' ')};`:''}${cell.format?.wrap?'white-space:pre-wrap;overflow-wrap:anywhere;':''}${cell.format?.background?`background-color:${esc(cell.format.background)};`:''}${cell.format?.color?`color:${esc(cell.format.color)};`:''}" title="${esc(cell.formula?displayFormula(cell.formula,book):val)}"><span class="cell-display">${badge}<span class="cell-value">${safeLink(cell.link??val)?`<a href="${esc(cell.link??val)}" target="_blank" rel="noopener noreferrer">${esc(val)}</a>`:esc(val)}</span></span>${cell.note?'<span class="note-dot" title="Cell has a note"></span>':''}${r.i===b.r2&&c.i===b.c2?'<button type="button" class="fill-handle" data-fill-handle aria-label="Drag to fill"></button>':''}</td>`;
     }).join('')}</tr>`;}).join('')+spacer(window.after,'after');
     const source=activeReference();
     if(view?.table&&!view.error&&source&&!source.archived&&source.kind!=='derived'&&window.end===rows.length){
@@ -1023,14 +1027,31 @@ async function action(name:string):Promise<void> {
       mutate('Archive options',()=>{const ids=selectedReferenceRows(),show=ids.every(id=>source.archivedRows.includes(id));source.archivedRows=show?source.archivedRows.filter(id=>!ids.includes(id)):[...new Set([...source.archivedRows,...ids])];});break;
     }
     case 'groups':openGroups();break;
+    case 'hypothetical':case 'clear-hypothetical':{
+      const mode=selectionMode();
+      if(mode!=='rows'&&mode!=='columns'){flash('Select entire rows or columns to change their hypothetical tag.');break;}
+      const axis=mode==='rows'?'row':'column',items=axis==='row'?sheet().rows:sheet().columns;
+      const ids=selectedAxisIndices(axis).map(i=>items[i].id);
+      mutate(name==='hypothetical'?'Mark hypothetical':'Remove hypothetical tag',()=>setHypotheticalTag(sheet(),axis,ids,name==='hypothetical'));
+      break;
+    }
+    case 'ungroup-plain':{
+      if(!book.sheets.some(s=>s.groups.some(g=>g.kind!=='summary'))){flash('There are no plain groups in this workbook.');break;}
+      try{
+        await flush();await store.checkpoint('Before ungrouping all plain groups',book);
+        if(mutate('Ungroup all plain groups',()=>ungroupPlainGroups(book)))await flush('Ungroup all plain groups');
+      }catch(e){flash(e);}
+      break;
+    }
     case 'block':openBlock();break;
     case 'find':openFind();break;
     case 'quick-add':{
       const s=sheet(),t=gridReference()?.table??tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??book.tables.find(t=>t.sheet===s.id);
       mutate('Add entry',()=>{const at=t?Math.max(s.rows.findIndex(r=>r.id===t.header)+1,...t.rows.map(id=>s.rows.findIndex(r=>r.id===id)+1)):selected.r+1;addRow(book,s,at,t);selected={r:at,c:t?s.columns.findIndex(c=>c.id===t.columns[0].column):0};anchor={...selected};selectionKind='cells';page=Math.floor(at/60);});document.querySelector<HTMLInputElement>('#formula')?.focus();break;
     }
-    case 'row-status':dialog('Entry status','<p>Metadata only. This does not rewrite dates or change imported formulas. Your formulas must explicitly exclude hypothetical rows if needed.</p><div class="menu">'+['real','planned','hypothetical'].map(x=>`<button data-status="${x}">${x}</button>`).join('')+'</div>',d=>{
+    case 'row-status':dialog('Entry status','<p>Metadata only. This does not rewrite dates or change imported formulas. Your formulas must explicitly exclude hypothetical rows if needed.</p><div class="menu">'+['real','planned','hypothetical'].map(x=>`<button data-status="${x}">${x}</button>`).join('')+'</div><hr><div class="button-row"><button id="mark-hypothetical">Mark hypothetical tag</button><button id="clear-hypothetical">Remove hypothetical tag</button></div>',d=>{
       d.querySelectorAll<HTMLButtonElement>('[data-status]').forEach(el=>el.onclick=()=>{mutate('Set entry status',()=>{selectedAxisIndices('row').forEach(i=>sheet().rows[i].status=el.dataset.status as 'real'|'planned'|'hypothetical');});d.close();});
+      for(const [id,name]of [['mark-hypothetical','hypothetical'],['clear-hypothetical','clear-hypothetical']])d.querySelector<HTMLButtonElement>('#'+id)!.onclick=()=>{d.close();void action(name);};
     });break;
     case 'file':openFile();break;
     case 'safety':openSafety();break;
@@ -1268,6 +1289,7 @@ function openGroups():void {
     panel.innerHTML=`<div class="dialog-heading"><h2 id="group-manager-title">Groups on ${esc(s.name)}</h2><button class="close" aria-label="Close group manager">x</button></div>
       <div class="group-type-guide"><p><strong>Summary group</strong> keeps its summary row/column visible and hides the details.</p><p><strong>Plain group</strong> hides all its members. A selected summary also hides its entire group.</p></div>
       <div class="group-create-controls">${(['summary','range'] as const).map(kind=>`<div><strong>${kind==='summary'?'Summary':'Plain'}</strong>${(['row','column'] as const).map(axis=>`<button data-create-kind="${kind}" data-create-axis="${axis}">${axis==='row'?'Group selected rows':'Group selected columns'}</button>`).join('')}</div>`).join('')}</div>
+      <button id="ungroup-all-plain" ${book.sheets.some(s=>s.groups.some(g=>g.kind!=='summary'))?'':'disabled'}>Ungroup all plain groups (workbook)</button>
       <div class="group-card-list">${s.groups.length?s.groups.map(g=>{
         const summary=g.kind==='summary',rootAt=(g.axis==='row'?s.rows:s.columns).findIndex(item=>item.id===g.members[0]),count=affected(g,s).size;
         return `<section class="group-card ${located===g.id?'located':''}" data-group-card="${g.id}"><div class="group-card-heading"><strong>${summary?'Summary group':'Plain group'}</strong><span>${esc(coordinates(g,s))}</span></div>
@@ -1275,6 +1297,7 @@ function openGroups():void {
           ${preview(g)}<div class="group-card-actions"><button data-locate="${g.id}">Locate on sheet</button><button data-toggle="${g.id}">${g.collapsed?'Show':'Hide'} ${summary?'details':'group'}</button><button data-ungroup="${g.id}">Ungroup</button></div></section>`;
       }).join(''):'<p>No groups on this sheet. Select rows or columns on the sheet, then choose Summary or Plain above.</p>'}</div>`;
     panel.querySelector<HTMLButtonElement>('.close')!.onclick=close;
+    panel.querySelector<HTMLButtonElement>('#ungroup-all-plain')!.onclick=()=>{void action('ungroup-plain');};
     panel.querySelectorAll<HTMLButtonElement>('[data-create-kind]').forEach(el=>el.onclick=()=>groupSelected(false,el.dataset.createAxis as 'row'|'column',el.dataset.createKind as 'summary'|'range'));
     panel.querySelectorAll<HTMLButtonElement>('[data-toggle]').forEach(el=>el.onclick=()=>{if(!commitDraft())return;mutate('Toggle group',()=>{const g=sheet().groups.find(g=>g.id===el.dataset.toggle)!;g.collapsed=!g.collapsed;});});
     panel.querySelectorAll<HTMLButtonElement>('[data-ungroup]').forEach(el=>el.onclick=()=>{if(!commitDraft())return;mutate('Ungroup',()=>{sheet().groups=sheet().groups.filter(g=>g.id!==el.dataset.ungroup);});});
@@ -2057,6 +2080,7 @@ document.addEventListener('keydown',e=>{
   if(editing)return;
   if(e.altKey&&e.key==='ArrowDown'){e.preventDefault();openCellDropdown();return;}
   const mod=e.ctrlKey||e.metaKey;
+  if(mod&&!e.altKey&&!e.getModifierState('AltGraph')&&e.key.toLowerCase()==='h'){e.preventDefault();void action(e.shiftKey?'clear-hypothetical':'hypothetical');return;}
   if(mod&&!e.getModifierState('AltGraph')&&e.key.toLowerCase()==='g'){e.preventDefault();groupSelected(e.shiftKey,undefined,e.altKey?'range':'summary');return;}
   if(mod&&!e.shiftKey&&!e.getModifierState('AltGraph')){
     const shortcut=formattingShortcuts.find(shortcut=>shortcut.key===e.key.toLowerCase()&&shortcut.alt===e.altKey);

@@ -65,6 +65,7 @@ export function validateBook(value: unknown): asserts value is Workbook {
     if (typeof s.name !== 'string' || !Array.isArray(s.rows) || !s.rows.length || s.rows.length>100000 || !Array.isArray(s.columns) || !s.columns.length || s.columns.length>512 || !s.cells || !Array.isArray(s.groups) || !Array.isArray(s.validations)) throw Error('Invalid or oversized sheet.');
     if(s.outlineView!==undefined&&(!s.outlineView||typeof s.outlineView!=='object'||Array.isArray(s.outlineView)||Object.entries(s.outlineView).some(([k,v])=>!['tree','plainGroupHints'].includes(k)||typeof v!=='boolean')))throw Error('Invalid sheet outline preferences.');
     s.rows.forEach(r => id(r.id)); s.columns.forEach(c => id(c.id));
+    if([...s.rows,...s.columns].some(item=>item.hypothetical!==undefined&&typeof item.hypothetical!=='boolean'))throw Error('Invalid hypothetical tag.');
     for(const item of [...s.groups,...s.validations])if(!safeId(item.id))throw Error('Invalid layout/source identity.');
     for(const r of s.rows)if(r.height!==undefined&&(!Number.isFinite(r.height)||r.height<=0||r.height>409.5))throw Error('Invalid row height.');
     for(const g of s.groups)if(!['row','column'].includes(g.axis)||!Array.isArray(g.members)||g.members.some(m=>!safeId(m))||g.kind!==undefined&&!['summary','range'].includes(g.kind)||g.kind==='summary'&&g.members.length<2)throw Error('Invalid outline group.');

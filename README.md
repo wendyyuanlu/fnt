@@ -75,6 +75,16 @@ automatically bundled or published.
   leftmost column stays visible on collapse. Moving it moves its group together.
   Ctrl/Cmd+Alt+G creates a plain range group (all members hide);
   Ctrl/Cmd+Alt+Shift+G ungroups plain ranges.
+  **Ungroup all plain groups (workbook)** in the group manager removes only plain
+  groups on every sheet, preserving summaries, cells and a recovery checkpoint.
+  Ctrl/Cmd+H adds a hypothetical tag to selected entire rows/columns;
+  Ctrl/Cmd+Shift+H removes it. Summary descendants inherit dynamically, so moving
+  them out removes inherited tags while explicit tags remain. Explicit clearing
+  overrides inheritance, including for a nested summary's descendants.
+  Badges appear once per tagged row (first visible column) or column (top visible
+  row), after summary chevrons and before cell text. Tags preserve entry statuses
+  and do not change formulas, values or totals. The toolbar H button and
+  **Set status > Remove hypothetical tag** provide pointer/touch equivalents.
   Cell selections ask which axis to use. Ungroup removes the exact group, or
   the innermost containing group; spanning separate groups removes their outer
   level while retaining nested groups. These operations are undoable and do not

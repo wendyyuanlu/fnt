@@ -87,6 +87,7 @@
 }
 .grid tbody tr[style] td,.grid tbody tr[style] th{height:var(--row-height)}
 .cell-display{display:block;overflow:hidden;text-overflow:inherit;white-space:inherit}
+.hypothetical-badge{display:inline-flex;align-items:center;justify-content:center;width:18px;height:16px;margin-right:5px;border:1px solid #98764e;border-radius:3px;background:#fff7e6;color:#785a30;font-size:10px;font-weight:500;font-style:normal;line-height:1;vertical-align:middle}
 .grid tbody tr[style] td{padding:0}.grid tbody tr[style] td .cell-display{box-sizing:border-box;height:calc(var(--row-height) - 1px);padding:6px 10px}
 .grid th .resize-edge{position:absolute;padding:0;min-height:0;border:0;border-radius:0;background:transparent;z-index:8}
 .grid th .resize-column{right:-4px;top:23px;bottom:0;width:8px;cursor:col-resize}
