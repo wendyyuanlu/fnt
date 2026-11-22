@@ -1,5 +1,6 @@
 import { clone, uid, type Workbook } from './model';
 import { compressArchive, decompressArchive, stringifyArchive } from './archive';
+import {validateHypotheticalStyle} from './hypothetical';
 
 export interface Pending { id: string; label: string; time: string }
 export interface SyncConfig { owner: string; repo: string; branch: string; path: string }
@@ -35,6 +36,7 @@ export function validateBook(value: unknown): asserts value is Workbook {
   if (!value || typeof value !== 'object') throw Error('Not a workbook.');
   const b = value as Partial<Workbook>;
   if (b.schema !== 1 || typeof b.id !== 'string' || typeof b.title !== 'string' || !Number.isInteger(b.revision) || !Array.isArray(b.sheets) || !b.sheets.length || !Array.isArray(b.tables) || !Array.isArray(b.names) || !b.pickerSources) throw Error('Invalid or unsupported workbook format.');
+  if(b.hypotheticalStyle!==undefined)validateHypotheticalStyle(b.hypotheticalStyle);
   if(b.catalogMigrations!==undefined&&(!Array.isArray(b.catalogMigrations)||b.catalogMigrations.some(id=>typeof id!=='string'||!/^[a-zA-Z0-9_.-]{1,128}$/.test(id))||new Set(b.catalogMigrations).size!==b.catalogMigrations.length))throw Error('Invalid catalog migration history.');
   const ids = new Set<string>();
   const checked=new WeakSet<object>();

@@ -3,8 +3,20 @@ import { describe, expect, it,vi } from 'vitest';
 import { createDemo, uid } from '../src/model';
 import { encode64, Store, SyncConflict, syncGitHub, type LocalState } from '../src/storage';
 import { parseArchive,stringifyArchive } from '../src/archive';
+import {getHypotheticalStyle} from '../src/hypothetical';
 
 describe('recoverable local storage',()=>{
+  it('preserves independent treatment settings in saves and native recovery archives without rewriting cells',async()=>{
+    const store=await Store.open(uid()),book=createDemo(),cells=structuredClone(book.sheets.map(s=>s.cells));
+    book.hypotheticalStyle=getHypotheticalStyle(book);book.hypotheticalStyle.linked=false;
+    book.hypotheticalStyle.label='Draft';book.hypotheticalStyle.columns.pattern='dots';book.hypotheticalStyle.columns.patternColor='#446677';
+    book.hypotheticalStyle.rows.textOpacity=.65;book.hypotheticalStyle.rows.textColor='#665544';
+    book.hypotheticalStyle.rows.badgeBorderStyle='dashed';book.hypotheticalStyle.rows.badgeDashSize=6;book.hypotheticalStyle.rows.badgeDashGap=3;
+    const first=await store.save(book,0,'Treatment settings'),backup=parseArchive(stringifyArchive(await store.backup(first))) as Awaited<ReturnType<Store['backup']>>;
+    const second=await store.save(createDemo(),first.version,'Another workbook'),restored=await store.restore(backup,second.version);
+    expect(restored.book.hypotheticalStyle).toEqual(book.hypotheticalStyle);
+    expect(restored.book.sheets.map(s=>s.cells)).toEqual(cells);store.close();
+  });
   it('persists sheet-specific hints and tree settings through local save and backup restore',async()=>{
     const store=await Store.open(uid()),book=createDemo();
     book.sheets[0].outlineView={tree:true,plainGroupHints:false};

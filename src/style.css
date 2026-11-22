@@ -31,6 +31,7 @@
 .sheet-tab{padding:7px 11px;font-size:11px;border-radius:4px}
 .sheet-tab:before{width:5px;height:5px;margin-right:6px}
 .error{margin:3px 8px;max-height:70px;overflow:auto;padding:6px 9px;flex-shrink:0;font-size:11px}
+#error{position:fixed;bottom:0;left:0;right:0;z-index:200;margin:0;max-height:30dvh;padding:9px max(12px,env(safe-area-inset-right)) max(9px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));box-shadow:0 -3px 12px #153e3620}
 @media(max-width:720px){
   .app-header{padding:4px 8px;gap:6px}
   .save-state{max-width:96px;font-size:9px}
@@ -87,18 +88,52 @@
 }
 .grid tbody tr[style] td,.grid tbody tr[style] th{height:var(--row-height)}
 .cell-display{display:block;overflow:hidden;text-overflow:inherit;white-space:inherit}
-.hypothetical-badge{display:inline-flex;align-items:center;justify-content:center;width:18px;height:16px;margin-right:5px;border:1px solid #98764e;border-radius:3px;background:#fff7e6;color:#785a30;font-size:10px;font-weight:500;font-style:normal;line-height:1;vertical-align:middle}
+.hypothetical-badge{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:1px;border:1px solid #98764e;border-radius:0;margin-right:5px;background:#fff7e6;color:#785a30;line-height:1;vertical-align:middle}
+.hypothetical-badge::before{content:"";position:absolute;inset:-1px;pointer-events:none;background-image:var(--hyp-badge-horizontal,none),var(--hyp-badge-horizontal,none),var(--hyp-badge-vertical,none),var(--hyp-badge-vertical,none);background-size:100% 1px,100% 1px,1px 100%,1px 100%;background-position:left top,left bottom,left top,right top;background-repeat:no-repeat}
+.hypothetical-badge .toolbar-icon,.treatment-section>.inline .toolbar-icon{width:14px;height:14px}
+.hypothetical-cell{--hyp-state:transparent;background-image:linear-gradient(var(--hyp-state),var(--hyp-state)),var(--hyp-pattern),var(--hyp-fill)!important;background-size:auto,var(--hyp-pattern-size),auto!important}
+.hypothetical-cell.has-hyp-fill:hover{--hyp-state:rgba(87,127,106,.10)}
+.hypothetical-cell.has-hyp-fill:is(.selected,.active){--hyp-state:rgba(90,140,108,.19)}
+.hypothetical-cell.custom-hyp-text .cell-value a{color:inherit}
+.treatment-axis button[aria-pressed=true]{background:#edf1e8;border-color:#789583}
+.treatment-axis[hidden]{display:none}
+.hypothetical-dialog{--hyp-dialog-padding:22px;padding-bottom:0;scroll-padding-bottom:60px}
+.treatment-footer{position:sticky;bottom:0;z-index:2;margin:0 calc(-1 * var(--hyp-dialog-padding));padding:10px var(--hyp-dialog-padding);background:#fcfdf9;border-top:1px solid var(--line)}
+@media(max-width:720px){.hypothetical-dialog{--hyp-dialog-padding:18px}}
+.treatment-fields{display:flex;flex-direction:column;gap:8px;margin:10px 0}
+.treatment-section{display:flex;flex-direction:column;gap:6px;min-width:0;padding:8px 10px 10px}
+.hypothetical-dialog .treatment-section label{margin:0;gap:6px;font-size:12px}
+.treatment-control,.hypothetical-dialog .treatment-field,.hypothetical-dialog .treatment-color{display:grid;grid-template-columns:minmax(128px,1fr) minmax(0,1.7fr);gap:12px;align-items:center}
+.treatment-control>div{display:flex;gap:6px;align-items:center}
+.treatment-control input[type=number]{width:61px;padding:5px 6px;border:1px solid #cdd8c2;border-radius:5px;background:#fff;min-width:0}
+.treatment-control input[type=range]{min-width:0;width:0;flex:1;accent-color:#789583}
+.hypothetical-dialog .treatment-section .dropdown-field{min-height:28px;padding:5px 7px}
+.hypothetical-dialog .treatment-color input[type=color]{width:44px;height:28px;padding:2px}
+.treatment-emphasis{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.treatment-emphasis .inline{gap:3px}
+.treatment-badge-colors{display:flex;flex-direction:column;gap:6px}
+.treatment-badge-colors[hidden]{display:none}
+.hypothetical-dialog .treatment-name{margin:10px 0}
+.hypothetical-dialog .treatment-name input{padding:6px 9px}
+.hypothetical-preview{overflow:auto;border:1px solid var(--line);margin-top:8px;background:#fff}
+.hypothetical-preview table{border-collapse:separate;border-spacing:0;width:100%;table-layout:fixed;font-size:12px}
+.hypothetical-preview td{height:33px;border-bottom:1px solid #e6e9e1;padding:6px 10px;color:#233c34;background-color:#fff}
+.hypothetical-preview td+td{width:65px;border-left:1px solid #e6e9e1;text-align:right}
+.hypothetical-preview td.selected{background-color:#f0f6e8;box-shadow:inset 0 1px #789583,inset 0 -1px #789583}
+.hypothetical-dialog .treatment-error{margin:12px 0}
 .grid tbody tr[style] td{padding:0}.grid tbody tr[style] td .cell-display{box-sizing:border-box;height:calc(var(--row-height) - 1px);padding:6px 10px}
 .grid th .resize-edge{position:absolute;padding:0;min-height:0;border:0;border-radius:0;background:transparent;z-index:8}
 .grid th .resize-column{right:-4px;top:23px;bottom:0;width:8px;cursor:col-resize}
 .grid th .resize-row{left:26px;right:0;bottom:-4px;height:8px;cursor:row-resize}
 .grid th .resize-edge:hover{background:#286b5620}
 .grid-scroll{overflow-anchor:none}
-.grid-scroll{scrollbar-width:thin;scrollbar-color:#9eaaa2 transparent}
-.grid-scroll::-webkit-scrollbar{width:6px;height:6px}
-.grid-scroll::-webkit-scrollbar-thumb{background:#9eaaa2;border-radius:4px}
-.grid-scroll::-webkit-scrollbar-track,.grid-scroll::-webkit-scrollbar-corner{background:transparent}
-.grid-scroll::-webkit-scrollbar-button{display:none;width:0;height:0}
+*{scrollbar-width:thin;scrollbar-color:#9eaaa2 transparent}
+*::-webkit-scrollbar{width:6px;height:6px}
+*::-webkit-scrollbar-thumb{background:#9eaaa2;border-radius:4px}
+*::-webkit-scrollbar-track,*::-webkit-scrollbar-corner{background:transparent}
+*::-webkit-scrollbar-button{display:none;width:0;height:0}
+.grid td.table-right-edge{border-right:1px solid #adbca5}
+.grid td.table-bottom-edge{border-bottom:1px solid #adbca5}
 .grid .virtual-spacer{pointer-events:none}
 #calculation-state{display:flex;align-items:center;gap:3px;font-size:9px;white-space:nowrap}
 .reference-heading{display:flex;gap:10px;align-items:center;padding:4px 10px;font-size:11px;flex-shrink:0}.reference-heading span{color:#69786a}.grid .archived{opacity:.55}

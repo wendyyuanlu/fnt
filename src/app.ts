@@ -17,6 +17,9 @@ import { appendReferenceOption,conversionEditImpact,deleteReferenceColumns,refer
 import { hexToHsv,hsvToHex,normalizeHex } from './colors';
 import { dropdownCatalog,dropdownFormatMigration,dropdownGroupMigration,seedDropdownCatalog,verifiedCatalogOrigins } from './dropdown-catalog';
 import { hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,ungroupPlainGroups } from './grouping';
+import {getHypotheticalStyle,hypotheticalBadgeCss,hypotheticalCss,hypotheticalTextCss} from './hypothetical';
+import {openHypotheticalSettings} from './hypothetical-ui';
+import {toolbarIcon} from './icons';
 import { mountGroupControls } from './grouping-ui';
 import {createTextSearch} from './find';
 import {loadPublishedTesting,untouchedStarter} from './published';
@@ -24,27 +27,6 @@ import {loadPublishedTesting,untouchedStarter} from './published';
 const root = document.querySelector<HTMLDivElement>('#app')!;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const grip=(horizontal:boolean)=>`<svg aria-hidden="true" width="${horizontal?12:8}" height="${horizontal?8:12}" viewBox="0 0 ${horizontal?12:8} ${horizontal?8:12}">${Array.from({length:6},(_,i)=>`<circle cx="${i%(horizontal?3:2)*4+2}" cy="${Math.floor(i/(horizontal?3:2))*4+2}" r="1" fill="currentColor"/>`).join('')}</svg>`;
-const toolbarIconPaths={
-  undo:'M9 5l-5 5 5 5M4 10h9a7 7 0 0 1 7 7v2',
-  redo:'M15 5l5 5-5 5M20 10h-9a7 7 0 0 0-7 7v2',
-  bold:'M7 5h5a3.5 3.5 0 0 1 0 7H7m5 0h1a3.5 3.5 0 0 1 0 7H7V5',
-  italic:'M10 5h8M6 19h8M15 5l-6 14',
-  underline:'M6 5v6a6 6 0 0 0 12 0V5M5 21h14',
-  strikethrough:'M17 7c-1-1.5-3-2-5-2-3 0-5 1.5-5 3.5 0 5 10 2 10 7 0 2-2 3.5-5 3.5-2 0-4-.5-5-2M4 12h16',
-  wrap:'M4 5h16M4 10h12a4 4 0 0 1 0 8h-4m2-2-2 2 2 2M4 15h3',
-  find:'M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0Zm-2 5 6 6',
-  hypothetical:'M8 5v14M16 5v14M8 12h8',
-  copy:'M9 9h12v12H9ZM5 15H3V3h12v2',
-  cut:'M8 7a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM8 17a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM8 8l12 12M8 16 20 4',
-  paste:'M9 4H5v17h14V4h-4M9 2h6v4H9ZM8 11h8M8 15h6',
-  fill:'M3 3h11v18H3ZM3 9h11M3 15h11M19 5v13m-3-3 3 3 3-3',
-  structure:'M3 3h18v18H3ZM3 9h18M9 3v18M13 15h6M16 12v6',
-  pin:'M8 3h8M9 3v6l-3 4v2h12v-2l-3-4V3M12 15v7',
-  browse:'M3 4h9M3 9h7M3 14h6M3 19h9M20 13a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm-1 3 3 4',
-  'text-color':'M6 17l6-13 6 13M8 13h8',
-  'background-color':'M5 3l10 10M9 5l7 7-6 6-7-7 6-6ZM4 12h12M20 12s-2 3-2 4a2 2 0 0 0 4 0c0-1-2-4-2-4'
-};
-const toolbarIcon=(name:keyof typeof toolbarIconPaths,color?:string)=>`<svg class="toolbar-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><path vector-effect="non-scaling-stroke" d="${toolbarIconPaths[name]}"/>${color?`<path vector-effect="non-scaling-stroke" d="M4 22h16" stroke="${esc(color)}"/>`:''}</svg>`;
 const formattingShortcuts=[
   {key:'b',alt:false,action:'bold',label:'Bold'},
   {key:'i',alt:false,action:'italic',label:'Italic'},
@@ -347,6 +329,16 @@ function render(): void {
   const tree=!!s.outlineView?.tree,hints=s.outlineView?.plainGroupHints!==false,outlines=outlineGroups(groups),gutter=outlineGutter(outlines,rows.map(r=>r.id),tree,s.rows.length,hints);
   const firstColumn=columns[0],rowLayouts=summaryRowLayout(groups,rows.map(r=>r.id),tree,()=>true);
   const hypotheticalRows=hypotheticalMembers(s,'row'),hypotheticalColumns=hypotheticalMembers(s,'column');
+  const hypotheticalStyle=getHypotheticalStyle(book);
+  const tableRightEdges=new Set<string>(),tableBottomEdges=new Set<string>();
+  for(const table of book.tables.filter(table=>table.sheet===s.id)){
+    const rowIds=new Set([table.header,...table.rows]),columnIds=new Set(table.columns.map(column=>column.column));
+    const tableRows=rows.filter(row=>rowIds.has(row.id)),tableColumns=columns.filter(column=>columnIds.has(column.id));
+    const lastRow=tableRows.at(-1),lastColumn=tableColumns.at(-1);
+    if(!lastRow||!lastColumn)continue;
+    for(const row of tableRows)tableRightEdges.add(key(row.id,lastColumn.id));
+    for(const column of tableColumns)tableBottomEdges.add(key(lastRow.id,column.id));
+  }
   const columnSummaries=new Map<string,number>();
   for(const entry of outlines.filter(e=>e.group.axis==='column'&&e.group.kind==='summary')){
     const id=entry.group.members[0];columnSummaries.set(id,(columnSummaries.get(id)??0)+1);
@@ -394,7 +386,7 @@ function render(): void {
       <div class="tool-set">${referenceId?'<button data-action="reference-settings">DD settings</button>':''}<button data-action="dropdown-source" title="Assign a dropdown without changing cell contents">Assign DD</button></div>
       <div class="tool-set"><button class="icon-button" data-action="structure" title="Rows & columns" aria-label="Rows & columns">${toolbarIcon('structure')}</button>${referenceId?'<button data-action="archive-options">Hide / show selected options</button>':''}</div>
       <div class="tool-set">${(['find','copy','cut','paste','fill'] as const).map(name=>{const label={find:'Find / replace',copy:'Copy',cut:'Cut',paste:'Paste',fill:'Fill down'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}</div>
-      <div class="tool-set"><button class="icon-button" data-action="pin" aria-pressed="${pins.length>0}" title="${pins.length?'Unpin columns':'Pin selected columns'}" aria-label="${pins.length?'Unpin columns':'Pin selected columns'}">${toolbarIcon('pin')}</button><button class="icon-button" data-action="browse" title="Browse values" aria-label="Browse values">${toolbarIcon('browse')}</button><button class="icon-button" data-action="hypothetical" aria-label="Mark hypothetical" title="Mark selected rows or columns hypothetical" data-shortcut-label="Mark hypothetical" data-shortcut-keys="Ctrl|H" aria-keyshortcuts="Control+H">${toolbarIcon('hypothetical')}</button><select id="status-filter" ${referenceId?'hidden':''} aria-label="Filter row status"><option value="all">All entries</option>${['real','planned','hypothetical'].map(v => `<option ${v===filter?'selected':''}>${v}</option>`).join('')}</select>${referenceId?'':'<button data-action="row-status">Set status</button>'}</div>
+      <div class="tool-set"><button class="icon-button" data-action="pin" aria-pressed="${pins.length>0}" title="${pins.length?'Unpin columns':'Pin selected columns'}" aria-label="${pins.length?'Unpin columns':'Pin selected columns'}">${toolbarIcon('pin')}</button><button class="icon-button" data-action="browse" title="Browse values" aria-label="Browse values">${toolbarIcon('browse')}</button><button class="icon-button" data-action="hypothetical" aria-label="Mark ${esc(hypotheticalStyle.label)}" title="Mark selected rows or columns ${esc(hypotheticalStyle.label)}" data-shortcut-label="Mark ${esc(hypotheticalStyle.label)}" data-shortcut-keys="Ctrl|H" aria-keyshortcuts="Control+H">${toolbarIcon('hypothetical')}</button><button class="icon-button" data-action="hypothetical-settings" aria-label="Hypothetical treatments" title="Customize ${esc(hypotheticalStyle.label)} row and column treatments">${toolbarIcon('hypothetical-settings')}</button><select id="status-filter" ${referenceId?'hidden':''} aria-label="Filter row status"><option value="all">All entries</option>${['real','planned','hypothetical'].map(v => `<option ${v===filter?'selected':''}>${v}</option>`).join('')}</select>${referenceId?'':'<button data-action="row-status">Set status</button>'}</div>
       ${referenceId?'':'<div class="tool-set"><button data-action="quick-add">+ Add entry</button></div>'}
       ${referenceId?'':'<div class="tool-set"><button data-action="tables">Tables</button><button data-action="block">Meal / day</button></div>'}
     </nav>
@@ -427,8 +419,9 @@ function render(): void {
       const cell=getCell(s,r.id,c.id),val=cellText(cell,s,r.i,c.i),header=book.tables.some(t=>t.sheet===s.id&&t.header===r.id&&t.columns.some(x=>x.column===c.id)),inSelection=ranges.some(b=>r.i>=b.r1&&r.i<=b.r2&&c.i>=b.c1&&c.i<=b.c2),copying=copied?.sheet===s.id&&r.i>=copied.r&&r.i<copied.r+copied.cells.length&&c.i>=copied.c&&c.i<copied.c+copied.cells[0].length;
       const inset=(c.id===firstColumn?.id?rowLayouts.get(r.id)?.inset??0:0)+(r.id===rows[0]?.id?(columnSummaries.get(c.id)??0)*24:0);
       const tagged=hypotheticalRows.has(r.id)&&c.id===firstColumn?.id||hypotheticalColumns.has(c.id)&&r.id===rows[0]?.id;
-      const badge=tagged?'<span class="hypothetical-badge" aria-label="Hypothetical" title="Hypothetical">H</span>':'';
-      return `<td tabindex="-1" data-r="${r.i}" data-c="${c.i}" class="${inset?'summary-cell ':''}${header?'table-header ':''}${inSelection?'selected ':''}${selected.r===r.i&&selected.c===c.i?'active ':''}${copying?'copying ':''}${cell.formula?'calculated ':''}${val.startsWith('#')?'cell-error ':''}${cell.binding?'linked ':''}" style="${inset?`--summary-text-inset:${inset}px;`:''}${pinnedStyle(c.id)}${cell.format?.bold?'font-weight:700;':''}${cell.format?.italic?'font-style:italic;':''}${cell.format?.underline||cell.format?.strikethrough?`text-decoration:${[cell.format?.underline?'underline':'',cell.format?.strikethrough?'line-through':''].filter(Boolean).join(' ')};`:''}${cell.format?.wrap?'white-space:pre-wrap;overflow-wrap:anywhere;':''}${cell.format?.background?`background-color:${esc(cell.format.background)};`:''}${cell.format?.color?`color:${esc(cell.format.color)};`:''}" title="${esc(cell.formula?displayFormula(cell.formula,book):val)}"><span class="cell-display">${badge}<span class="cell-value">${safeLink(cell.link??val)?`<a href="${esc(cell.link??val)}" target="_blank" rel="noopener noreferrer">${esc(val)}</a>`:esc(val)}</span></span>${cell.note?'<span class="note-dot" title="Cell has a note"></span>':''}${r.i===b.r2&&c.i===b.c2?'<button type="button" class="fill-handle" data-fill-handle aria-label="Drag to fill"></button>':''}</td>`;
+      const treatment=hypotheticalRows.has(r.id)?hypotheticalStyle.rows:hypotheticalColumns.has(c.id)?hypotheticalStyle.columns:undefined;
+      const badge=tagged&&treatment?.badge?`<span class="hypothetical-badge" style="${hypotheticalBadgeCss(treatment)}" role="img" aria-label="${esc(hypotheticalStyle.label)}" title="${esc(hypotheticalStyle.label)}">${toolbarIcon('hypothetical-badge')}</span>`:'';
+      return `<td tabindex="-1" data-r="${r.i}" data-c="${c.i}" class="${tableRightEdges.has(key(r.id,c.id))?'table-right-edge ':''}${tableBottomEdges.has(key(r.id,c.id))?'table-bottom-edge ':''}${treatment?`hypothetical-cell ${treatment.fillOpacity>0?'has-hyp-fill ':''}${treatment.textColor?'custom-hyp-text ':''}`:''}${inset?'summary-cell ':''}${header?'table-header ':''}${inSelection?'selected ':''}${selected.r===r.i&&selected.c===c.i?'active ':''}${copying?'copying ':''}${cell.formula?'calculated ':''}${val.startsWith('#')?'cell-error ':''}${cell.binding?'linked ':''}" style="${treatment?hypotheticalCss(treatment):''}${inset?`--summary-text-inset:${inset}px;`:''}${pinnedStyle(c.id)}${cell.format?.bold?'font-weight:700;':''}${cell.format?.italic?'font-style:italic;':''}${cell.format?.underline||cell.format?.strikethrough?`text-decoration:${[cell.format?.underline?'underline':'',cell.format?.strikethrough?'line-through':''].filter(Boolean).join(' ')};`:''}${cell.format?.wrap?'white-space:pre-wrap;overflow-wrap:anywhere;':''}${cell.format?.background?`background-color:${esc(cell.format.background)};`:''}${cell.format?.color?`color:${esc(cell.format.color)};`:''}" title="${esc(cell.formula?displayFormula(cell.formula,book):val)}"><span class="cell-display">${badge}<span class="cell-value"${treatment?` style="${hypotheticalTextCss(treatment)}"`:''}>${safeLink(cell.link??val)?`<a href="${esc(cell.link??val)}" target="_blank" rel="noopener noreferrer">${esc(val)}</a>`:esc(val)}</span></span>${cell.note?'<span class="note-dot" title="Cell has a note"></span>':''}${r.i===b.r2&&c.i===b.c2?'<button type="button" class="fill-handle" data-fill-handle aria-label="Drag to fill"></button>':''}</td>`;
     }).join('')}</tr>`;}).join('')+spacer(window.after,'after');
     const source=activeReference();
     if(view?.table&&!view.error&&source&&!source.archived&&source.kind!=='derived'&&window.end===rows.length){
@@ -952,7 +945,7 @@ async function action(name:string):Promise<void> {
   if(!commitDraft())return;
   if(['fill','tables','dropdown-source','block'].includes(name)&&extraSelections.length){const b=requireRectangle(name==='dropdown-source'?'Assign dropdown':name);if(!b)return;extraSelections=[];anchor={r:b.r1,c:b.c1};selected={r:b.r2,c:b.c2};}
   if(['select-all','range','top','bottom','next','prev','undo','redo'].includes(name))extraSelections=[];
-  if(referenceId&&!editableReference()&&!['back-workbook','reference-settings','references','new-reference','copy','save','file','find','undo','redo','range','top','bottom','next','prev','dropdown-source'].includes(name)){flash('This is a read-only live list. Edit its source table or change its connection.');return;}
+  if(referenceId&&!editableReference()&&!['back-workbook','reference-settings','references','new-reference','copy','save','file','find','hypothetical-settings','undo','redo','range','top','bottom','next','prev','dropdown-source'].includes(name)){flash('This is a read-only live list. Edit its source table or change its connection.');return;}
   switch(name) {
     case 'save': await manualSave();break;
     case 'undo':case 'redo': {
@@ -1027,6 +1020,13 @@ async function action(name:string):Promise<void> {
       mutate('Archive options',()=>{const ids=selectedReferenceRows(),show=ids.every(id=>source.archivedRows.includes(id));source.archivedRows=show?source.archivedRows.filter(id=>!ids.includes(id)):[...new Set([...source.archivedRows,...ids])];});break;
     }
     case 'groups':openGroups();break;
+    case 'hypothetical-settings':{
+      openHypotheticalSettings({style:getHypotheticalStyle(book),dialog,save:async style=>{
+        if(!mutate('Save hypothetical treatments',()=>{book.hypotheticalStyle=style;}))throw Error(error||'Treatment settings could not be applied.');
+        const g=generation;await flush('Save hypothetical treatments');
+        if(savedGeneration<g)throw Error(error||'Treatment settings are not saved. Retry or download a backup.');
+      }});break;
+    }
     case 'hypothetical':case 'clear-hypothetical':{
       const mode=selectionMode();
       if(mode!=='rows'&&mode!=='columns'){flash('Select entire rows or columns to change their hypothetical tag.');break;}

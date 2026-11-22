@@ -55,11 +55,24 @@ export interface Table {
   columns: { id: string; column: string; name: string }[]; header: string;
 }
 export interface Named { id: string; name: string; sheet?: string; context: string; formula: Ast; original: string }
+export interface HypotheticalTreatment {
+  pattern:'none'|'lines'|'dots'|'crosshatch'|'grid'|'checkerboard';
+  patternColor:string;patternOpacity:number;strokeWidth:number;gap:number;angle:number;
+  textOpacity:number;textColor?:string;fillColor:string;fillOpacity:number;
+  bold:boolean;italic:boolean;underline:boolean;badge:boolean;
+  badgeColor:string;badgeBackground:string;badgeBorder:string;
+  badgeBorderStyle?:'solid'|'dashed';badgeDashSize?:number;badgeDashGap?:number;
+}
+export interface HypotheticalStyle {
+  label:string;badgeText?:string;linked:boolean;
+  rows:HypotheticalTreatment;columns:HypotheticalTreatment;
+}
 export interface Workbook {
   schema: 1; id: string; title: string; revision: number; sheets: Sheet[]; tables: Table[]; names: Named[];
   pickerSources: Record<string, string>;
   references?:ReferenceSource[];
   catalogMigrations?:string[];
+  hypotheticalStyle?:HypotheticalStyle;
   importReport?: { entries: string[]; formulaCount: number; unsupported: Record<string, number>; originalId: string };
 }
 export const uid = () => crypto.randomUUID();

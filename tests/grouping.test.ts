@@ -6,6 +6,19 @@ import {validateBook} from '../src/storage';
 import {createDemo} from '../src/model';
 import {exportXlsx} from '../src/xlsx-export';
 import {strFromU8,unzipSync} from 'fflate';
+import {getHypotheticalStyle,validateHypotheticalStyle} from '../src/hypothetical';
+
+it('rejects malformed treatment metadata before it can enter a durable workbook',()=>{
+  const book=createDemo(),style=getHypotheticalStyle(book);
+  validateBook(book);validateHypotheticalStyle(style);
+  for(const change of [
+    {rows:{...style.rows,pattern:'url(example)'}},{rows:{...style.rows,patternColor:'red;display:none'}},
+    {rows:{...style.rows,strokeWidth:NaN}},{rows:{...style.rows,gap:-1}},{rows:{...style.rows,textOpacity:2}},
+    {rows:{...style.rows,angle:Infinity}},{rows:null},{label:''},{linked:true,columns:{...style.columns,gap:12}},
+    {rows:{...style.rows,badgeBorderStyle:'wavy'}},{rows:{...style.rows,badgeDashSize:0}},
+    {rows:{...style.rows,badgeDashGap:Infinity}}
+  ])expect(()=>validateBook({...book,hypotheticalStyle:{...style,...change}})).toThrow(/hypothetical|Linked/);
+});
 
 it('ungroups only plain ranges across the workbook and preserves all contents and summary state',()=>{
   const book=createDemo(),s=book.sheets[0],other=book.sheets[1];

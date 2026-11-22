@@ -4,6 +4,31 @@ const cell=(page:Page,r:number,c:number)=>page.locator(`td[data-r="${r}"][data-c
 async function edit(page:Page,r:number,c:number,value:string){
   await cell(page,r,c).click();await page.getByRole('textbox',{name:'Cell value or formula',exact:true}).fill(value);await page.locator('#formula').press('Enter');
 }
+test('table end strokes follow visible identities and the true bottom through virtual scrolling and column moves',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{const state=(await store.load())!,s=state.book.sheets.find(s=>s.name==='Ingredients')!,t=state.book.tables.find(t=>t.sheet===s.id)!;t.rows=s.rows.slice(1,72).map(r=>r.id);await store.save(state.book,state.version,'Synthetic long table');}finally{store.close();}
+  });
+  await page.reload();await page.getByRole('button',{name:'Ingredients',exact:true}).click();
+  await expect(cell(page,0,5)).toHaveClass(/table-right-edge/);await expect(cell(page,1,5)).toHaveClass(/table-right-edge/);
+  await expect(page.locator('.table-bottom-edge')).toHaveCount(0);
+  const stroke=await cell(page,1,5).evaluate(el=>getComputedStyle(el).borderRightColor),header=await cell(page,0,0).evaluate(el=>getComputedStyle(el).borderBottomColor);
+  const channels=(color:string)=>color.match(/\d+/g)!.map(Number);
+  channels(header).forEach((channel,i)=>{expect(channel-channels(stroke)[i]).toBeGreaterThan(0);expect(channel-channels(stroke)[i]).toBeLessThanOrEqual(35);});
+  await expect(cell(page,1,5)).toHaveCSS('border-right-width','1px');await expect(cell(page,1,5)).toHaveCSS('border-right-style','solid');
+  await page.locator('#row-jump').fill('72');await page.locator('#row-jump').press('Enter');
+  await expect(cell(page,71,5)).toHaveClass(/table-bottom-edge/);await expect(page.locator('.table-bottom-edge')).toHaveCount(6);
+  await expect(cell(page,72,5)).not.toHaveClass(/table-bottom-edge|table-right-edge/);
+  await page.locator('#row-jump').fill('2');await page.locator('#row-jump').press('Enter');
+  await cell(page,1,5).click();await page.getByRole('button',{name:'Rows & columns',exact:true}).click();
+  await page.getByRole('button',{name:'Move column right',exact:true}).click();
+  await expect(cell(page,1,6)).toHaveText('3.75');await expect(cell(page,1,6)).toHaveClass(/table-right-edge/);
+  await expect(cell(page,1,5)).not.toHaveClass(/table-right-edge/);
+  await page.locator('#row-jump').fill('72');await page.locator('#row-jump').press('Enter');
+  await expect(cell(page,71,6)).toHaveClass(/table-bottom-edge/);await expect(cell(page,71,6)).toHaveClass(/table-right-edge/);
+  await expect(cell(page,71,5)).not.toHaveClass(/table-bottom-edge/);
+});
 test('real grid editing, formulas, rename/move, undo, local reload, notes and picker',async({page})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto('/');await expect(cell(page,1,3)).toHaveText('208.8');

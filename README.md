@@ -69,7 +69,10 @@ automatically bundled or published.
   Arrow keys commit an in-cell or formula-bar edit and immediately navigate;
   rejected edits stay open. The expanded editor retains normal text navigation.
   Enter applies formula-bar edits. Ctrl/Cmd+Z, Y, F, S, A, C, X, V work.
-  Spreadsheet scrollbars are thin and have no arrow buttons.
+  Scrollable surfaces share thin scrollbars without arrow buttons; cell displays
+  and in-cell editors remain scrollbar-free. Tables have solid right and bottom
+  edges, slightly darker than their header underline, following visible table
+  identities through moves, hiding and virtual scrolling.
   Ctrl/Cmd+G creates a summary group; Ctrl/Cmd+Shift+G ungroups it.
   Select the summary row/column along with its details: the topmost row or
   leftmost column stays visible on collapse. Moving it moves its group together.
@@ -81,10 +84,22 @@ automatically bundled or published.
   Ctrl/Cmd+Shift+H removes it. Summary descendants inherit dynamically, so moving
   them out removes inherited tags while explicit tags remain. Explicit clearing
   overrides inheritance, including for a nested summary's descendants.
-  Badges appear once per tagged row (first visible column) or column (top visible
-  row), after summary chevrons and before cell text. Tags preserve entry statuses
-  and do not change formulas, values or totals. The toolbar H button and
-  **Set status > Remove hypothetical tag** provide pointer/touch equivalents.
+  Tagged rows/columns default to option D: 2px diagonal strokes, 6px clear gaps,
+  and existing text colors at 80% opacity, without badges or added row height.
+  The boxed H **Hypothetical treatments** toolbar button opens workbook-wide,
+  live-preview settings: pattern family, color, opacity, width, spacing, angle,
+  text color/opacity and added emphasis, background fill, optional square H
+  badges and colors, solid or dashed badge borders with adjustable dash size
+  and gap, and a custom display name (for example, Planned or Draft).
+  Rows/columns share settings by default; unlink them for independent treatments.
+  Row treatment takes priority at intersections. **Save** persists
+  through local saves, native backups and configured private sync; Cancel leaves
+  saved settings untouched.
+  Optional badges appear once per tagged row (first visible column) or column
+  (top visible row), after summary chevrons and before cell text. Tags preserve
+  entry statuses and do not change formulas, values or totals. The stamp H
+  marking button and **Set status > Remove hypothetical tag** provide
+  pointer/touch equivalents.
   Cell selections ask which axis to use. Ungroup removes the exact group, or
   the innermost containing group; spanning separate groups removes their outer
   level while retaining nested groups. These operations are undoable and do not
