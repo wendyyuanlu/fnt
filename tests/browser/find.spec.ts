@@ -18,6 +18,7 @@ async function fixture(page:Page){
 test('Find has no replacement DOM, preserves replacement drafts and keeps a fixed height',async({page})=>{
   await fixture(page);const dialog=page.getByRole('dialog'),height=(await dialog.boundingBox())!.height;
   expect(height).toBeGreaterThan(700);await expect(page.locator('#replace-label')).toHaveCount(0);
+  await expect(page.locator('#find-help')).toHaveCount(0);
   await page.locator('#find-text').fill('Cottage');await expect(page.locator('#find-count')).toHaveText('Results found (5)');
   expect((await dialog.boundingBox())!.height).toBe(height);
   await page.getByRole('tab',{name:'Replace',exact:true}).click();await page.locator('#replace-text').fill('Fresh');
@@ -47,7 +48,7 @@ test('case, whole-cell and wildcard searches work, and Find next honors directio
   await page.getByRole('checkbox',{name:'Match case',exact:true}).uncheck();
   await page.getByRole('button',{name:'Find next',exact:true}).click();await expect(page.locator('.address')).toHaveText('B2');
   await page.getByRole('button',{name:'Find next',exact:true}).click();await expect(page.locator('.address')).toHaveText('B3');
-  await page.locator('#find-direction').selectOption('up');await page.getByRole('button',{name:'Find next',exact:true}).click();await expect(page.locator('.address')).toHaveText('B2');
+  await page.getByRole('combobox',{name:'Direction',exact:true}).click();await page.getByRole('option',{name:'Up',exact:true}).click();await page.getByRole('button',{name:'Find next',exact:true}).click();await expect(page.locator('.address')).toHaveText('B2');
 });
 test('Replace and Replace all preserve formulas and linked source identities',async({page})=>{
   await fixture(page);await page.locator('#find-text').fill('Cottage');await page.getByRole('tab',{name:'Replace',exact:true}).click();await page.locator('#replace-text').fill('Fresh');
@@ -70,9 +71,9 @@ test('Find reuses the existing dialog field and button styles without overflowin
   const style=async(selector:string)=>page.locator(selector).evaluate(el=>{
     const css=getComputedStyle(el);return {radius:css.borderRadius,border:css.borderColor,padding:css.padding,font:css.fontFamily,size:css.fontSize};
   });
-  const find={input:await style('#find-text'),select:await style('#find-within'),button:await style('#find-next'),close:await style('.find-dialog .close')};
+  const find={input:await style('#find-text'),button:await style('#find-next'),close:await style('.find-dialog .close')};
   await page.getByRole('button',{name:'Close dialog'}).click();await page.getByRole('button',{name:'Browse values',exact:true}).click();
-  expect(await style('#browse-search')).toEqual(find.input);expect(await style('#browse-column')).toEqual(find.select);
+  expect(await style('#browse-search')).toEqual(find.input);
   expect(await style('#browse-go')).toEqual(find.button);expect(await style('dialog .close')).toEqual(find.close);
   await page.getByRole('button',{name:'Close dialog'}).click();await page.keyboard.press('Control+f');await page.getByRole('tab',{name:'Replace',exact:true}).click();
   const bounds=await page.getByRole('dialog').boundingBox(),button=await page.locator('#replace-all').boundingBox(),viewport=page.viewportSize()!;
@@ -80,4 +81,19 @@ test('Find reuses the existing dialog field and button styles without overflowin
   expect(button!.x+button!.width).toBeLessThanOrEqual(bounds!.x+bounds!.width);
   expect(button!.y+button!.height).toBeLessThanOrEqual(bounds!.y+bounds!.height);
   await expect(page.locator('#find-all-sheets')).toBeInViewport();
+});
+test('Find dropdowns reuse spreadsheet popup options, synchronize scope and support keyboard dismissal',async({page})=>{
+  await fixture(page);
+  const within=page.getByRole('combobox',{name:'Within',exact:true});
+  await expect(within).toHaveText('Selected sheets');await within.click();
+  await expect(page.locator('.find-dialog .cell-dropdown')).toBeVisible();
+  await expect(page.getByRole('listbox',{name:'Within options',exact:true}).getByRole('option')).toHaveText(['Selected sheets','Workbook']);
+  await expect(page.getByRole('option',{name:'Selected sheets',exact:true})).toHaveAttribute('aria-selected','true');
+  await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
+  await expect(within).toHaveText('Workbook');await expect(page.getByRole('checkbox',{name:'All',exact:true})).toBeChecked();await expect(within).toBeFocused();
+  await page.getByRole('checkbox',{name:'Notebook',exact:true}).uncheck();await expect(within).toHaveText('Selected sheets');
+  await within.press('ArrowDown');await page.keyboard.press('Escape');await expect(page.locator('.cell-dropdown')).toHaveCount(0);await expect(page.getByRole('dialog')).toBeVisible();await expect(within).toBeFocused();
+  await within.click();await page.locator('#find-text').click();await expect(page.locator('.cell-dropdown')).toHaveCount(0);
+  await within.click();await page.keyboard.press('Tab');await expect(page.getByRole('combobox',{name:'Direction',exact:true})).toBeFocused();
+  await page.getByRole('combobox',{name:'Direction',exact:true}).click();await page.keyboard.press('Control+f');await expect(page.locator('.cell-dropdown')).toHaveCount(0);await expect(page.locator('#find-text')).toBeFocused();
 });

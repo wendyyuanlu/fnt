@@ -11,7 +11,7 @@ import {captureSelection,selectionCount,selectionRanges,type SelectionArea,type 
 import { defaultHeaderFormula,groupBlockToTop,positionalBlock } from './meal-block';
 import { applyTableColumnFormula,columnCalculations,quantityDiagnostic,restoreCalculation,tableColumnFormulas } from './calculation';
 import { groupReference,newReference,referenceSettings,type ReferenceHost } from './reference-ui';
-import { dropdownManualActionHtml,dropdownOptionsKey,mountDropdownOptions } from './dropdown-ui';
+import { dropdownArrowHtml,dropdownManualActionHtml,dropdownOptionsKey,mountDropdownOptions,mountSelectDropdown } from './dropdown-ui';
 import { duplicateReference,moveReferenceGroup,referenceCaption,referenceChoices,referenceFormula,referenceGroups,referenceLabel,referenceNavigation,referenceUsages,removeReferenceValue,renameReferenceGroup,reorderReferenceSelection,setReferencePresentation,validationChoiceGroups,validationChoices,validationReference,type DropdownChoice,type ReferenceNavigation } from './references';
 import { appendReferenceOption,conversionEditImpact,deleteReferenceColumns,referenceView,writeGridCell } from './reference-grid';
 import { hexToHsv,hsvToHex,normalizeHex } from './colors';
@@ -474,7 +474,7 @@ function refreshDropdownControl():void{
   const s=sheet(),b=bounds(),cell=root.querySelector<HTMLElement>(`td[data-r="${selected.r}"][data-c="${selected.c}"]`);
   if(!cell||b.r1!==b.r2||b.c1!==b.c2||!editableReference()||!inGrid(selected.r,selected.c)||!cellValidation(s,s.rows[selected.r].id,s.columns[selected.c].id)||cell.querySelector('textarea'))return;
   const button=document.createElement('button');button.type='button';button.className='cell-dropdown-trigger';button.dataset.cellDropdown='';button.setAttribute('aria-label','Open cell dropdown');button.setAttribute('aria-haspopup','listbox');
-  button.innerHTML='<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1"><path vector-effect="non-scaling-stroke" d="m3 4 3 3 3-3"/></svg>';
+  button.innerHTML=dropdownArrowHtml;
   button.onclick=e=>{e.stopPropagation();openCellDropdown(cell);};cell.append(button);
 }
 function writeLinkedCell(s:Sheet,row:string,column:string,binding:NonNullable<Cell['binding']>):void{
@@ -1757,7 +1757,6 @@ async function importReferenceSources(file?:File):Promise<void>{
 function openFind():void {
   dialog('Find and Replace',`<div class="find-tabs" role="tablist" aria-label="Search mode"><button id="find-tab" role="tab" aria-controls="find-controls">Find</button><button id="replace-tab" role="tab" aria-controls="find-controls">Replace</button></div>
     <div id="find-controls" class="find-controls" role="tabpanel"><label>Find<input id="find-text" type="search" autocomplete="off"></label><div id="replace-fields"></div>
-    <p id="find-help" class="muted find-help">Use * for any text, ? for one character, and ~ to escape a wildcard.</p>
     <details class="find-options" open><summary>Search options</summary><div class="find-selectors"><label>Within<select id="find-within"><option value="selected">Selected sheets</option><option value="workbook">Workbook</option></select></label><label>Direction<select id="find-direction"><option value="down">Down</option><option value="up">Up</option></select></label></div>
     <div class="find-flags"><label class="inline"><input id="find-case" type="checkbox">Match case</label><label class="inline"><input id="find-entire" type="checkbox">Match entire cell contents</label></div>
     <fieldset class="find-scope"><legend>Search sheets</legend><label class="inline"><input id="find-all-sheets" type="checkbox">All</label>${book.sheets.map(s=>`<label class="inline"><input type="checkbox" name="scope" value="${s.id}" ${s.id===sheetId?'checked':''}>${esc(s.name)}</label>`).join('')}</fieldset></details></div>
@@ -1766,6 +1765,8 @@ function openFind():void {
     d.classList.add('find-dialog');
     const field=<T extends HTMLElement>(id:string)=>d.querySelector<T>('#'+id)!;
     const input=field<HTMLInputElement>('find-text'),scopes=[...d.querySelectorAll<HTMLInputElement>('input[name=scope]')],all=field<HTMLInputElement>('find-all-sheets');
+    const within=mountSelectDropdown(field<HTMLSelectElement>('find-within'));
+    mountSelectDropdown(field<HTMLSelectElement>('find-direction'));
     type Match={sid:string;row:string;column:string;r:number;c:number;value:string};
     let matches:Match[]=[],active:string|undefined,resultPage=0,replacement='';
     const identity=(m:Match)=>`${m.sid}:${m.row}:${m.column}`;
@@ -1843,12 +1844,11 @@ function openFind():void {
       for(const id of ['find-tab','replace-tab']){const tab=field<HTMLButtonElement>(id),selected=id===(replaceMode?'replace-tab':'find-tab');tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;}
       field('find-controls').setAttribute('aria-labelledby',replaceMode?'replace-tab':'find-tab');
       field('replace-fields').innerHTML=replaceMode?`<label id="replace-label">Replace with<input id="replace-text" value="${esc(replacement)}"></label>`:'';
-      field('find-help').textContent='Use * for any text, ? for one character, and ~ to escape a wildcard.'+(replaceMode?' Replace changes literal text only; formulas and linked records stay intact.':'');
       field('replace-actions').innerHTML=replaceMode?'<button id="replace-one">Replace</button><button id="replace-all">Replace all</button>':'';
       if(replaceMode){field<HTMLInputElement>('replace-text').oninput=e=>replacement=(e.target as HTMLInputElement).value;field<HTMLButtonElement>('replace-one').onclick=()=>replace(false);field<HTMLButtonElement>('replace-all').onclick=()=>replace(true);}
       buttons();
     };
-    const syncScope=()=>{const count=scopes.filter(s=>s.checked).length;all.checked=count===scopes.length;all.indeterminate=count>0&&count<scopes.length;field<HTMLSelectElement>('find-within').value=all.checked?'workbook':'selected';};
+    const syncScope=()=>{const count=scopes.filter(s=>s.checked).length;all.checked=count===scopes.length;all.indeterminate=count>0&&count<scopes.length;field<HTMLSelectElement>('find-within').value=all.checked?'workbook':'selected';within.refresh();};
     all.onchange=()=>{scopes.forEach(s=>s.checked=all.checked);syncScope();draw();};
     scopes.forEach(s=>s.onchange=()=>{syncScope();draw();});
     field<HTMLSelectElement>('find-within').onchange=e=>{const workbook=(e.target as HTMLSelectElement).value==='workbook';scopes.forEach(s=>s.checked=workbook||s.value===sheetId);syncScope();draw();};
