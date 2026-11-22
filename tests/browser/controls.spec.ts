@@ -241,6 +241,22 @@ test('assigned dropdown opens directly from the cell, supports keyboard, manual 
   await page.getByRole('button',{name:'Close DD',exact:true}).click();await expect(page.locator('body')).not.toHaveClass(/dd-mode/);
   await expect(page.locator('[data-action="back-workbook"]')).toHaveCount(0);await expect(cell).toHaveText('Manual place');expect(errors).toEqual([]);
 });
+test('Assign DD shows assigned state for manual values and follows selection, removal, undo and reload',async({page})=>{
+  await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();
+  const cell=page.locator('td[data-r="1"][data-c="1"]'),assignment=page.getByRole('button',{name:'Assign DD',exact:true});
+  await cell.click();await expect(assignment).toHaveAttribute('aria-pressed','false');
+  await assignment.click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.getByRole('checkbox',{name:'Snack / Country',exact:true}).check();await page.getByRole('button',{name:'Apply dropdown',exact:true}).click();
+  await expect(assignment).toHaveAttribute('aria-pressed','true');
+  await page.locator('td[data-r="2"][data-c="2"]').click();await expect(assignment).toHaveAttribute('aria-pressed','false');
+  await cell.click();await page.keyboard.press('Escape');await expect(assignment).toHaveAttribute('aria-pressed','true');
+  await page.locator('#formula').fill('Manual place');await page.locator('#formula').press('Enter');await cell.click();await page.keyboard.press('Escape');
+  await expect(assignment).toHaveAttribute('aria-pressed','true');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await page.reload();await cell.click();await page.keyboard.press('Escape');await expect(assignment).toHaveAttribute('aria-pressed','true');
+  await assignment.click();await page.locator('#no-dropdown').click();await page.getByRole('button',{name:'Apply dropdown',exact:true}).click();
+  await expect(assignment).toHaveAttribute('aria-pressed','false');await expect(cell).toHaveText('Manual place');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(assignment).toHaveAttribute('aria-pressed','true');
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(assignment).toHaveAttribute('aria-pressed','false');
+});
 test('multiple dropdown sources persist for cells and columns and grid previews stop at four options',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();
   const cell=page.locator('td[data-r="2"][data-c="2"]');await cell.click();await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'Grid view',exact:true}).click();

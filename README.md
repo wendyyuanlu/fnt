@@ -234,8 +234,10 @@ automatically bundled or published.
   dropdowns, or edit column formulas. Matching-pattern edits retain other formula
   patterns and manual overrides, updating their saved restore calculations.
   Replacing all manual values requires explicitly choosing **All data rows**.
-- **Dropdown…** assigns a source to selected cells or a table's selected columns
-  without changing their contents. Click an assigned cell or its dropdown arrow
+- **Assign DD** assigns a source to selected cells or a table's selected columns
+  without changing their contents. The button highlights when the active cell has
+  a dropdown assignment, even with a manual value; it reflects assignments, not
+  whether the popup is open. Click an assigned cell or its dropdown arrow
   to search and choose options; Alt+Down opens it from the keyboard. Escape
   dismisses the list. **Manual**, F2 and the expanded editor remain
   available. Choices retain exact source identities, including duplicate labels
