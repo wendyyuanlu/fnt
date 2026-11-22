@@ -1,5 +1,5 @@
 import './style.css';
-import { addRow, blankSheet, clone, columnIndex, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
+import { addRow, blankSheet, clone, columnIndex, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
 import { Store, SyncConflict, syncGitHub, type Backup, type LocalState } from './storage';
 import { parseArchive, stringifyArchive } from './archive';
@@ -20,6 +20,7 @@ import { hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,su
 import {getHypotheticalStyle,hypotheticalBadgeCss,hypotheticalCss,hypotheticalTextCss} from './hypothetical';
 import {openHypotheticalSettings} from './hypothetical-ui';
 import {toolbarIcon} from './icons';
+import {mountToolbar} from './toolbar';
 import { mountGroupControls } from './grouping-ui';
 import {createTextSearch} from './find';
 import {loadPublishedTesting,untouchedStarter} from './published';
@@ -106,6 +107,8 @@ let appendDraft:{source:string;column:string;value:string}|undefined;
 let colorPicker:{pending:boolean;commit:()=>boolean;close:(apply?:boolean)=>boolean}|undefined;
 let referenceNotice='';
 let awaitingMutationConfirmation=false;
+let hypotheticalOverridePreview:{sheet:string;axis:Group['axis'];ids:Set<string>}|undefined;
+let arrangingToolbar=false,closeToolbar:(()=>void)|undefined;
 let closeCellDropdown:(()=>void)|undefined;
 let groupControls:ReturnType<typeof mountGroupControls>|undefined,groupMenuOpen=false,groupMenuSheet='';
 let groupManager:{refresh:()=>void;paint:()=>void;close:()=>void}|undefined;
@@ -298,6 +301,7 @@ function referenceTabsHtml():string{
   return`<div class="tabs">${referenceNavigation(book).map(g=>node(g)).join('')}<button data-action="new-reference" aria-label="Add dropdown source">+</button><span class="tab-drop-marker" hidden></span></div>`;
 }
 function render(): void {
+  closeToolbar?.();closeToolbar=undefined;
   hideShortcutHint();
   groupControls?.close();groupControls=undefined;
   closeCellDropdown?.();
@@ -389,6 +393,7 @@ function render(): void {
       <div class="tool-set"><button class="icon-button" data-action="pin" aria-pressed="${pins.length>0}" title="${pins.length?'Unpin columns':'Pin selected columns'}" aria-label="${pins.length?'Unpin columns':'Pin selected columns'}">${toolbarIcon('pin')}</button><button class="icon-button" data-action="browse" title="Browse values" aria-label="Browse values">${toolbarIcon('browse')}</button><button class="icon-button" data-action="hypothetical" aria-label="Mark ${esc(hypotheticalStyle.label)}" title="Mark selected rows or columns ${esc(hypotheticalStyle.label)}" data-shortcut-label="Mark ${esc(hypotheticalStyle.label)}" data-shortcut-keys="Ctrl|H" aria-keyshortcuts="Control+H">${toolbarIcon('hypothetical')}</button><button class="icon-button" data-action="hypothetical-settings" aria-label="Hypothetical treatments" title="Customize ${esc(hypotheticalStyle.label)} row and column treatments">${toolbarIcon('hypothetical-settings')}</button><select id="status-filter" ${referenceId?'hidden':''} aria-label="Filter row status"><option value="all">All entries</option>${['real','planned','hypothetical'].map(v => `<option ${v===filter?'selected':''}>${v}</option>`).join('')}</select>${referenceId?'':'<button data-action="row-status">Set status</button>'}</div>
       ${referenceId?'':'<div class="tool-set"><button data-action="quick-add">+ Add entry</button></div>'}
       ${referenceId?'':'<div class="tool-set"><button data-action="tables">Tables</button><button data-action="block">Meal / day</button></div>'}
+      <div class="tool-set toolbar-layout-controls"><button class="icon-button" data-action="toolbar-layout" aria-label="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar'}" aria-pressed="${arrangingToolbar}" title="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar: drag tools or use Alt+Left/Right'}">${toolbarIcon('toolbar-layout')}</button></div>
     </nav>
     <form class="formula-bar" id="formula-form"><span class="address">${letters(selected.c)}${selected.r+1}</span><span class="fx">fx</span><input id="formula" aria-label="Cell value or formula" autocomplete="off" spellcheck="false" value="${esc(draft??inputText(current()))}"><span id="calculation-state"></span></form>
     ${view&&(view.error||referenceNotice)?`<div class="reference-notice" id="reference-notice" role="${view.error?'alert':'status'}">${esc(view.error||referenceNotice)}</div>`:''}
@@ -439,7 +444,7 @@ function render(): void {
     });
     if(resized){layout.rebuild();(body.querySelector('[data-spacer="before"] td') as HTMLElement).style.height=layout.offsets[window.start]+'px';(body.querySelector('[data-spacer="after"] td') as HTMLElement).style.height=layout.offsets.at(-1)!-layout.offsets[window.end]+'px';}
     grid.querySelector<HTMLElement>('.grid')!.style.setProperty('--grid-insert-height',layout.offsets.at(-1)!+headerHeight+'px');
-    grid.scrollTop=layout.offsets[anchorIndex]+anchorOffset;bindRowControls();refreshSelection(false);groupControls?.drawRows();groupManager?.paint();paintMoving();rememberView();
+    grid.scrollTop=layout.offsets[anchorIndex]+anchorOffset;bindRowControls();refreshSelection(false);groupControls?.drawRows();groupManager?.paint();paintMoving();paintHypotheticalOverrides();rememberView();
     if(draft!==undefined&&!busy){
       syncDraft(draft,false,draftLiteral);
       if(wasInline){const editor=root.querySelector<HTMLTextAreaElement>('.cell-inline-editor')??root.querySelector<HTMLInputElement>('#formula')!;editor.focus({preventScroll:true});editor.setSelectionRange(caret![0],caret![1]);}
@@ -453,6 +458,7 @@ function render(): void {
   if(draft!==undefined)syncDraft(draft,false,draftLiteral);
   expandedEditor?.position();
   renderStatus();
+  closeToolbar=mountToolbar(root.querySelector<HTMLElement>('.toolbar')!,{order:book.toolbarOrder,dividers:book.toolbarDividers,editing:arrangingToolbar,change:(order,dividers)=>commitDraft()&&mutate('Arrange toolbar',()=>{book.toolbarOrder=order;book.toolbarDividers=dividers;})});
   rememberView();
 }
 function safeLink(value: string): boolean {
@@ -992,6 +998,7 @@ async function action(name:string):Promise<void> {
     });break;
     case 'pin':{const indices=selectedAxisIndices('column');pinnedColumns.set(sheetId,(pinnedColumns.get(sheetId)?.length??0)>0?[]:indices.map(i=>sheet().columns[i].id));render();break;}
     case 'browse':openBrowse();break;
+    case 'toolbar-layout':arrangingToolbar=!arrangingToolbar;render();root.querySelector<HTMLElement>('[data-action="toolbar-layout"]')?.focus({preventScroll:true});break;
     case 'select-all':anchor={r:0,c:0};selected={r:sheet().rows.length-1,c:sheet().columns.length-1};selectionKind='cells';scrollTarget=0;render();break;
     case 'range':{const b=bounds();askText('Select a range (for example A2:C6)',`${letters(b.c1)}${b.r1+1}:${letters(b.c2)}${b.r2+1}`,text=>{
       const m=text.toUpperCase().match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/);if(!m){flash('Use a range such as A2:C6.');return;}
@@ -1032,7 +1039,7 @@ async function action(name:string):Promise<void> {
       if(mode!=='rows'&&mode!=='columns'){flash('Select entire rows or columns to change their hypothetical tag.');break;}
       const axis=mode==='rows'?'row':'column',items=axis==='row'?sheet().rows:sheet().columns;
       const ids=selectedAxisIndices(axis).map(i=>items[i].id);
-      mutate(name==='hypothetical'?'Mark hypothetical':'Remove hypothetical tag',()=>setHypotheticalTag(sheet(),axis,ids,name==='hypothetical'));
+      changeHypotheticalTags(axis,ids,name==='hypothetical');
       break;
     }
     case 'ungroup-plain':{
@@ -1057,6 +1064,36 @@ async function action(name:string):Promise<void> {
     case 'safety':openSafety();break;
     case 'report':dialog('Import compatibility',`<p>Original Excel remains authoritative. Recalculated results have not been comprehensively compared with Excel.</p><pre>${esc(JSON.stringify(book.importReport,null,2))}</pre>`);break;
   }
+}
+function paintHypotheticalOverrides():void{
+  const preview=hypotheticalOverridePreview,s=sheet();
+  root.querySelectorAll<HTMLElement>('td[data-r],th[data-row-select],th[data-col]').forEach(el=>{
+    const index=preview?.axis==='row'?el.dataset.r??el.dataset.rowSelect:el.dataset.c??el.dataset.col;
+    const item=index===undefined?undefined:(preview?.axis==='row'?s.rows:s.columns)[Number(index)];
+    el.classList.toggle('hypothetical-override-preview',!!preview&&preview.sheet===s.id&&!!item&&preview.ids.has(item.id));
+  });
+}
+function changeHypotheticalTags(axis:Group['axis'],ids:string[],enabled:boolean):void{
+  const s=sheet(),items=axis==='row'?s.rows:s.columns,descendants=hypotheticalTagDescendants(s,axis,ids);
+  const overrides=items.filter(item=>descendants.has(item.id)&&item.hypothetical!==undefined);
+  const expectedGeneration=generation,label=enabled?'Mark hypothetical':'Remove hypothetical tag';
+  const apply=(overwrite:boolean)=>mutate(label,()=>{
+    if(sheet().id!==s.id||generation!==expectedGeneration)throw Error('The workbook changed. Select the summary again before changing its tags.');
+    setHypotheticalTag(sheet(),axis,ids,enabled,overwrite);
+  });
+  if(!overrides.length){apply(false);return;}
+  const preview={sheet:s.id,axis,ids:new Set(overrides.map(item=>item.id))},name=getHypotheticalStyle(book).label;
+  const details=overrides.map(item=>{
+    const index=items.findIndex(candidate=>candidate.id===item.id),coordinate=axis==='row'?`Row ${index+1}`:`Column ${letters(index)}`;
+    const values=axis==='row'?navigationColumns.slice(0,5).map(c=>cellText(getCell(s,item.id,s.columns[c].id),s,index,c)):navigationRows.slice(0,5).map(r=>cellText(getCell(s,s.rows[r].id,item.id),s,r,index));
+    const value=values.find(value=>value.trim())??'';
+    return `<li><strong>${coordinate} — ${item.hypothetical?'Marked':'Cleared'}</strong><span title="${esc(value)}">${esc(value)}</span></li>`;
+  }).join('');
+  const d=dialog('Manual tag overrides',`<p>${overrides.length} child ${axis==='row'?'rows':'columns'} have manual tags or explicit clears. They are highlighted on the sheet.</p><ul class="hypothetical-override-list">${details}</ul><p>${enabled?'Applying':'Removing'} ${esc(name)} on the summary can replace these overrides so its children automatically inherit future parent changes. Cell values, formulas and groups stay unchanged.</p><div class="button-row"><button class="primary" id="inherit-hypothetical">Overwrite and inherit</button><button id="keep-hypothetical">Keep manual tags</button><button id="cancel-hypothetical">Cancel</button></div>`);
+  const clear=()=>{if(hypotheticalOverridePreview===preview){hypotheticalOverridePreview=undefined;paintHypotheticalOverrides();}};
+  hypotheticalOverridePreview=preview;paintHypotheticalOverrides();d.addEventListener('close',clear,{once:true});
+  for(const [id,overwrite]of [['inherit-hypothetical',true],['keep-hypothetical',false]] as const)d.querySelector<HTMLButtonElement>('#'+id)!.onclick=()=>{clear();d.close();apply(overwrite);};
+  d.querySelector<HTMLButtonElement>('#cancel-hypothetical')!.onclick=()=>d.close();
 }
 function openFormat():void {
   dialog('Cell formatting',`<form><label>Number display<select id="number-format"><option value="">General</option><option value="decimal">Two decimals</option><option value="percent">Percent</option><option value="date">Date</option></select></label><label>Text color<input type="color" id="text-color" value="#193c34"></label><label>Background<input type="color" id="bg-color" value="#ffffff"></label><button class="primary">Apply to selection</button></form>`,d=>d.querySelector('form')!.onsubmit=e=>{

@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest';
-import {addRow,blankSheet,clone,getCell,groupMoveTarget,insertColumn,moveColumns,moveRows,moveIntoGroup,moveTargetGroups,outlineMembers,setInput,setHypotheticalTag,type Group} from '../src/model';
+import {addRow,blankSheet,clone,getCell,groupMoveTarget,hypotheticalTagDescendants,insertColumn,moveColumns,moveRows,moveIntoGroup,moveTargetGroups,outlineMembers,setInput,setHypotheticalTag,type Group} from '../src/model';
 import {Engine} from '../src/formula';
 import {hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,ungroupPlainGroups} from '../src/grouping';
 import {validateBook} from '../src/storage';
@@ -29,6 +29,26 @@ it('ungroups only plain ranges across the workbook and preserves all contents an
   expect(ungroupPlainGroups(book)).toBe(2);expect(book).toEqual(expected);expect(ungroupPlainGroups(book)).toBe(0);validateBook(book);
 });
 for(const axis of ['row','column'] as const){
+  it(`overwrites manual ${axis} descendants only by explicit choice and keeps inheritance dynamic`,()=>{
+    const book=createDemo(),s=book.sheets[0],items=axis==='row'?s.rows:s.columns,cells=clone(s.cells);
+    s.groups=[{id:'outer',axis,kind:'summary',members:items.slice(0,6).map(item=>item.id),collapsed:false,label:'Outer'},
+      {id:'inner',axis,kind:'summary',members:items.slice(2,5).map(item=>item.id),collapsed:false,label:'Inner'}];
+    items[1].hypothetical=true;items[2].hypothetical=false;items[4].hypothetical=true;
+    const groups=clone(s.groups),ids=items.slice(0,6).map(item=>item.id);
+    expect([...hypotheticalTagDescendants(s,axis,[items[0].id])]).toEqual(ids.slice(1));
+    setHypotheticalTag(s,axis,ids,true);
+    expect([...hypotheticalMembers(s,axis)]).toEqual([ids[0],ids[1],ids[4],ids[5]]);
+    expect(items[3].hypothetical).toBeUndefined();
+    setHypotheticalTag(s,axis,ids,true,true);
+    expect([...hypotheticalMembers(s,axis)]).toEqual(ids);expect(items.slice(1,6).every(item=>item.hypothetical===undefined)).toBe(true);
+    setHypotheticalTag(s,axis,[ids[0]],false);expect(hypotheticalMembers(s,axis).size).toBe(0);
+    setHypotheticalTag(s,axis,[ids[3]],true);setHypotheticalTag(s,axis,[ids[0]],false,true);
+    expect(items[3].hypothetical).toBeUndefined();expect(hypotheticalMembers(s,axis).size).toBe(0);
+    expect(s.cells).toEqual(cells);expect(s.groups).toEqual(groups);
+    setHypotheticalTag(s,axis,[ids[0]],true);
+    if(axis==='row')moveRows(book,s,[ids[1]],9);else moveColumns(book,s,[ids[1]],9);
+    expect(hypotheticalMembers(s,axis).has(ids[1])).toBe(false);
+  });
   it(`inherits ${axis} tags through nested summaries without stamping descendants, with explicit clear overrides`,()=>{
     const book=createDemo(),s=book.sheets[0],items=axis==='row'?s.rows:s.columns;
     s.groups=[{id:'outer',axis,kind:'summary',members:items.slice(0,5).map(item=>item.id),collapsed:false,label:'Outer'},

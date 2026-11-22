@@ -45,8 +45,34 @@ test('row tags inherit, clear, persist and sit between the summary chevron and v
   expect(badge.x).toBeGreaterThanOrEqual(chevron.x+chevron.width);expect(value.x).toBeGreaterThanOrEqual(badge.x+badge.width);
   await page.reload();await expect(page.locator('td[data-c="0"] .hypothetical-badge')).toHaveCount(3);
   await page.locator('[data-row-select="2"] .row-index').click();await page.keyboard.press('Control+Shift+h');await expect(page.locator('td[data-r="2"] .hypothetical-badge')).toHaveCount(0);
-  await page.locator('[data-row-select="1"] .row-index').click();await page.keyboard.press('Control+Shift+h');await expect(page.locator('.hypothetical-badge')).toHaveCount(0);
+  await page.locator('[data-row-select="1"] .row-index').click();await page.keyboard.press('Control+Shift+h');await page.getByRole('button',{name:'Overwrite and inherit',exact:true}).click();await expect(page.locator('.hypothetical-badge')).toHaveCount(0);
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('.hypothetical-badge')).toHaveCount(2);
+});
+for(const axis of ['row','column'] as const)test(`summary ${axis} changes preview manual overrides and support cancel, preserve, inherit, undo and reload`,async({page})=>{
+  await fixture(page);
+  const select=async(index:number)=>{await page.locator(axis==='row'?`[data-row-select="${index}"] .row-index`:`th[data-col="${index}"] .column-index`).click();};
+  const items=(book:Awaited<ReturnType<typeof snapshot>>)=>axis==='row'?book.sheets[0].rows:book.sheets[0].columns;
+  const tagged=page.locator(axis==='row'?'td[data-c="0"] .hypothetical-badge':'td[data-r="0"] .hypothetical-badge');
+  await select(2);await page.keyboard.press('Control+h');await select(3);await page.keyboard.press('Control+Shift+h');
+  const before=await snapshot(page);await select(1);await page.keyboard.press('Control+h');
+  const dialog=page.getByRole('dialog');await expect(dialog.locator('h2')).toHaveText('Manual tag overrides');
+  await expect(dialog.locator('.hypothetical-override-list li')).toHaveCount(2);
+  await expect(page.locator(axis==='row'?'td[data-r="2"].hypothetical-override-preview':'td[data-c="2"].hypothetical-override-preview').first()).toBeVisible();
+  await expect(page.locator(axis==='row'?'td[data-r="3"].hypothetical-override-preview':'td[data-c="3"].hypothetical-override-preview').first()).toBeVisible();
+  expect((await snapshot(page))).toEqual(before);
+  await dialog.getByRole('button',{name:'Cancel',exact:true}).click();await expect(page.locator('.hypothetical-override-preview')).toHaveCount(0);
+  expect((await snapshot(page))).toEqual(before);
+  await page.keyboard.press('Control+h');await page.getByRole('button',{name:'Keep manual tags',exact:true}).click();
+  await expect(tagged).toHaveCount(2);expect(items(await snapshot(page))[3].hypothetical).toBe(false);
+  await page.keyboard.press('Control+Shift+h');await page.getByRole('button',{name:'Overwrite and inherit',exact:true}).click();
+  await expect(tagged).toHaveCount(0);expect(items(await snapshot(page)).slice(2,4).map(item=>item.hypothetical)).toEqual([undefined,undefined]);
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(tagged).toHaveCount(2);
+  await page.keyboard.press('Control+h');await page.getByRole('button',{name:'Overwrite and inherit',exact:true}).click();
+  await expect(tagged).toHaveCount(3);
+  const after=await snapshot(page);expect(items(after).slice(2,4).map(item=>item.hypothetical)).toEqual([undefined,undefined]);
+  expect(after.sheets[0].cells).toEqual(before.sheets[0].cells);expect(after.sheets[0].groups).toEqual(before.sheets[0].groups);
+  await page.reload();await expect(tagged).toHaveCount(3);await select(1);await page.keyboard.press('Control+Shift+h');
+  await expect(page.getByRole('dialog')).toHaveCount(0);await expect(tagged).toHaveCount(0);
 });
 test('column tags inherit and inherited row tags disappear when dragged out of a summary',async({page})=>{
   await fixture(page);

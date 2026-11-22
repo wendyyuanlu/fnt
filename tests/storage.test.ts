@@ -1,11 +1,21 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it,vi } from 'vitest';
 import { createDemo, uid } from '../src/model';
-import { encode64, Store, SyncConflict, syncGitHub, type LocalState } from '../src/storage';
+import { encode64, Store, SyncConflict, syncGitHub,validateBook, type LocalState } from '../src/storage';
 import { parseArchive,stringifyArchive } from '../src/archive';
 import {getHypotheticalStyle} from '../src/hypothetical';
 
 describe('recoverable local storage',()=>{
+  it('validates toolbar identities and restores their order from native recovery archives',async()=>{
+    const store=await Store.open(uid()),book=createDemo();
+    for(const toolbarOrder of [null,[''],['action:bold','action:bold'],['action:bold<script>']])expect(()=>validateBook({...book,toolbarOrder})).toThrow('Invalid toolbar order');
+    book.toolbarOrder=['action:find','control:status-filter','action:bold','action:future-tool'];
+    book.toolbarDividers=['action:find','action:future-tool'];
+    expect(()=>validateBook({...book,toolbarDividers:['bad']})).toThrow('Invalid toolbar dividers');
+    const saved=await store.save(book,0,'Toolbar order'),backup=parseArchive(stringifyArchive(await store.backup(saved))) as Awaited<ReturnType<Store['backup']>>;
+    const changed=await store.save(createDemo(),saved.version,'Other workbook'),restored=await store.restore(backup,changed.version);
+    expect(restored.book.toolbarOrder).toEqual(book.toolbarOrder);expect(restored.book.toolbarDividers).toEqual(book.toolbarDividers);expect(restored.book.sheets).toEqual(book.sheets);store.close();
+  });
   it('preserves independent treatment settings in saves and native recovery archives without rewriting cells',async()=>{
     const store=await Store.open(uid()),book=createDemo(),cells=structuredClone(book.sheets.map(s=>s.cells));
     book.hypotheticalStyle=getHypotheticalStyle(book);book.hypotheticalStyle.linked=false;

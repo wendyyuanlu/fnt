@@ -37,6 +37,10 @@ export function validateBook(value: unknown): asserts value is Workbook {
   const b = value as Partial<Workbook>;
   if (b.schema !== 1 || typeof b.id !== 'string' || typeof b.title !== 'string' || !Number.isInteger(b.revision) || !Array.isArray(b.sheets) || !b.sheets.length || !Array.isArray(b.tables) || !Array.isArray(b.names) || !b.pickerSources) throw Error('Invalid or unsupported workbook format.');
   if(b.hypotheticalStyle!==undefined)validateHypotheticalStyle(b.hypotheticalStyle);
+  for(const field of ['toolbarOrder','toolbarDividers'] as const){
+    const ids=b[field];
+    if(ids!==undefined&&(!Array.isArray(ids)||ids.length>256||ids.some(id=>typeof id!=='string'||!/^(action|control):[a-zA-Z0-9_-]{1,100}$/.test(id))||new Set(ids).size!==ids.length))throw Error(`Invalid toolbar ${field==='toolbarOrder'?'order':'dividers'}.`);
+  }
   if(b.catalogMigrations!==undefined&&(!Array.isArray(b.catalogMigrations)||b.catalogMigrations.some(id=>typeof id!=='string'||!/^[a-zA-Z0-9_.-]{1,128}$/.test(id))||new Set(b.catalogMigrations).size!==b.catalogMigrations.length))throw Error('Invalid catalog migration history.');
   const ids = new Set<string>();
   const checked=new WeakSet<object>();

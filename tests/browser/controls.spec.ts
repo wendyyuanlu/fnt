@@ -1,5 +1,78 @@
 import {expect,test} from '@playwright/test';
 
+test('group controls stay centered in the corner as the outline gutter changes',async({page})=>{
+  await page.goto('/');
+  await page.locator('[data-row-select="1"] .row-index').click();await page.locator('[data-row-select="3"] .row-index').click({modifiers:['Shift']});await page.keyboard.press('Control+g');
+  const centered=async()=>{
+    const corner=(await page.locator('.grid thead .corner').boundingBox())!,button=(await page.getByRole('button',{name:'Group controls',exact:true}).boundingBox())!;
+    expect(Math.abs(button.x+button.width/2-corner.x-corner.width/2)).toBeLessThanOrEqual(1);
+    expect(Math.abs(button.y+button.height/2-corner.y-corner.height/2)).toBeLessThanOrEqual(1);
+  };
+  await centered();await page.locator('[data-row-select="5"] .row-index').click();await page.locator('[data-row-select="6"] .row-index').click({modifiers:['Shift']});
+  await page.keyboard.press('Control+Alt+g');await centered();
+});
+test('toolbar tools rearrange with mouse or touch, preserve actions and survive undo, reload and DD changes',async({page,isMobile})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const snapshot=()=>page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{return(await store.load())!.book;}finally{store.close();}
+  });
+  const first=()=>page.locator('.toolbar [data-toolbar-tool]').first();
+  const before=await snapshot();
+  await page.getByRole('button',{name:'Arrange toolbar',exact:true}).click();
+  const source=page.locator('.toolbar [data-action="bold"]'),target=page.locator('.toolbar [data-action="undo"]');
+  await source.scrollIntoViewIfNeeded();
+  if(isMobile){
+    const from=(await source.boundingBox())!,to=(await target.boundingBox())!,session=await page.context().newCDPSession(page);
+    await session.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:from.x+from.width/2,y:from.y+from.height/2}]});
+    await session.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:to.x+2,y:to.y+to.height/2}]});
+    await session.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await session.detach();
+  }else await source.dragTo(target,{targetPosition:{x:2,y:16}});
+  await expect(first()).toHaveAttribute('data-toolbar-tool','action:bold');
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const reordered=await snapshot();expect(reordered.sheets).toEqual(before.sheets);expect(reordered.toolbarOrder?.[0]).toBe('action:bold');
+  await page.getByRole('button',{name:'Finish arranging toolbar',exact:true}).click();
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(first()).toHaveAttribute('data-toolbar-tool','action:undo');
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(first()).toHaveAttribute('data-toolbar-tool','action:bold');
+  await page.getByRole('button',{name:'Bold',exact:true}).click();await expect(page.getByRole('button',{name:'Bold',exact:true})).toHaveAttribute('aria-pressed','true');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await page.reload();await expect(first()).toHaveAttribute('data-toolbar-tool','action:bold');
+  expect((await snapshot()).sheets).toEqual(before.sheets);
+  await page.locator('.reference-manager').click();await expect(page.locator('#status-filter')).toBeHidden();
+  await page.getByRole('button',{name:'Arrange toolbar',exact:true}).click();await page.getByRole('button',{name:'Redo',exact:true}).focus();await page.keyboard.press('Alt+ArrowLeft');
+  await expect(page.locator('.toolbar [data-toolbar-tool]').nth(1)).toHaveAttribute('data-toolbar-tool','action:redo');
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const ddOrder=(await snapshot()).toolbarOrder!;
+  expect(ddOrder).toContain('action:row-status');expect(ddOrder).toContain('action:quick-add');
+  await page.getByRole('button',{name:'Finish arranging toolbar',exact:true}).click();await page.locator('.reference-manager').click();
+  await expect(page.locator('#status-filter')).toBeVisible();expect((await snapshot()).toolbarOrder).toEqual(ddOrder);
+});
+test('toolbar divider gaps add on hover, delete on click and share a durable uniform style',async({page})=>{
+  await page.goto('/');
+  const bold=page.getByRole('button',{name:'Bold',exact:true}),italic=page.getByRole('button',{name:'Italic',exact:true});
+  const before=(await italic.boundingBox())!.x-((await bold.boundingBox())!.x+(await bold.boundingBox())!.width);
+  await page.getByRole('button',{name:'Arrange toolbar',exact:true}).click();
+  const gap=page.getByRole('button',{name:'Add divider after Bold',exact:true});
+  const opacity=()=>gap.evaluate(el=>getComputedStyle(el,'::after').opacity);
+  expect(await opacity()).toBe('0');await gap.hover();expect(await opacity()).toBe('0.5');
+  expect((await italic.boundingBox())!.x-((await bold.boundingBox())!.x+(await bold.boundingBox())!.width)).toBeGreaterThan(before);
+  await gap.click();await expect(page.getByRole('button',{name:'Remove divider after Bold',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Add divider after Meal / day',exact:true}).click();
+  const heights=await page.locator('.toolbar-divider').evaluateAll(elements=>elements.map(el=>getComputedStyle(el,'::after').height));
+  expect(heights.length).toBeGreaterThan(1);expect(new Set(heights)).toEqual(new Set(['20px']));
+  await page.getByRole('button',{name:'Remove divider after Redo',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Add divider after Redo',exact:true})).toHaveCount(1);
+  await page.getByRole('button',{name:'Finish arranging toolbar',exact:true}).click();
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('[data-toolbar-divider="action:redo"]')).toHaveCount(1);
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(page.locator('[data-toolbar-divider="action:redo"]')).toHaveCount(0);
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.reload();
+  await expect(page.locator('[data-toolbar-divider="action:bold"]')).toHaveCount(1);await expect(page.locator('[data-toolbar-divider="action:redo"]')).toHaveCount(0);
+  await expect(page.locator('[data-toolbar-divider="action:block"]')).toHaveCount(1);
+  await page.getByRole('button',{name:'Arrange toolbar',exact:true}).click();
+  while(await page.locator('.toolbar-divider').count())await page.locator('.toolbar-divider').first().click();
+  await page.getByRole('button',{name:'Finish arranging toolbar',exact:true}).click();
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.reload();await expect(page.locator('.toolbar-divider')).toHaveCount(0);
+});
 test('grouping shortcuts preserve nested identities, formulas, undo and saved groups',async({page})=>{
   await page.goto('/');
   const snapshot=()=>page.evaluate(async()=>{
@@ -80,8 +153,8 @@ test('table column dialog manages dropdowns and formula patterns without replaci
 
 test('toolbar icons share size and styling while formatting and colors persist',async({page})=>{
   await page.goto('/');
-  await expect(page.locator('.toolbar-icon')).toHaveCount(17);
-  const icons=await page.locator('.toolbar-icon').evaluateAll(elements=>elements.map(el=>{
+  await expect(page.locator('[data-action="toolbar-layout"] .toolbar-icon')).toBeVisible();
+  const icons=await page.locator('.toolbar .toolbar-icon').evaluateAll(elements=>elements.map(el=>{
     const svg=el.getBoundingClientRect(),button=el.closest('button')!.getBoundingClientRect();
     return{width:svg.width,height:svg.height,center:Math.abs(svg.top+svg.height/2-button.top-button.height/2),stroke:el.getAttribute('stroke-width'),view:el.getAttribute('viewBox'),text:el.querySelector('text')!==null,paths:[...el.querySelectorAll('path')].map(p=>({stroke:getComputedStyle(p).strokeWidth,effect:getComputedStyle(p).vectorEffect}))};
   }));

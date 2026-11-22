@@ -3,6 +3,7 @@ const stampFrame='M2 2h2.5a1.5 1.5 0 0 0 3 0h3a1.5 1.5 0 0 0 3 0h3a1.5 1.5 0 0 0
 export const toolbarIconPaths={
   undo:'M9 5l-5 5 5 5M4 10h9a7 7 0 0 1 7 7v2',
   redo:'M15 5l5 5-5 5M20 10h-9a7 7 0 0 0-7 7v2',
+  'toolbar-layout':'M3 3h18v6H3ZM8 3v6M13 3v6M18 3v6M12 18l8-8 3 3-8 8-4 1 1-4ZM18 12l3 3',
   bold:'M7 5h5a3.5 3.5 0 0 1 0 7H7m5 0h1a3.5 3.5 0 0 1 0 7H7V5',
   italic:'M10 5h8M6 19h8M15 5l-6 14',
   underline:'M6 5v6a6 6 0 0 0 12 0V5M5 21h14',

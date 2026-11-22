@@ -84,8 +84,21 @@ automatically bundled or published.
   Ctrl/Cmd+Shift+H removes it. Summary descendants inherit dynamically, so moving
   them out removes inherited tags while explicit tags remain. Explicit clearing
   overrides inheritance, including for a nested summary's descendants.
+  Changing a summary tag highlights children with manual tags or explicit
+  clears and asks whether to overwrite them with automatic inheritance, keep
+  the overrides, or cancel. Overwriting removes child flags rather than
+  stamping them, so future parent changes and move-out behavior remain dynamic.
   Tagged rows/columns default to option D: 2px diagonal strokes, 6px clear gaps,
   and existing text colors at 80% opacity, without badges or added row height.
+  **Arrange toolbar** enables individual tool dragging, including touch dragging.
+  Use Alt+Left/Right for keyboard rearrangement, then **Finish arranging toolbar**
+  to restore normal tool actions. The order is undoable and saved with the workbook,
+  including native backups and private sync, across sheets and DD views.
+  In arrange mode, hover between tools and click the ghost divider to add one;
+  click an existing divider to remove it. Gap controls also support touch and
+  keyboard activation. All dividers share one fixed-height style, and their
+  positions are saved with the toolbar layout.
+
   The boxed H **Hypothetical treatments** toolbar button opens workbook-wide,
   live-preview settings: pattern family, color, opacity, width, spacing, angle,
   text color/opacity and added emphasis, background fill, optional square H

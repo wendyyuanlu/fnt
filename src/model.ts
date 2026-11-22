@@ -15,10 +15,21 @@ export interface Cell {
 export interface Column { id: string; label: string; width?: number; hidden?: boolean; hypothetical?:boolean }
 export interface Row { id: string; hidden?: boolean; height?: number; status?: 'real' | 'planned' | 'hypothetical'; hypothetical?:boolean }
 export interface Group { id: string; axis: 'row' | 'column'; members: string[]; collapsed: boolean; label: string; kind?:'summary'|'range' }
-export function setHypotheticalTag(sheet:Sheet,axis:Group['axis'],ids:string[],enabled:boolean):void{
+export function hypotheticalTagDescendants(sheet:Sheet,axis:Group['axis'],ids:string[]):Set<string>{
+  const selected=new Set(ids),descendants=new Set<string>();
+  for(const group of sheet.groups)if(group.axis===axis&&group.kind==='summary'&&selected.has(group.members[0])){
+    for(const id of summaryMoveMembers(sheet,axis,group.members))if(id!==group.members[0])descendants.add(id);
+  }
+  return descendants;
+}
+export function setHypotheticalTag(sheet:Sheet,axis:Group['axis'],ids:string[],enabled:boolean,overwriteChildren=false):void{
   const items=axis==='row'?sheet.rows:sheet.columns,selected=new Set(ids);
   if(!ids.length||ids.some(id=>!items.some(item=>item.id===id)))throw Error('Select existing rows or columns to change their hypothetical tag.');
-  for(const item of items)if(selected.has(item.id))item.hypothetical=enabled;
+  const descendants=hypotheticalTagDescendants(sheet,axis,ids);
+  for(const item of items){
+    if(descendants.has(item.id)){if(overwriteChildren)delete item.hypothetical;}
+    else if(selected.has(item.id))item.hypothetical=enabled;
+  }
 }
 export function outlineMembers(group:Group,groups:readonly Group[]=[]):string[] {
   if(group.kind==='summary')return group.members.slice(1);
@@ -73,6 +84,8 @@ export interface Workbook {
   references?:ReferenceSource[];
   catalogMigrations?:string[];
   hypotheticalStyle?:HypotheticalStyle;
+  toolbarOrder?:string[];
+  toolbarDividers?:string[];
   importReport?: { entries: string[]; formulaCount: number; unsupported: Record<string, number>; originalId: string };
 }
 export const uid = () => crypto.randomUUID();
