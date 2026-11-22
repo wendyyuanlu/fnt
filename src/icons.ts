@@ -4,7 +4,7 @@ export const toolbarIconPaths={
   undo:'M9 5l-5 5 5 5M4 10h9a7 7 0 0 1 7 7v2',
   redo:'M15 5l5 5-5 5M20 10h-9a7 7 0 0 0-7 7v2',
   close:'M6 6l12 12M18 6 6 18',
-  'convert-table':'M2 5h6M2 9h6M12 12h10v10H12ZM12 17h10M17 12v10M6 13l5 4m-1-4 1 4-4-1',
+  'convert-table':'M3 2h18v9H3ZM3 6.5h18M9 2v9M3 19h18v4H3ZM9 19v4M12 17v-4m-3 3 3-3 3 3',
   'dropdown-source':'M2 2h20v7H2ZM16 2v7M5 5.5h8M17.5 4.5l1.5 2 1.5-2M4 9v13h16V9M4 15.5h16M7 12h9M7 19h9',
   'toolbar-layout':'M3 3h18v6H3ZM8 3v6M13 3v6M18 3v6M12 18l8-8 3 3-8 8-4 1 1-4ZM18 12l3 3',
   bold:'M7 5h5a3.5 3.5 0 0 1 0 7H7m5 0h1a3.5 3.5 0 0 1 0 7H7V5',
