@@ -1,10 +1,20 @@
 import { allSheets,allTables,outlineMembers,summaryMoveMembers,type Group,type Sheet,type Workbook} from './model';
 
+const projectionCache=new WeakMap<Workbook,Map<string,{signature:string;projection:ReturnType<typeof buildTableGroupProjection>}>>();
 export function tableGroupProjection(book:Workbook,sheet:Sheet,rows:string[],columns:string[]){
+  const tables=allTables(book).filter(table=>table.sheet===sheet.id);
+  const signature=JSON.stringify([rows,columns,sheet.groups,tables.map(t=>[t.id,t.header,t.rows,t.columns.map(c=>c.column)])]);
+  let cache=projectionCache.get(book);if(!cache){cache=new Map();projectionCache.set(book,cache);}
+  const previous=cache.get(sheet.id);if(previous?.signature===signature)return previous.projection;
+  const projection=buildTableGroupProjection(book,sheet,rows,columns);
+  cache.set(sheet.id,{signature,projection});return projection;
+}
+function buildTableGroupProjection(book:Workbook,sheet:Sheet,rows:string[],columns:string[]){
   const entries=allTables(book).filter(table=>table.sheet===sheet.id).flatMap(table=>{
     const groups=sheet.groups.filter(group=>group.table===table.id&&group.collapsed);
     if(!groups.length)return[];
-    const rowSlots=rows.filter(id=>id===table.header||table.rows.includes(id)),columnSlots=columns.filter(id=>table.columns.some(field=>field.column===id));
+    const rowIds=new Set([table.header,...table.rows]),columnIds=new Set(table.columns.map(field=>field.column));
+    const rowSlots=rows.filter(id=>rowIds.has(id)),columnSlots=columns.filter(id=>columnIds.has(id));
     const hidden=(axis:Group['axis'])=>new Set(groups.filter(group=>group.axis===axis).flatMap(group=>outlineMembers(group,sheet.groups)));
     const hiddenRows=hidden('row'),hiddenColumns=hidden('column');
     const visibleRows=rowSlots.filter(id=>!hiddenRows.has(id)),visibleColumns=columnSlots.filter(id=>!hiddenColumns.has(id));
@@ -104,6 +114,14 @@ export interface SummaryRowLayout {
   inset:number;
   buttons:{group:Group;depth:number;left:number}[];
   rails:{group:Group;left:number;start:boolean;end:boolean;branch:boolean;width:number}[];
+}
+const summaryLayouts=new WeakMap<Group,{signature:string;groups:Group[];layout:Map<string,SummaryRowLayout>}>();
+export function constantSummaryRowLayout(groups:Group[],rows:string[],tree:boolean):Map<string,SummaryRowLayout>{
+  if(!groups.length)return new Map();
+  const signature=JSON.stringify([groups,rows,tree]),previous=summaryLayouts.get(groups[0]);
+  if(previous?.signature===signature&&groups.every((group,i)=>previous.groups[i]===group))return previous.layout;
+  const layout=summaryRowLayout(groups,rows,tree,()=>true);
+  summaryLayouts.set(groups[0],{signature,groups,layout});return layout;
 }
 export function summaryRowLayout(groups:Group[],rows:string[],tree:boolean,filled:(row:string)=>boolean):Map<string,SummaryRowLayout> {
   const positions=new Map(rows.map((id,i)=>[id,i])),layout=new Map<string,SummaryRowLayout>();

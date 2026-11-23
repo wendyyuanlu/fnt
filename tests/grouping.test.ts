@@ -26,6 +26,7 @@ it('projects nested row and column groups into owned slots without moving sparse
     {id:'column',kind:'range',axis:'column',table:left.id,members:[columns[2]],collapsed:true,label:'Column'},
   ];
   const before=clone(book),project=tableGroupProjection(book,sheet,rows,columns);
+  expect(tableGroupProjection(book,sheet,[...rows],[...columns])).toBe(project);
   expect(project.source(rows[4],columns[2])).toEqual({row:rows[7],column:columns[3]});
   expect(project.display(rows[7],columns[3])).toEqual({row:rows[4],column:columns[2]});
   expect(project.display(rows[4],columns[1])).toBeUndefined();
@@ -34,6 +35,7 @@ it('projects nested row and column groups into owned slots without moving sparse
   expect(project.axis(left.id,'row',rows[4])).toBe(rows[7]);
   expect(book).toEqual(before);
   sheet.groups.forEach(group=>group.collapsed=false);
+  expect(tableGroupProjection(book,sheet,rows,columns)).not.toBe(project);
   expect(tableGroupProjection(book,sheet,rows,columns).source(rows[7],columns[3])).toEqual({row:rows[7],column:columns[3]});
 });
 for(const axis of ['row','column'] as const){

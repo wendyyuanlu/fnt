@@ -6,6 +6,48 @@ import { parseArchive,stringifyArchive } from '../src/archive';
 import {getHypotheticalStyle} from '../src/hypothetical';
 
 describe('recoverable local storage',()=>{
+  it('saves visits independently without content versions, migrates counters, merges tabs and carries them through backup and sync metadata',async()=>{
+    const name=uid(),store=await Store.open(name),other=await Store.open(name),book=createDemo(),table=book.tables[0].id;
+    book.tableActivity={[table]:{visits:20,editedAt:42}};
+    const first=await store.save(book,0,'Content edit',false,undefined,{undoHistory:{undo:[],redo:[]}});
+    await Promise.all([store.visit(book.id,table,20),other.visit(book.id,table,20)]);
+    const loaded=(await store.load())!;
+    expect(loaded.version).toBe(first.version);expect(loaded.book.tableActivity?.[table]).toEqual({visits:22,editedAt:42});
+    expect(await store.undoHistory(first.version,book.id)).toEqual({undo:[],redo:[]});
+    const backup=await store.backup(first);expect(backup.state.book.tableActivity?.[table].visits).toBe(22);
+    const checkpoint=await store.checkpoint('Visits',book);expect(checkpoint).toBeUndefined();
+    expect((await store.history())[0].book.tableActivity?.[table].visits).toBe(22);
+    const synced=await store.metadata(first.version,s=>({...s,pending:[]}));
+    expect(synced.book.tableActivity?.[table].visits).toBe(22);
+    expect((await store.load())!.pending).toEqual([]);
+    await store.visit(book.id,table,22);
+    book.title='Edited while navigating';
+    const saved=await store.save(book,synced.version,'Cell edit');
+    expect(saved.book.title).toBe(book.title);expect(saved.book.tableActivity?.[table].visits).toBe(23);
+    await expect(other.save(book,first.version,'Stale')).rejects.toThrow('Another tab');
+    const restored=await store.restore(backup,saved.version);
+    expect(restored.book.tableActivity?.[table].visits).toBe(22);
+    expect((await store.load())!.book.tableActivity?.[table].visits).toBe(22);
+    store.close();other.close();
+  });
+  it('captures one independent snapshot before asynchronous storage work',async()=>{
+    const store=await Store.open(uid()),book=createDemo(),title=book.title;
+    const saving=store.save(book,0,'Snapshot');book.title='After save began';
+    const saved=await saving;expect(saved.book.title).toBe(title);
+    saved.book.title='Changed returned state';expect((await store.load())!.book.title).toBe(title);
+    store.close();
+  });
+  it('retains failed visit writes explicitly and preserves successful visits before workbook replacement',async()=>{
+    const store=await Store.open(uid()),book=createDemo(),table=book.tables[0].id,first=await store.save(book,0,'Before navigation');
+    const fail=vi.spyOn(IDBObjectStore.prototype,'put').mockImplementationOnce(()=>{throw new DOMException('Quota exceeded','QuotaExceededError');});
+    await expect(store.visit(book.id,table,0)).rejects.toMatchObject({name:'QuotaExceededError'});fail.mockRestore();
+    expect((await store.load())!.book.tableActivity).toBeUndefined();
+    await store.visit(book.id,table,0);
+    const replaced=await store.save(createDemo(),first.version,'Replace workbook',true);
+    expect((await store.history())[0].book.tableActivity?.[table].visits).toBe(1);
+    expect(replaced.pending.some(p=>p.label==='Visit table')).toBe(true);
+    store.close();
+  });
   it('saves undo and redo atomically, retains them across metadata saves, and rejects stale or replaced workbook history',async()=>{
     const name=uid(),store=await Store.open(name),book=createDemo(),history={undo:[{book:createDemo()}],redo:[]};
     const state=await store.save(book,0,'Edit',false,undefined,{undoHistory:history});

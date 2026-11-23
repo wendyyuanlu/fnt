@@ -58,6 +58,23 @@ does not enable that test-only setting. Merely visiting demo tables or migrating
 their supporting dropdown records does not prevent an untouched demo upgrade;
 actual user edits, sync configuration and attached originals still do.
 
+For isolated performance checks without using an existing browser workbook:
+
+```powershell
+npm run build
+npx vite preview --host 127.0.0.1 --port 4187 --strictPort
+# In another terminal; each measurement uses a new, disposable Edge context:
+node scripts\measure-performance.mjs http://127.0.0.1:4187
+npx playwright test --config playwright.perf.config.ts performance.spec.ts
+```
+
+The dedicated browser-test configuration uses ports 5188, 5189 and 4187 and never
+connects to the normal development or preview ports. The measurement script separates the
+first uncached scroll, the first adjacent window and 20 cached scroll samples.
+Set `FNT_CPU_RATE=4` in the environment for a CPU-throttled comparison.
+These synchronous calculations can still exceed interactive frame budgets;
+the measurement script does not assert that latency targets have been met.
+
 The self-contained `dialog-audit.html` preserves Audit 1 and the pre-deletion
 Audit 2 with all 50 dialogs. Current contains 47; the three unused N/A dialogs
 remain viewable only in history.
@@ -87,6 +104,18 @@ remain viewable only in history.
   used** (visits when entering a table), **A-Z**, or **Z-A**. The sort choice and
   activity are saved with the workbook. Older tables have no inferred history;
   alphabetical order breaks ties until activity is recorded.
+  Visits write a small, transactional IndexedDB sidecar, not the workbook-content
+  autosave. Existing visit counts seed it without clearing history; concurrent
+  tabs increment serially. Loads merge the counters, and real content saves,
+  explicit Save/private sync, independent backups and recovery checkpoints
+  include them in the existing workbook format. Pending visit journals are
+  coalesced until incorporated into a full save. Explicit backup restore restores
+  that backup's counters and archives the prior counters first.
+  Navigation alone does not increment the content version, reset calculation
+  caches or create undo entries. Content edits retain the existing autosave,
+  conflict and undo checks. Each sheet remembers its selection and scroll
+  position in this tab's session storage; switching sheets commits pending
+  cell edits before leaving.
 - Supporting dropdown-data sheets migrate into DD-owned storage, after an atomic
   full pre-migration recovery archive. They disappear from workbook tabs and the
   table manager, but their original table, field, row and sheet identities remain

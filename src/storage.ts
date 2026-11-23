@@ -22,6 +22,14 @@ export function validateBackup(backup:Backup):void {
   validateOriginals(backup.state.book,backup.originals);
 }
 type Original=Backup['originals'][number];
+interface Navigation {visits:Record<string,number>;pending:Pending[]}
+const navigationKey=(book:string)=>`navigation:${book}`;
+function withNavigation(state:LocalState,navigation?:Navigation):LocalState{
+  if(!navigation)return state;
+  const activity={...state.book.tableActivity};
+  for(const [id,visits]of Object.entries(navigation.visits))activity[id]={...activity[id],visits:Math.max(activity[id]?.visits??0,visits)};
+  return{...state,book:{...state.book,tableActivity:activity},pending:[...new Map([...state.pending,...navigation.pending].map(p=>[p.id,p])).values()]};
+}
 function validateOriginals(book:Workbook,originals:Original[]):void{
   if(!Array.isArray(originals)||originals.some(o=>!o||typeof o.id!=='string'||!o.id||typeof o.name!=='string'||typeof o.data!=='string')||new Set(originals.map(o=>o.id)).size!==originals.length)throw Error('Invalid original-package archive.');
   if(book.importReport&&!originals.some(o=>o.id===book.importReport!.originalId))throw Error('Backup is missing its preserved original workbook. Restore a complete independent backup.');
@@ -132,8 +140,24 @@ export class Store {
   }
   async load(): Promise<LocalState | undefined> {
     const state = await request(this.db.transaction('state').objectStore('state').get('current')) as LocalState | undefined;
-    if (state) validateBook(state.book);
-    return state;
+    if (!state)return;
+    const navigation=await request(this.db.transaction('state').objectStore('state').get(navigationKey(state.book.id))) as Navigation|undefined;
+    const result=withNavigation(state,navigation);validateBook(result.book);return result;
+  }
+  async visit(book:string,table:string,previous:number):Promise<number>{
+    const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
+    let visits=previous,failure:unknown;
+    const r=store.get(navigationKey(book));
+    r.onsuccess=()=>{
+      try{
+      const navigation:Navigation=r.result??{visits:{},pending:[]};
+      visits=Math.min(Number.MAX_SAFE_INTEGER,Math.max(previous,navigation.visits[table]??0)+1);
+      navigation.visits[table]=visits;
+      if(!navigation.pending.length)navigation.pending.push({id:uid(),label:'Visit table',time:new Date().toISOString()});
+      store.put(navigation,navigationKey(book));
+      }catch(e){failure=e;tx.abort();}
+    };
+    try{await done;}catch(e){throw failure??e;}return visits;
   }
   async originalCount():Promise<number>{
     return request(this.db.transaction('originals').objectStore('originals').count());
@@ -145,16 +169,24 @@ export class Store {
     return saved.history;
   }
   async save(book: Workbook, expected: number, label: string, checkpoint = false, original?: {id:string;name:string;data:string}, options?:{localOnly?:boolean;recoveryArchive?:string;publishedSnapshot?:string;undoHistory?:UndoHistory}): Promise<LocalState> {
+    const snapshot=clone(book);
     const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx);
     const store = tx.objectStore('state');
     let result: LocalState | undefined, conflict = false, failure:unknown;
     const r = store.get('current');
-    r.onsuccess = () => {
+    const navigation=store.get(navigationKey(snapshot.id));
+    r.onsuccess=()=>{
+    const previousState=r.result as LocalState|undefined;
+    const priorNavigation=store.get(navigationKey(previousState?.book.id??snapshot.id));
+    priorNavigation.onsuccess = () => {
       try{
-      const previous = r.result as LocalState | undefined;
+      const previous = previousState&&withNavigation(previousState,priorNavigation.result);
       if ((previous?.version ?? 0) !== expected) { conflict = true; tx.abort(); return; }
-      result = { ...previous, book: clone(book), version: expected+1,
+      result = { ...previous, book: snapshot, version: expected+1,
         pending: [...previous?.pending ?? [], {id:uid(),label,time:new Date().toISOString()}], updated:new Date().toISOString() };
+      result=withNavigation(result,navigation.result);
+      if(previous&&priorNavigation.result)store.put({...priorNavigation.result,pending:[]},navigationKey(previous.book.id));
+      if(navigation.result)store.put({...navigation.result,pending:[]},navigationKey(snapshot.id));
       if(options?.localOnly){delete result.sync;delete result.remoteSha;}
       if(options?.publishedSnapshot)result.publishedSnapshot=options.publishedSnapshot;
       if (checkpoint && previous) tx.objectStore('history').put({id:uid(),label:`Before ${label}`,time:new Date().toISOString(),book:previous.book,...(options?.recoveryArchive?{backup:options.recoveryArchive}:{})} satisfies Checkpoint);
@@ -163,28 +195,40 @@ export class Store {
       if(options?.undoHistory)store.put({version:result.version,book:result.book.id,history:clone(options.undoHistory)},'undo');else store.delete('undo');
       }catch(e){failure=e;tx.abort();}
     };
+    };
     try { await done; } catch (e) { if (conflict) throw Error('Another tab changed this workbook. Your edits are still in memory. Download a backup before reloading.'); throw failure??e; }
     return result!;
   }
   async metadata(expected: number, change: (state: LocalState) => LocalState): Promise<LocalState> {
     const tx = this.db.transaction('state','readwrite'), done = complete(tx), store = tx.objectStore('state');
-    let result: LocalState, conflict = false;
+    let result: LocalState, conflict = false,failure:unknown;
     const r = store.get('current');
     r.onsuccess = () => {
-      const state = r.result as LocalState;
-      if (state.version !== expected) { conflict = true; tx.abort(); return; }
+      const previous = r.result as LocalState;
+      if (previous.version !== expected) { conflict = true; tx.abort(); return; }
+      const navigation=store.get(navigationKey(previous.book.id));
+      navigation.onsuccess=()=>{
+      try{
+      const state=withNavigation(previous,navigation.result);
       result = { ...change(state), version:expected+1 }; store.put(result,'current');
+      if(navigation.result)store.put({...navigation.result,pending:[]},navigationKey(previous.book.id));
       const history=store.get('undo');
       history.onsuccess=()=>{
+        try{
         const saved=history.result as {version:number;book:string;history:UndoHistory}|undefined;
-        if(saved?.version===expected&&JSON.stringify(state.book)===JSON.stringify(result.book))store.put({...saved,version:result.version},'undo');
+        if(saved?.version===expected&&(state.book===result.book||JSON.stringify(state.book)===JSON.stringify(result.book)))store.put({...saved,version:result.version},'undo');
         else store.delete('undo');
+        }catch(e){failure=e;tx.abort();}
+      };
+      }catch(e){failure=e;tx.abort();}
       };
     };
-    try { await done; } catch (e) { if (conflict) throw Error('Workbook changed during this operation. Retry after saving.'); throw e; }
+    try { await done; } catch (e) { if (conflict) throw Error('Workbook changed during this operation. Retry after saving.'); throw failure??e; }
     return result!;
   }
   async checkpoint(label: string, book: Workbook, originals:Original[]=[]): Promise<void> {
+    const navigation=await request(this.db.transaction('state').objectStore('state').get(navigationKey(book.id))) as Navigation|undefined;
+    book=withNavigation({book,pending:[],version:0,updated:''},navigation).book;
     const tx = this.db.transaction(['history','originals'],'readwrite'), done = complete(tx);
     tx.objectStore('history').put({ id:uid(), label, time:new Date().toISOString(), book:clone(book) } satisfies Checkpoint);
     for(const original of originals)tx.objectStore('originals').put(original);
@@ -194,16 +238,19 @@ export class Store {
     return (await request(this.db.transaction('history').objectStore('history').getAll()) as Checkpoint[]).sort((a,b) => b.time.localeCompare(a.time));
   }
   async backup(state: LocalState): Promise<Backup> {
-    return { format:'fnt-backup',version:1,state:clone(state),originals:await request(this.db.transaction('originals').objectStore('originals').getAll()) };
+    const navigation=await request(this.db.transaction('state').objectStore('state').get(navigationKey(state.book.id))) as Navigation|undefined;
+    return { format:'fnt-backup',version:1,state:clone(withNavigation(state,navigation)),originals:await request(this.db.transaction('originals').objectStore('originals').getAll()) };
   }
   async restore(backup: Backup, expected: number): Promise<LocalState> {
     validateBackup(backup);
     const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx), store = tx.objectStore('state');
     let result: LocalState, conflict = false,failure:unknown;
     const r = store.get('current'),originals=tx.objectStore('originals').getAll();
-    originals.onsuccess = () => {
+    r.onsuccess=()=>{
+    const navigation=store.get(navigationKey((r.result as LocalState).book.id));
+    navigation.onsuccess = () => {
       try{
-      const previous = r.result as LocalState;
+      const previous = withNavigation(r.result as LocalState,navigation.result);
       if (previous.version !== expected) { conflict = true; tx.abort(); return; }
       const recovery=stringifyArchive({format:'fnt-backup',version:1,state:previous,originals:originals.result} satisfies Backup);
       tx.objectStore('history').put({id:uid(),label:'Before backup restore',time:new Date().toISOString(),book:previous.book,backup:recovery} satisfies Checkpoint);
@@ -212,8 +259,10 @@ export class Store {
         pending:[...new Map([...previous.pending,...backup.state.pending].map(p=>[p.id,p])).values(), {id:uid(),label:'Restore backup',time:new Date().toISOString()}] };
       delete result.sync;delete result.remoteSha;
       store.put(result,'current');
+      store.delete(navigationKey(previous.book.id));store.delete(navigationKey(result.book.id));
       store.delete('undo');
       }catch(e){failure=e;tx.abort();}
+    };
     };
     try { await done; } catch (e) { if (conflict) throw Error('Another tab changed the workbook. Restore cancelled.'); throw failure??e; }
     return result!;

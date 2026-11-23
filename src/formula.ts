@@ -254,26 +254,56 @@ export class Engine {
   private lazyRefs=new WeakMap<()=>Value,{ast:Ast;env:Env}>();
   private remaining=500_000;
   private spillAnchors=new Map<string,{row:string;column:string;r:number;c:number}[]>();
+  private rowPositions=new Map<string,Map<string,number>>();
+  private columnPositions=new Map<string,Map<string,number>>();
+  private tableRows=new Map<string,Set<string>>();
+  private flatValues=new WeakMap<Value[],Scalar[]>();
+  private exactMatches=new WeakMap<Scalar[],Map<Scalar,{first:number;last:number}>>();
+  private vectorFaults=new WeakMap<Scalar[],{first?:Fault;compatibility?:Fault}>();
+  private faults(values:Scalar[]):{first?:Fault;compatibility?:Fault}{
+    let result=this.vectorFaults.get(values);
+    if(!result){
+      result={first:values.find(isFault),compatibility:values.find((v):v is Fault=>isFault(v)&&['#UNSUPPORTED!','#LIMIT!'].includes(v.error))};
+      this.vectorFaults.set(values,result);
+    }
+    return result;
+  }
+  private flat(value:Value):Scalar[]{
+    if(!Array.isArray(value))return[value];
+    let result=this.flatValues.get(value);
+    if(!result){result=flatten(value);this.flatValues.set(value,result);}
+    return result;
+  }
+  private depend(key:string):void{
+    const parent=this.stack.at(-1);if(!parent||parent===key)return;
+    let deps=this.dependents.get(key);if(!deps){deps=new Set();this.dependents.set(key,deps);}deps.add(parent);
+  }
   beginPass():void {this.remaining=500_000;}
   constructor(public book: Workbook) {
     this.sheets=new Map(allSheets(book).map(s=>[s.id,s]));
     this.rowSets=new Map(allSheets(book).map(s=>[s.id,new Set(s.rows.map(r=>r.id))]));
     this.colSets=new Map(allSheets(book).map(s=>[s.id,new Set(s.columns.map(c=>c.id))]));
+    this.tableRows=new Map(allTables(book).map(t=>[t.id,new Set(t.rows)]));
     for(const s of allSheets(book)){
       const rows=new Map(s.rows.map((r,i)=>[r.id,i])),cols=new Map(s.columns.map((c,i)=>[c.id,i]));
+      this.rowPositions.set(s.id,rows);this.columnPositions.set(s.id,cols);
       this.spillAnchors.set(s.id,Object.entries(s.cells).filter(([,cell])=>cell.formula&&(cell.spillHint??(!book.importReport&&maySpill(cell.formula)))).map(([k])=>{
         const [row,column]=k.split(':');return{row,column,r:rows.get(row)!,c:cols.get(column)!};
       }));
     }
   }
   invalidate(changed:string[]):void {
+    let spillChanged=false;
     for(const id of changed){
       const [sheetId,row,column]=id.split(':'),s=this.sheets.get(sheetId);if(!s)continue;
-      const cell=getCell(s,row,column),anchors=(this.spillAnchors.get(sheetId)??[]).filter(a=>a.row!==row||a.column!==column);
-      if(cell.formula&&(cell.spillHint??(!this.book.importReport&&maySpill(cell.formula))))anchors.push({row,column,r:s.rows.findIndex(r=>r.id===row),c:s.columns.findIndex(c=>c.id===column)});
+      const previous=this.spillAnchors.get(sheetId)??[],cell=getCell(s,row,column),anchors=previous.filter(a=>a.row!==row||a.column!==column);
+      if(anchors.length!==previous.length)spillChanged=true;
+      if(cell.formula&&(cell.spillHint??(!this.book.importReport&&maySpill(cell.formula)))){
+        anchors.push({row,column,r:this.rowPositions.get(sheetId)!.get(row)!,c:this.columnPositions.get(sheetId)!.get(column)!});spillChanged=true;
+      }
       this.spillAnchors.set(sheetId,anchors);
     }
-    if(this.spills.size){this.cache.clear();this.spills.clear();this.dependents.clear();return;}
+    if(this.spills.size||spillChanged){this.cache.clear();this.spills.clear();this.dependents.clear();return;}
     const pending=[...changed],seen=new Set<string>();
     while(pending.length){
       const id=pending.pop()!;if(seen.has(id))continue;seen.add(id);this.cache.delete(id);
@@ -305,7 +335,7 @@ export class Engine {
       if (cell.binding) {
         const t = allTables(this.book).find(t => t.id === cell.binding!.table);
         const c = t?.columns.find(c => c.id === cell.binding!.column);
-        result = t && c && t.rows.includes(cell.binding.row) ? this.cell(t.sheet, cell.binding.row, c.column) : fault('#REF!', 'Linked record was deleted.');
+        result = t && c && this.tableRows.get(t.id)!.has(cell.binding.row) ? this.cell(t.sheet, cell.binding.row, c.column) : fault('#REF!', 'Linked record was deleted.');
       } else result = cell.formula ? this.evaluate(cell.formula, sheetId, row, col) : cell.value ?? null;
       if (Array.isArray(result)) {
         const matrix: Value[][] = result.map(v => Array.isArray(v) ? v : [v]);
@@ -324,7 +354,7 @@ export class Engine {
         }));
       }
     } finally { this.visiting.delete(cacheKey);this.stack.pop(); }
-    if(!flatten(result!).some(v=>isFault(v)&&v.error==='#LIMIT!'))this.cache.set(cacheKey, result!);
+    if(!this.flat(result!).some(v=>isFault(v)&&v.error==='#LIMIT!'))this.cache.set(cacheKey, result!);
     return result!;
   }
   evaluate(ast: Ast, sheet: string, row: string, col: string, env:Env = new Map()): Value {
@@ -352,7 +382,7 @@ export class Engine {
         if (columns.some(c => !c)) return fault('#REF!', 'Column was deleted.');
         if (ast.mode === 'totals') return fault('#UNSUPPORTED!', 'Totals-row references are preserved but not calculated.');
         const rows = ast.mode === 'row' ? [row] : ast.mode === 'headers' ? [t.header] : ast.mode === 'all' ? [t.header, ...t.rows] : t.rows;
-        if (ast.mode === 'row' && !t.rows.includes(row)) return fault('#VALUE!', 'This-row reference outside its table.');
+        if (ast.mode === 'row' && !this.tableRows.get(t.id)!.has(row)) return fault('#VALUE!', 'This-row reference outside its table.');
         const cacheKey=`vector:${t.id}:${ast.mode}:${ast.columns.join(',')}`,parent=this.stack.at(-1);
         if(ast.mode!=='row'){
           if(parent){let deps=this.dependents.get(cacheKey);if(!deps){deps=new Set();this.dependents.set(cacheKey,deps);}deps.add(parent);}
@@ -362,7 +392,7 @@ export class Engine {
         let result:Value[][];
         try{result = rows.map(r => columns.map(c => scalar(this.cell(t.sheet, r, c!.column))));}
         finally{if(ast.mode!=='row')this.stack.pop();}
-        if(ast.mode!=='row'&&!flatten(result).some(v=>isFault(v)&&v.error==='#LIMIT!'))this.cache.set(cacheKey,result);
+        if(ast.mode!=='row'&&!this.flat(result).some(v=>isFault(v)&&v.error==='#LIMIT!'))this.cache.set(cacheKey,result);
         return ast.mode === 'row' && columns.length === 1 ? result[0][0] : result;
       }
       case 'range': {
@@ -370,8 +400,8 @@ export class Engine {
         if(!start||!end||start.sheet!==end.sheet)return fault('#REF!', 'Invalid range endpoints.');
         const target = this.sheets.get(start.sheet);
         if (!target) return fault('#REF!');
-        const r1 = target.rows.findIndex(r => r.id === start.rows[0]), r2 = target.rows.findIndex(r => r.id === end.rows.at(-1));
-        const c1 = target.columns.findIndex(c => c.id === start.columns[0]), c2 = target.columns.findIndex(c => c.id === end.columns.at(-1));
+        const r1 = this.rowPositions.get(target.id)!.get(start.rows[0])??-1, r2 = this.rowPositions.get(target.id)!.get(end.rows.at(-1)!)??-1;
+        const c1 = this.columnPositions.get(target.id)!.get(start.columns[0])??-1, c2 = this.columnPositions.get(target.id)!.get(end.columns.at(-1)!)??-1;
         if ([r1,r2,c1,c2].some(x => x < 0)) return fault('#REF!');
         return target.rows.slice(Math.min(r1,r2), Math.max(r1,r2)+1).map(r => target.columns.slice(Math.min(c1,c2), Math.max(c1,c2)+1).map(c => scalar(this.cell(target.id,r.id,c.id))));
       }
@@ -410,7 +440,7 @@ export class Engine {
       const start=this.reference(ast.start,sheet,row,col,env),end=this.reference(ast.end,sheet,row,col,env);
       if(!start||!end||start.sheet!==end.sheet)return;
       const s=this.sheets.get(start.sheet);if(!s)return;
-      const r1=s.rows.findIndex(r=>r.id===start.rows[0]),r2=s.rows.findIndex(r=>r.id===end.rows.at(-1)),c1=s.columns.findIndex(c=>c.id===start.columns[0]),c2=s.columns.findIndex(c=>c.id===end.columns.at(-1));
+      const r1=this.rowPositions.get(s.id)!.get(start.rows[0])??-1,r2=this.rowPositions.get(s.id)!.get(end.rows.at(-1)!)??-1,c1=this.columnPositions.get(s.id)!.get(start.columns[0])??-1,c2=this.columnPositions.get(s.id)!.get(end.columns.at(-1)!)??-1;
       if([r1,r2,c1,c2].some(i=>i<0))return;
       return{sheet:s.id,rows:s.rows.slice(Math.min(r1,r2),Math.max(r1,r2)+1).map(r=>r.id),columns:s.columns.slice(Math.min(c1,c2),Math.max(c1,c2)+1).map(c=>c.id)};
     }
@@ -426,6 +456,40 @@ export class Engine {
       return{sheet:base.sheet,rows:rr===0?base.rows:[base.rows[Math.floor(rr)-1]],columns:cc===0?base.columns:[base.columns[Math.floor(cc)-1]]};
     }
     return;
+  }
+  private referenceMatch(ref:{sheet:string;rows:string[];columns:string[]},needle:Scalar,search:number):Value|undefined{
+    if(ref.columns.length!==1||!ref.rows.length||isFault(needle))return;
+    const sheet=this.sheets.get(ref.sheet),positions=this.rowPositions.get(ref.sheet);
+    if(!sheet||!positions)return;
+    const start=positions.get(ref.rows[0]),end=positions.get(ref.rows.at(-1)!);
+    if(start===undefined||end===undefined||end-start+1!==ref.rows.length||ref.rows.some((id,i)=>sheet.rows[start+i].id!==id))return;
+    let match=-1,firstError:Scalar|undefined,compatibility:Scalar|undefined;
+    // Compatibility errors anywhere in the reference still override a match.
+    for(let at=start;at<=end;){
+      const stop=Math.min(end+1,(Math.floor(at/128)+1)*128),column=ref.columns[0];
+      const cacheKey=`match-range:${ref.sheet}:${column}:${at}:${stop}`;
+      this.depend(cacheKey);
+      let values=this.cache.get(cacheKey) as Scalar[]|undefined;
+      if(!values){
+        values=[];this.stack.push(cacheKey);
+        try{for(let i=at;i<stop;i++)values.push(scalar(this.cell(ref.sheet,sheet.rows[i].id,column)));}
+        finally{this.stack.pop();}
+        if(!values.some(v=>isFault(v)&&v.error==='#LIMIT!'))this.cache.set(cacheKey,values);
+      }
+      const faults=this.faults(values);firstError??=faults.first;compatibility??=faults.compatibility;
+      let matches=this.exactMatches.get(values);
+      if(!matches){matches=new Map();this.exactMatches.set(values,matches);}
+      let found=matches.get(needle);
+      if(!found){
+        found={first:-1,last:-1};
+        for(let i=0;i<values.length;i++)if(!isFault(values[i])&&compare(values[i],needle)===0){if(found.first<0)found.first=i;found.last=i;}
+        matches.set(needle,found);
+      }
+      const index=search===-1?found.last:found.first;
+      if(index>=0&&(match<0||search===-1))match=at-start+index;
+      at=stop;
+    }
+    return compatibility??(match>=0?match+1:firstError??fault('#N/A'));
   }
   private call(ast: Extract<Ast, {kind:'call'}>, sheet: string, row: string, col: string, env: Env): Value {
     const args = ast.args, name = ast.name, ev = (i: number, fallback: Value = null) => args[i] ? this.evaluate(args[i],sheet,row,col,env) : fallback;
@@ -470,16 +534,46 @@ export class Engine {
       catch { return fault('#REF!', 'Invalid INDIRECT address. Text references cannot follow renames.'); }
     }
     if (name === 'ANCHORARRAY') return args[0]?.kind === 'ref' ? this.cell(args[0].sheet,args[0].row,args[0].column) : ev(0);
+    if(name==='ROWS'&&args.length===1&&args[0].kind==='structured'&&['data','all','headers'].includes(args[0].mode)){
+      const source=args[0],cacheKey=`dimensions:${source.table}:${source.mode}:${source.columns.join(',')}`;
+      this.depend(cacheKey);
+      const cached=this.cache.get(cacheKey);if(typeof cached==='number')return cached;
+      const ref=this.reference(source,sheet,row,col,env),target=ref&&this.sheets.get(ref.sheet);
+      // ROWS historically propagates errors from values. Only bypass evaluation
+      // when stored scalar cells prove there can be no formula or spill error.
+      if(ref&&target&&!this.spillAnchors.get(target.id)?.length&&ref.rows.every(r=>ref.columns.every(c=>{
+        const cell=getCell(target,r,c);return !cell.formula&&!cell.binding&&cell.value!=null&&!isFault(cell.value);
+      }))){
+        this.stack.push(cacheKey);
+        try{for(const r of ref.rows)for(const c of ref.columns)this.depend(`${target.id}:${key(r,c)}`);}
+        finally{this.stack.pop();}
+        this.cache.set(cacheKey,ref.rows.length);return ref.rows.length;
+      }
+    }
+    if((name==='XMATCH'||name==='MATCH')&&args[1]&&
+      (args[1].kind==='range'||args[1].kind==='structured'&&['data','all','headers'].includes(args[1].mode))&&
+      (args[2]?.kind==='literal'?args[2].value===0:name==='XMATCH')&&
+      (name==='MATCH'||!args[3]||args[3].kind==='literal'&&(args[3].value===1||args[3].value===-1))){
+      const needle=scalar(ev(0)),ref=this.reference(args[1],sheet,row,col,env);
+      if(ref){const result=this.referenceMatch(ref,needle,name==='XMATCH'&&args[3]?.kind==='literal'?Number(args[3].value):1);if(result!==undefined)return result;}
+    }
     if(['XLOOKUP','XMATCH','MATCH'].includes(name)){
-      const needle=scalar(ev(0)),lookup=ev(1),hay=flatten(lookup);
+      const needle=scalar(ev(0)),lookup=ev(1),hay=this.flat(lookup);
       if(isFault(needle))return needle;if(isFault(lookup))return lookup;
       const mode=number(name==='XLOOKUP'?ev(4,0):ev(2,name==='MATCH'?1:0)),search=number(name==='XLOOKUP'?ev(5,1):name==='XMATCH'?ev(3,1):1);
       if(isFault(mode))return mode;if(isFault(search))return search;
       if(![0,-1,1,2].includes(mode))return fault('#VALUE!','Invalid lookup match mode.');
       if(![1,-1].includes(search))return fault('#UNSUPPORTED!','Binary lookup search is not implemented.');
-      const compatibility=hay.find(v=>isFault(v)&&['#UNSUPPORTED!','#LIMIT!'].includes(v.error));if(compatibility)return compatibility;
-      const indices=hay.map((_,i)=>i);if(search===-1)indices.reverse();
-      let index=indices.find(i=>!isFault(hay[i])&&compare(hay[i],needle)===0)??-1;
+      const faults=this.faults(hay);if(faults.compatibility)return faults.compatibility;
+      let matches=this.exactMatches.get(hay);if(!matches){matches=new Map();this.exactMatches.set(hay,matches);}
+      let found=matches.get(needle);
+      if(!found){
+        found={first:-1,last:-1};
+        for(let i=0;i<hay.length;i++)if(!isFault(hay[i])&&compare(hay[i],needle)===0){if(found.first<0)found.first=i;found.last=i;}
+        matches.set(needle,found);
+      }
+      let index=search===-1?found.last:found.first;
+      const indices=index<0&&mode!==0?hay.map((_,i)=>i):[];if(search===-1)indices.reverse();
       if(index<0&&mode===2&&typeof needle==='string'){
         let pattern='';for(let i=0;i<needle.length;i++){const c=needle[i];if(c==='~'&&i+1<needle.length){pattern+=needle[++i].replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}else pattern+=c==='*'?'.*':c==='?'?'.':c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
         const re=new RegExp(`^${pattern}$`,'i');index=indices.find(i=>!isFault(hay[i])&&re.test(text(hay[i])))??-1;
@@ -487,7 +581,7 @@ export class Engine {
         const eligible=indices.filter(i=>!isFault(hay[i])&&(mode===-1?compare(hay[i],needle)<0:compare(hay[i],needle)>0));
         eligible.sort((a,b)=>mode===-1?compare(hay[b],hay[a]):compare(hay[a],hay[b]));index=eligible[0]??-1;
       }
-      if(index<0){const error=hay.find(isFault);return error??(name==='XLOOKUP'&&args[3]?ev(3):fault('#N/A'));}
+      if(index<0)return faults.first??(name==='XLOOKUP'&&args[3]?ev(3):fault('#N/A'));
       if(name!=='XLOOKUP')return index+1;
       const ref=this.reference(args[2],sheet,row,col,env);
       if(ref){
@@ -510,11 +604,11 @@ export class Engine {
     }
     if (name === 'ROW') {
       const ref = args[0];
-      if (!ref) return allSheets(this.book).find(s => s.id === sheet)!.rows.findIndex(r => r.id === row)+1;
+      if (!ref) return (this.rowPositions.get(sheet)?.get(row)??-1)+1;
       const resolved=this.reference(ref,sheet,row,col,env);
       if(resolved){
         const s=this.sheets.get(resolved.sheet);if(!s)return fault('#REF!');
-        const positions=resolved.rows.map(r=>s.rows.findIndex(x=>x.id===r)+1);
+        const positions=resolved.rows.map(r=>(this.rowPositions.get(s.id)!.get(r)??-1)+1);
         if(positions.some(p=>p===0))return fault('#REF!');
         return positions.length===1?positions[0]:positions.map(p=>[p]);
       }
@@ -532,10 +626,10 @@ export class Engine {
       return fault('#VALUE!', 'ROW requires a reference.');
     }
     const values = args.map((_,i) => ev(i));
-    const errors = values.flatMap(flatten).find(isFault);
+    const errors = values.flatMap(value=>this.flat(value)).find(isFault);
     if (name !== 'ISNUMBER' && name !== 'XLOOKUP' && name !== 'FILTER' && name !== 'VSTACK' && errors) return errors;
     const n = (i: number, fallback = 0) => number(values[i] ?? fallback);
-    const numericValues=values.flatMap((value,i)=>args[i].kind==='literal'&&typeof value!=='object'?[number(value)]:flatten(value));
+    const numericValues=values.flatMap((value,i)=>args[i].kind==='literal'&&typeof value!=='object'?[number(value)]:this.flat(value));
     if(['SUM','AVERAGE','MIN','MAX'].includes(name)){
       const error=numericValues.find(isFault);if(error)return error;
     }

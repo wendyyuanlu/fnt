@@ -3,7 +3,7 @@ import {createDemo,key} from '../../src/model';
 import {loadPublishedTesting} from '../../src/published';
 import type {Checkpoint,LocalState} from '../../src/storage';
 
-const url='http://127.0.0.1:4173/';
+const url=process.env.FNT_PUBLISHED_URL??'http://127.0.0.1:4173/';
 async function state(page:Page):Promise<LocalState>{
   return page.evaluate(async()=>{
     const open=indexedDB.open('fnt-workbook-v1',1),db=await new Promise<IDBDatabase>((resolve,reject)=>{open.onsuccess=()=>resolve(open.result);open.onerror=()=>reject(open.error);});

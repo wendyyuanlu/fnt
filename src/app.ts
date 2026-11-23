@@ -17,7 +17,7 @@ import { duplicateReference,moveReferenceGroup,referenceCaption,referenceChoices
 import { appendReferenceOption,conversionEditImpact,deleteReferenceColumns,referenceView,writeGridCell } from './reference-grid';
 import { hexToHsv,hsvToHex,normalizeHex } from './colors';
 import { dropdownCatalog,dropdownFormatMigration,dropdownGroupMigration,seedDropdownCatalog,verifiedCatalogOrigins } from './dropdown-catalog';
-import { groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,tableGroupProjection,ungroupPlainGroups } from './grouping';
+import { constantSummaryRowLayout,groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,tableGroupProjection,ungroupPlainGroups } from './grouping';
 import {getHypotheticalStyle,hypotheticalBadgeCss,hypotheticalCss,hypotheticalTextCss} from './hypothetical';
 import {openHypotheticalSettings} from './hypothetical-ui';
 import {toolbarIcon} from './icons';
@@ -293,7 +293,12 @@ function requestInsert(axis:'row'|'column',boundary:number,index?:number):void{
 function rememberView():void{
   const s=allSheets(book).find(s=>s.id===sheetId);if(!s?.rows[selected.r]||!s.columns[selected.c])return;
   const grid=root.querySelector<HTMLElement>('#grid-scroll');
-  try{sessionStorage.setItem(`fnt-view:${book.id}`,JSON.stringify({reference:referenceId??null,sheet:sheetId,row:s.rows[selected.r].id,column:s.columns[selected.c].id,anchorRow:s.rows[anchor.r]?.id,anchorColumn:s.columns[anchor.c]?.id,kind:selectionKind,scope:selectionScope,tableMode:tableSelectionMode,target:tableSelectionTarget,scroll:grid?.scrollTop??0,left:grid?.scrollLeft??0,workbookView}));sessionStorage.setItem('fnt-current-reference',referenceId??'');}catch(e){flash(`View preference could not be saved: ${String(e)}`);}
+  try{
+    const value=JSON.stringify({reference:referenceId??null,sheet:sheetId,row:s.rows[selected.r].id,column:s.columns[selected.c].id,anchorRow:s.rows[anchor.r]?.id,anchorColumn:s.columns[anchor.c]?.id,kind:selectionKind,scope:selectionScope,tableMode:tableSelectionMode,target:tableSelectionTarget,scroll:grid?.scrollTop??0,left:grid?.scrollLeft??0,workbookView});
+    sessionStorage.setItem(`fnt-view:${book.id}`,value);
+    if(!referenceId)sessionStorage.setItem(`fnt-sheet-view:${book.id}:${sheetId}`,value);
+    sessionStorage.setItem('fnt-current-reference',referenceId??'');
+  }catch(e){flash(`View preference could not be saved: ${String(e)}`);}
 }
 function referenceOnSheet(id:string,row?:string,column?:string):string|undefined{
   const sources=book.references?.filter(source=>source.anchor?.sheet===id||allTables(book).some(table=>table.id===source.table&&table.sheet===id))??[];
@@ -312,9 +317,9 @@ function adoptSavedWorkbook(target?:string):void{
   selected={r:0,c:0};anchor={...selected};selectionKind='cells';extraSelections=[];selectedTabs.clear();tabSelectionAnchor=undefined;
   movingRows=movingColumns=undefined;copied=undefined;renderedSheet='';page=0;undo.length=redo.length=0;
 }
-function restoreView(remembered?:string|null):{scroll:number;left:number}|undefined{
+function restoreView(remembered?:string|null,saved?:string|null):{scroll:number;left:number}|undefined{
   try{
-    const raw=sessionStorage.getItem(`fnt-view:${book.id}`),legacy=sessionStorage.getItem('fnt-current-reference');
+    const raw=saved??sessionStorage.getItem(`fnt-view:${book.id}`),legacy=sessionStorage.getItem('fnt-current-reference');
     if(!raw){const source=legacy&&book.references?.some(s=>s.id===legacy)?legacy:remembered&&book.dropdownData?.sheets.some(s=>s.id===remembered)?referenceOnSheet(remembered):undefined;if(source){referenceId=source;const view=gridReference();if(view?.sheet){sheetId=view.sheet.id;selected={r:Math.max(0,view.sheet.rows.findIndex(r=>r.id===(view.rows[1]??view.rows[0]))),c:Math.max(0,view.sheet.columns.findIndex(c=>c.id===view.columns[0]))};anchor={...selected};}}return;}
     const view=JSON.parse(raw);
     if(!view||typeof view.sheet!=='string'||typeof view.row!=='string'||typeof view.column!=='string'||!Number.isFinite(view.scroll)||!Number.isFinite(view.left))throw Error('Invalid saved view preference.');
@@ -400,10 +405,12 @@ async function flush(label = 'Edit workbook',preservedStatus?:string): Promise<v
   clearTimeout(saveTimer);
   saving = saving.then(async () => {
     if (savedGeneration === generation && state) return;
-    const snapshot = clone(book), g = generation,undoHistory=clone({undo,redo});
+    await navigationSaving;
+    const snapshot = book, g = generation,undoHistory=clone({undo,redo});
     if(preservedStatus===undefined)status = 'Saving locally...'; renderStatus();
     try {
       state = await store.save(snapshot,state?.version ?? 0,label,false,undefined,{undoHistory});
+      navigationError=undefined;
       savedGeneration = g;
       status = state.sync ? `Saved locally - ${state.pending.length} pending changes` : preservedStatus??'Saved in this browser';
       channel?.postMessage({version:state.version});
@@ -417,8 +424,12 @@ async function manualSave(): Promise<void> {
   if(!commitDraft())return;
   busy=true;renderStatus();
   try {
+    await navigationSaving;
+    if(navigationError)generation++;
     await flush('Manual save');
     if(savedGeneration!==generation)return;
+    await navigationSaving;
+    if(navigationDirty){state=await store.metadata(state.version,s=>s);navigationDirty=false;}
     if(!state.sync){await store.checkpoint('Manual save',book);status='Saved locally + recovery checkpoint';return;}
     if(!token){openSync();return;}
     status='Syncing private repository...';renderStatus();
@@ -553,6 +564,9 @@ function render(): void {
   maskedCell=(row,column)=>scopedCollapsed.some(({group,members})=>members.has(group.axis==='row'?row:column)&&groupContainsCell(book,s,group,row,column))||!showHypothetical&&(rowHypo(row,column)||columnHypo(row,column));
   const columns = s.columns.map((c,i) => ({...c,i})).filter(c => !c.hidden && !collapsedColumns.has(c.id)&&(showHypothetical||!hypotheticalColumns.has(c.id)||s.rows.some(row=>!columnHypo(row.id,c.id)))&&(!view||view.columns.includes(c.id)));
   const rows = s.rows.map((r,i) => ({...r,i})).filter(r => !r.hidden && !collapsedRows.has(r.id)&&(showHypothetical||!hypotheticalRows.has(r.id)||columns.some(column=>!rowHypo(r.id,column.id)))&&(!view||view.rows.includes(r.id)));
+  const firstOwned=new Map(sheetTables.map(({owner,rows:ownedRows,columns:ownedColumns})=>[owner.id,{
+    row:rows.find(row=>ownedRows.has(row.id))?.id,column:columns.find(column=>ownedColumns.has(column.id))?.id
+  }]));
   groupProjection=tableGroupProjection(book,s,rows.map(row=>row.id),columns.map(column=>column.id));
   if(maskedCell(s.rows[selected.r].id,s.columns[selected.c].id)){
     const owner=tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id);
@@ -567,12 +581,12 @@ function render(): void {
   const groups=s.groups.filter(g=>(!g.table||allTables(book).some(table=>table.id===g.table&&table.sheet===s.id))&&(!view||g.members.some(id=>(g.axis==='row'?view.rows:view.columns).includes(id))));
   const sheetGroups=groups.filter(g=>!g.table);
   const tree=!!s.outlineView?.tree,hints=s.outlineView?.plainGroupHints!==false,outlines=outlineGroups(sheetGroups),gutter=outlineGutter(outlines,rows.map(r=>r.id),tree,s.rows.length,hints);
-  const firstColumn=columns[0],rowLayouts=summaryRowLayout(sheetGroups,rows.map(r=>r.id),tree,()=>true);
+  const firstColumn=columns[0],rowLayouts=constantSummaryRowLayout(sheetGroups,rows.map(r=>r.id),tree);
   const tableRowLayouts=new Map(sheetTables.filter(({owner})=>groups.some(group=>group.table===owner.id&&group.kind==='summary'&&group.axis==='row')).flatMap(({owner,rows:ownedRows,columns:ownedColumns})=>{
     const column=columns.find(column=>ownedColumns.has(column.id)&&groupProjection!.display(owner.header,column.id));
     if(!column)return[];
     const shownRows=rows.filter(row=>ownedRows.has(row.id)&&groupProjection!.display(row.id,column.id)).map(row=>row.id);
-    return[[owner.id,{column:column.id,rows:summaryRowLayout(groups.filter(group=>group.table===owner.id),shownRows,tree,()=>true)}] as const];
+    return[[owner.id,{column:column.id,rows:constantSummaryRowLayout(groups.filter(group=>group.table===owner.id),shownRows,tree)}] as const];
   }));
   const tableInsets=new Map<string,number>();
   for(const layout of tableRowLayouts.values())tableInsets.set(layout.column,Math.max(tableInsets.get(layout.column)??0,...[...layout.rows.values()].map(row=>row.inset)));
@@ -688,8 +702,8 @@ function render(): void {
       const cell=getCell(s,r.id,c.id),val=cellText(cell,s,r.i,c.i),header=owner?.header===r.id,inSelection=ranges.some(b=>r.i>=b.r1&&r.i<=b.r2&&c.i>=b.c1&&c.i<=b.c2),copying=copied?.sheet===s.id&&r.i>=copied.r&&r.i<copied.r+copied.cells.length&&c.i>=copied.c&&c.i<copied.c+copied.cells[0].length;
       const inset=(c.id===firstColumn?.id?rowLayouts.get(r.id)?.inset??0:0)+(tableLayout?.column===c.id?tableLayout.rows.get(r.id)?.inset??0:0)+(r.id===rows[0]?.id?(columnSummaries.get(c.id)??0)*24:0);
       const rowTagged=rowHypo(r.id,c.id),columnTagged=columnHypo(r.id,c.id);
-      const firstOwnedColumn=owner?columns.find(column=>owner.columns.some(field=>field.column===column.id))?.id:firstColumn?.id;
-      const firstOwnedRow=owner?rows.find(row=>row.id===owner.header||owner.rows.includes(row.id))?.id:rows[0]?.id;
+      const firstOwnedColumn=owner?firstOwned.get(owner.id)?.column:firstColumn?.id;
+      const firstOwnedRow=owner?firstOwned.get(owner.id)?.row:rows[0]?.id;
       const tagged=rowTagged&&c.id===(hypotheticalRows.has(r.id)?firstColumn?.id:firstOwnedColumn)||columnTagged&&r.id===(hypotheticalColumns.has(c.id)?rows[0]?.id:firstOwnedRow);
       const treatment=rowTagged?hypotheticalStyle.rows:columnTagged?hypotheticalStyle.columns:undefined;
       const badge=tagged&&treatment?.badge?`<span class="hypothetical-badge" style="${hypotheticalBadgeCss(treatment)}" role="img" aria-label="${esc(hypotheticalStyle.label)}" title="${esc(hypotheticalStyle.label)}">${toolbarIcon('hypothetical-badge')}</span>`:'';
@@ -1003,6 +1017,7 @@ function inlineSheetName(el:HTMLElement):void {
   const commit=()=>{if(committed)return;committed=true;const name=input.value.trim();if(name&&name!==s.name)mutate('Rename sheet',()=>{if(allSheets(book).some(x=>x.id!==s.id&&x.name.toLowerCase()===name.toLowerCase()))throw Error('Sheet name is already in use.');s.name=name;});render();};
   input.onclick=e=>e.stopPropagation();input.onblur=commit;input.onkeydown=e=>{e.stopPropagation();if(e.key==='Enter'){e.preventDefault();commit();}if(e.key==='Escape'){committed=true;render();}};
 }
+let navigationSaving:Promise<void>=Promise.resolve(),navigationDirty=false,navigationError:unknown;
 function refreshSelection(closeDropdown=true):void {
   if(closeDropdown)closeCellDropdown?.();
   if(selectionKind==='cells')selectionScope=tableSelectionMode?tableAt(book,sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id)?.id:undefined;
@@ -1025,7 +1040,14 @@ function refreshSelection(closeDropdown=true):void {
   const visited=tableAt(book,sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id)?.id;
   if(visited!==lastVisitedTable){
     lastVisitedTable=visited;
-    if(visited){const quiet=!state.sync&&savedGeneration===generation;recordTableVisit(book,visited);changed('Visit table',false,quiet);}
+    if(visited){
+      const previous=book.tableActivity?.[visited]?.visits??0,id=book.id;
+      recordTableVisit(book,visited);navigationDirty=true;
+      navigationSaving=navigationSaving.then(async()=>{
+        const visits=await store.visit(id,visited,previous);
+        if(book.id===id)book.tableActivity={...book.tableActivity,[visited]:{...book.tableActivity?.[visited],visits:Math.max(book.tableActivity?.[visited]?.visits??0,visits)}};
+      }).catch(e=>{navigationError=e;status='Navigation preferences NOT SAVED';flash(e);});
+    }
   }
   renderStatus();
   rememberView();
@@ -2275,7 +2297,12 @@ function bindTabs():void{
     el.onclick=e=>{if((e.target as HTMLElement).closest('input')||!commitDraft())return;
       if(e.shiftKey){e.preventDefault();const visible=entries.filter(entry=>entry.getClientRects().length>0),at=visible.findIndex(entry=>token(entry)===(tabSelectionAnchor??referenceId??sheetId)),end=visible.indexOf(el);selectedTabs.clear();for(const entry of visible.slice(Math.min(at<0?end:at,end),Math.max(at<0?end:at,end)+1))selectedTabs.add(token(entry));highlight();return;}
       selectedTabs.clear();selectedTabs.add(token(el));tabSelectionAnchor=token(el);highlight();
-      if(group){const key=`dd-group-collapsed:${group.toLowerCase()}`;book.pickerSources[key]=book.pickerSources[key]==='true'?'false':'true';changed('Toggle dropdown group',false);render();}else if(reference){if(referenceId!==id)openReferences(id);}else if(sheetId!==id){sheetId=id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';render();}};
+      if(group){const key=`dd-group-collapsed:${group.toLowerCase()}`;book.pickerSources[key]=book.pickerSources[key]==='true'?'false':'true';changed('Toggle dropdown group',false);render();}else if(reference){if(referenceId!==id)openReferences(id);}else if(sheetId!==id){
+        rememberView();sheetId=id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';
+        let view:{scroll:number;left:number}|undefined;
+        try{const saved=sessionStorage.getItem(`fnt-sheet-view:${book.id}:${id}`);if(saved)view=restoreView(undefined,saved);}catch(e){flash(e);}
+        render();if(view){const grid=root.querySelector<HTMLElement>('#grid-scroll')!;grid.scrollTop=view.scroll;grid.scrollLeft=view.left;drawRowWindow?.();rememberView();}
+      }};
     el.ondblclick=()=>inlineTabName(el);
     el.oncontextmenu=e=>{e.preventDefault();if(commitDraft())tabMenu(el,e.clientX,e.clientY);};
     el.onkeydown=e=>{if(e.key==='F2'){e.preventDefault();inlineTabName(el);}else if(e.key==='ContextMenu'||e.shiftKey&&e.key==='F10'){e.preventDefault();const rect=el.getBoundingClientRect();tabMenu(el,rect.left,rect.top);}};
@@ -2846,7 +2873,7 @@ document.addEventListener('copy',e=>{
   e.clipboardData?.setData('application/x-fnt-copy',clipboardId);e.preventDefault();
 });
 document.addEventListener('click',e=>{if(appendDraft&&!(e.target as HTMLElement).closest('.reference-append-row')&&!commitDraft()){e.preventDefault();e.stopImmediatePropagation();}});
-window.addEventListener('beforeunload',e=>{if(generation!==savedGeneration||draft!==undefined||appendDraft||colorPicker?.pending){e.preventDefault();e.returnValue='Unsaved workbook edits';}});
+window.addEventListener('beforeunload',e=>{if(generation!==savedGeneration||draft!==undefined||appendDraft||colorPicker?.pending||navigationError){e.preventDefault();e.returnValue='Unsaved workbook edits or navigation preferences';}});
 window.addEventListener('resize',()=>drawRowWindow?.());
 window.addEventListener('online',()=>{if(state?.sync){status='Online - use Save to sync pending changes';renderStatus();}});
 window.addEventListener('offline',()=>{status='Offline - local autosave remains available';renderStatus();});
@@ -2882,7 +2909,7 @@ async function start():Promise<void> {
       }
     }else{
       if(publishedStarter){
-        stage='loading the published testing workbook';const snapshot=await loadPublishedTesting();book=clone(snapshot.book);
+        stage='loading the published testing workbook';const snapshot=await loadPublishedTesting();book=snapshot.book;
         state=await store.save(book,0,'Load published testing workbook',false,undefined,{localOnly:true,publishedSnapshot:snapshot.id});
       }else{book=seedDropdownCatalog(createDemo()).book;state=await store.save(book,0,'Create starter workbook with original Dropdowns catalogs');}
     }

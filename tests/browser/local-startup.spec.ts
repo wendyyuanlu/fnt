@@ -1,7 +1,7 @@
 import {expect,test} from '@playwright/test';
 
 test('normal local development opens the current review workbook instead of the original demo',async({page,request})=>{
-  const url='http://127.0.0.1:5173/';
+  const url=process.env.FNT_LOCAL_URL??'http://127.0.0.1:5173/';
   const version=await request.get(url+'testing-workbook-version.json');
   expect(version.ok()).toBe(true);
   expect(await version.json()).toMatchObject({format:'fnt-published-version',version:1,id:expect.any(String)});

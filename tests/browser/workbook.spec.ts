@@ -188,7 +188,7 @@ test('header boundary controls insert and move a selected column block without l
   await page.getByRole('button',{name:'Daily log',exact:true}).click();await expect(cell(page,1,3)).toHaveText('208.8');
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(cell(page,1,1)).toHaveText('40');
-  await page.locator('th[data-col="1"]').hover();await page.locator('[data-insert-column="2"]').click();await expect(cell(page,0,2)).toHaveText('New column');await expect(cell(page,1,6)).toHaveText('3.75');
+  await page.locator('th[data-col="1"] .column-index').click();await page.locator('[data-insert-column="2"]').click();await expect(cell(page,0,2)).toHaveText('New column');await expect(cell(page,1,6)).toHaveText('3.75');
   await page.getByRole('button',{name:'Undo',exact:true}).click();
   await page.locator('[data-row-select="1"]').hover();await page.locator('[data-insert-row="2"]').click();await expect(cell(page,2,5)).toHaveText('#DIV/0!');await expect(cell(page,3,0)).toHaveText('Example lentils');
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(cell(page,2,0)).toHaveText('Example lentils');
