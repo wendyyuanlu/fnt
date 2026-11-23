@@ -40,6 +40,12 @@ Refreshing does not sync edits from another browser profile. Production loads
 preserving a full recovery checkpoint first. Existing edited, synced or imported
 workbooks are never automatically replaced. **File > Load published testing
 workbook** explicitly loads that snapshot while preserving the previous archive.
+The authorized testing snapshot contains Meals, Ingredients and their required
+dropdown/conversion dependencies, including the owner's explicitly approved
+meal and ingredient data. It excludes unrelated daily/weight-tracking sheets.
+Meals row outlines have been converted to table-constrained summary groups
+where the preceding row is ungrouped; column plain groups retain their kind
+and are constrained to their containing table.
 The authorized testing snapshot is the only published workbook data. Original
 Excel packages, recovery histories, tokens and subsequent browser edits are not
 automatically bundled or published.
@@ -297,6 +303,16 @@ automatically bundled or published.
   would split table records, fragment a referenced range, or intersect generated
   spill cells are refused without changing the workbook; use whole rows/columns
   or edit the array anchor instead. Structural changes remain undoable.
+- **File > Import Meals and link matching Ingredients** adds the Excel Meals
+  sheet without replacing other sheets. The previous Meals table keeps its
+  identities under `Meals_PreImport`. Existing Ingredients and conversion tables
+  supply the imported formulas; missing dependencies stop the import explicitly.
+  The ingredient column uses the Ingredients DD. Literal names link
+  case-insensitively to the first active exact match in physical Ingredients row
+  order; unmatched text and formula inputs stay intact. All manual nutrition,
+  notes, formatting and row/column layout are retained. The attached-original
+  button uses the locally archived Excel package. Imports save a full recovery
+  archive and disconnect sync.
 - **File > Import Ingredients** merges a source Ingredients table into
   the existing table instead of replacing the workbook. Source records are added
   first; existing records, custom columns and other sheets are retained. Matching

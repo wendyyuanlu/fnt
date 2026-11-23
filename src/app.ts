@@ -721,6 +721,7 @@ function render(): void {
   const toolbar=root.querySelector<HTMLElement>('.toolbar')!;
   closeToolbar=mountToolbar(toolbar,{order:book.toolbarOrder,dividers:book.toolbarDividers,editing:arrangingToolbar,selection:toolbarSelection,change:(order,dividers)=>commitDraft()&&mutate('Arrange toolbar',()=>{book.toolbarOrder=order;book.toolbarDividers=dividers;})});
   toolbar.scrollLeft=toolbarScroll;
+  groupControls?.positionMenu();
   rememberView();
 }
 function safeLink(value: string): boolean {
@@ -2583,6 +2584,33 @@ async function exportBackup():Promise<void> {
 }
 function openFile():void {
   dialog('Workbook & recovery',`<div class="menu"><button id="backup" class="primary">Download independent full backup</button>${book.importReport?'<button id="original">Download unchanged original XLSX</button><button id="report">Compatibility report</button>':''}<label>Import Ingredients into this workbook<input type="file" id="import-ingredients" accept=".xlsx"></label><label>Restore Fnt backup<input type="file" id="restore" accept=".json"></label><label>Replace workbook from Excel (pre-import recovery)<input type="file" id="import" accept=".xlsx"></label><button id="history">Recovery checkpoints</button><button id="sync">Private GitHub sync</button><button id="privacy">Storage & privacy</button></div><p class="muted">Ingredients import keeps existing records and other sheets, saves a full pre-import recovery archive, and disconnects sync. Backups contain your data; keep them private. XLSX compatibility is not certified.</p>`,d=>{
+    const mealsLabel=document.createElement('label'),mealsInput=document.createElement('input');
+    mealsLabel.textContent='Import Meals and link matching Ingredients';mealsInput.type='file';mealsInput.id='import-meals';mealsInput.accept='.xlsx';mealsLabel.append(mealsInput);d.querySelector('#import-ingredients')!.closest('label')!.after(mealsLabel);
+    const mealsNote=document.createElement('p');mealsNote.className='muted';mealsNote.textContent='Meals import adds a separate sheet, retains the previous Meals table as Meals_PreImport, preserves formulas and manual nutrition, and links ingredient labels to the first case-insensitive match from the top of Ingredients. Unmatched text stays manual. A full recovery copy is saved and sync is disconnected.';mealsLabel.after(mealsNote);
+    const importMeals=async(file?:File)=>{
+      if(busy){flash('Wait for the current save or import.');return;}if(!commitDraft())return;
+      busy=true;status='Importing Meals locally - existing sheets and manual nutrition will be retained';renderStatus();
+      try{
+        await flush();if(savedGeneration!==generation)throw Error('Save failed. Meals import cancelled.');
+        const before=await store.backup({...state,book:clone(book)}),attached=before.originals.find(original=>original.id===book.importReport?.originalId);
+        if(!file&&!attached)throw Error('The original Excel source is missing. Select a local XLSX file.');
+        const bytes=file?await file.arrayBuffer():Uint8Array.from(atob(attached!.data),c=>c.charCodeAt(0)).buffer;
+        const [{importXlsx},{mergeMeals}]=await Promise.all([import('./xlsx'),import('./meals-import')]);
+        const source=await importXlsx(bytes,file?.name??attached!.name,{sheets:['Meals']});
+        if(source.nativeBackup)throw Error('Restore a Fnt snapshot as a workbook rather than importing its Meals identities again.');
+        const original=before.originals.find(original=>original.data===source.original.data)??source.original;
+        if(source.book.importReport)source.book.importReport.originalId=original.id;
+        const result=mergeMeals(book,source.book);
+        result.book.importReport??=source.book.importReport;
+        state=await store.save(result.book,state.version,'Meals import',true,original,{localOnly:true,recoveryArchive:stringifyArchive(before)});
+        token='';adoptSavedWorkbook(result.sheet);selected={r:sheet().rows.findIndex(row=>row.id===allTables(book).find(table=>table.id===result.table)!.header)+1,c:0};anchor={...selected};scrollTarget=selected.r;
+        status=`Imported ${result.rows} Meals records; ${result.linked} ingredients linked; ${result.unmatched} unmatched labels retained - sync disconnected`;
+        channel?.postMessage({version:state.version});render();d.close();
+      }catch(e){status='Meals import failed - previous workbook retained';flash(e);}
+      finally{busy=false;renderStatus();}
+    };
+    mealsInput.onchange=()=>{if(mealsInput.files?.[0])void importMeals(mealsInput.files[0]);};
+    if(book.importReport){const attachedMeals=document.createElement('button');attachedMeals.id='import-attached-meals';attachedMeals.textContent='Import Meals from attached original XLSX';attachedMeals.onclick=()=>void importMeals();mealsLabel.before(attachedMeals);}
     const ingredients=allTables(book).find(t=>t.name.toLowerCase()==='ingredients'),localContext=document.createElement('p');
     localContext.id='browser-workbook';localContext.className='muted';
     localContext.textContent=`This browser profile at ${location.origin}. Other browser profiles and preview ports have separate local workbooks. ${ingredients?`Ingredients: ${ingredients.rows.length} records, ${ingredients.columns.length} columns.`:'No Ingredients table in this workbook.'} ${book.importReport?'An Excel source is attached locally.':'No Excel source has been imported into this workbook. Choose Import Ingredients below to load your Excel data here.'}`;

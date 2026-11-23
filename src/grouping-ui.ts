@@ -18,11 +18,12 @@ const eye=(collapsed:boolean)=>icon(`<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S
 const hierarchy=icon('<path vector-effect="non-scaling-stroke" d="M6 8v8q0 3 3 3h7"/><circle vector-effect="non-scaling-stroke" cx="6" cy="5" r="3"/><circle vector-effect="non-scaling-stroke" cx="19" cy="19" r="3"/>').replace('<svg ','<svg class="toolbar-icon" ');
 let rememberedFocus:string|undefined;
 
-export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:()=>void} {
-  if(!host.groups.length&&!host.menuButton){host.setMenuOpen(false);return{drawRows:()=>{},close:()=>{}};}
+export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;positionMenu:()=>void;close:()=>void} {
+  if(!host.groups.length&&!host.menuButton){host.setMenuOpen(false);return{drawRows:()=>{},positionMenu:()=>{},close:()=>{}};}
   const {sheet,grid}=host,table=grid.querySelector<HTMLTableElement>('.grid')!,entries=outlineGroups(host.groups),summaries=entries.filter(e=>e.group.kind==='summary'&&!e.group.table);
   const controller=new AbortController(),corner=table.querySelector<HTMLElement>('.corner')!;
   let menu:HTMLDivElement|undefined;
+  let menuScrollTop=0,menuScrollLeft=0;
   function button(group:Group,depth:number):HTMLButtonElement {
     const plain=group.kind!=='summary',el=document.createElement('button');
     el.type='button';el.className='group-control';el.dataset.groupId=group.id;
@@ -64,6 +65,12 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
       control.style.right=2+(controls.length-1-index)*26+'px';control.style.top='14px';
     });
   }
+  const tableLayouts=new Map(host.tables.filter(owner=>owner.sheet===sheet.id&&entries.some(entry=>entry.group.table===owner.id)).map(owner=>{
+    const rowIds=new Set(owner.rows),columnIds=new Set(owner.columns.map(field=>field.column));
+    const ownedRows=host.rows.filter(id=>id===owner.header||rowIds.has(id)),ownedColumns=host.columns.filter(id=>columnIds.has(id));
+    const shownRows=ownedRows.filter(row=>ownedColumns.some(column=>host.projection?.display(row,column))),shownColumns=ownedColumns.filter(column=>ownedRows.some(row=>host.projection?.display(row,column)));
+    return[owner.id,{owner,ownedRows,ownedColumns,shownRows,shownColumns}] as const;
+  }));
   function drawRows():void {
     table.querySelectorAll('.row-group-controls,.row-outline-rail,.row-plain-hints,.column-summary-controls,.column-summary-rail,.table-group-controls').forEach(el=>el.remove());
     table.querySelectorAll<HTMLElement>('[data-table-group-inset]').forEach(cell=>{
@@ -119,10 +126,8 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
       rowHints.get('')!.forEach(e=>cluster.append(button(e.group,e.depth)));corner.append(cluster);
     }
     for(const entry of entries.filter(e=>e.group.table&&(e.group.kind==='summary'||host.hints))){
-      const owner=host.tables.find(t=>t.id===entry.group.table&&t.sheet===sheet.id);if(!owner)continue;
-      const ownedRows=host.rows.filter(id=>id===owner.header||owner.rows.includes(id));
-      const ownedColumns=host.columns.filter(id=>owner.columns.some(field=>field.column===id));
-      const shownRows=ownedRows.filter(row=>ownedColumns.some(column=>host.projection?.display(row,column))),shownColumns=ownedColumns.filter(column=>ownedRows.some(row=>host.projection?.display(row,column)));
+      const layout=tableLayouts.get(entry.group.table!);if(!layout)continue;
+      const {owner,ownedRows,ownedColumns,shownRows,shownColumns}=layout;
       const anchor=entry.group.kind==='summary'?entry.group.members[0]:precedingGroupMember(sheet,entry.group,entry.group.axis==='row'?shownRows:shownColumns);
       const row=entry.group.axis==='row'?anchor:owner.header,column=entry.group.axis==='column'?anchor:ownedColumns[0];
       const cell=table.querySelector<HTMLElement>(`td[data-r="${sheet.rows.findIndex(r=>r.id===row)}"][data-c="${sheet.columns.findIndex(c=>c.id===column)}"]`)
@@ -140,6 +145,12 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
   function closeMenu(focus=false):void {
     menu?.remove();menu=undefined;host.setMenuOpen(false);menuButton.setAttribute('aria-expanded','false');
     if(focus)menuButton.focus({preventScroll:true});
+  }
+  function positionMenu():void{
+    if(!menu)return;
+    const rect=menuButton.getBoundingClientRect(),size=menu.getBoundingClientRect();
+    menu.style.left=Math.max(8,Math.min(rect.left,innerWidth-size.width-8))+'px';menu.style.top=Math.max(8,Math.min(rect.bottom+4,innerHeight-size.height-8))+'px';
+    menuScrollTop=grid.scrollTop;menuScrollLeft=grid.scrollLeft;
   }
   function openMenu():HTMLDivElement {
     menu?.remove();host.setMenuOpen(true);menuButton.setAttribute('aria-expanded','true');
@@ -179,8 +190,7 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
     const actions=document.createElement('div');actions.className='outline-menu-actions';
     for(const [name,fn] of [['Select all cells',host.selectAll],['Manage groups',host.manage]] as const){const el=document.createElement('button');el.type='button';el.textContent=name;el.onclick=()=>{closeMenu();fn();};actions.append(el);}
     menu.append(actions);document.body.append(menu);if('showPopover'in menu)menu.showPopover();
-    const rect=menuButton.getBoundingClientRect(),size=menu.getBoundingClientRect();
-    menu.style.left=Math.max(8,Math.min(rect.left,innerWidth-size.width-8))+'px';menu.style.top=Math.max(8,Math.min(rect.bottom+4,innerHeight-size.height-8))+'px';
+    positionMenu();
     menu.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closeMenu(true);}else e.stopPropagation();});
     return menu;
   }
@@ -188,9 +198,9 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
   document.addEventListener('pointerdown',e=>{if(menu&&!menu.contains(e.target as Node)&&!menuButton.contains(e.target as Node))closeMenu();},{capture:true,signal:controller.signal});
   document.addEventListener('keydown',e=>{if(menu&&e.key==='Escape'){e.preventDefault();e.stopPropagation();closeMenu(true);}},{capture:true,signal:controller.signal});
   window.addEventListener('resize',()=>{if(menu)openMenu();},{signal:controller.signal});
-  grid.addEventListener('scroll',()=>{if(menu)closeMenu();},{signal:controller.signal});
+  grid.addEventListener('scroll',()=>{if(menu&&(grid.scrollTop!==menuScrollTop||grid.scrollLeft!==menuScrollLeft))closeMenu();},{signal:controller.signal});
   if(host.menuOpen){const popup=openMenu();if(rememberedFocus)popup.querySelector<HTMLButtonElement>(rememberedFocus)?.focus({preventScroll:true});}
-  return {drawRows,close:()=>{
+  return {drawRows,positionMenu,close:()=>{
     const active=document.activeElement instanceof HTMLButtonElement&&menu?.contains(document.activeElement)?document.activeElement:undefined;
     rememberedFocus=active?.dataset.outlineAxis?`[data-outline-axis="${active.dataset.outlineAxis}"][data-outline-level="${active.dataset.outlineLevel}"]`
       :active?.dataset.groupId?`[data-group-id="${active.dataset.groupId}"]`

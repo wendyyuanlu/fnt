@@ -39,6 +39,43 @@ async function menu(page:Page){
   if(!await page.locator('.group-popover').count())await page.getByRole('button',{name:'Group controls',exact:true}).click();
   return page.locator('.group-popover');
 }
+test('group popover keeps its anchor after toggles with a rearranged and scrolled toolbar',async({page})=>{
+  await fixture(page);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{const state=(await store.load())!;state.book.toolbarOrder=['action:undo','action:redo','action:table-selection'];await store.save(state.book,state.version,'Synthetic rearranged group control');}finally{store.close();}
+  });
+  await page.reload();await expect(page.locator('.grid')).toBeVisible();
+  await page.locator('.toolbar').evaluate(el=>{el.scrollLeft=40;});
+  const popup=await menu(page),before=(await popup.boundingBox())!,scroll=await page.locator('.toolbar').evaluate(el=>el.scrollLeft);
+  for(const name of ['Tree view','Plain group hints']){
+    await popup.getByRole('switch',{name,exact:true}).click();
+    const after=(await popup.boundingBox())!;expect(after.x).toBeCloseTo(before.x,0);expect(after.y).toBeCloseTo(before.y,0);
+    expect(await page.locator('.toolbar').evaluate(el=>el.scrollLeft)).toBe(scroll);
+  }
+  await popup.locator('[data-outline-axis="row"][data-outline-level="0"]').click();
+  const after=(await popup.boundingBox())!;expect(after.x).toBeCloseTo(before.x,0);expect(after.y).toBeCloseTo(before.y,0);
+});
+test('thousands of table rows with hundreds of summary groups remain responsive',async({page})=>{
+  test.setTimeout(30000);
+  await fixture(page);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,sheet=state.book.sheets[0],table=state.book.tables.find(t=>t.sheet===sheet.id)!;
+      const header=sheet.rows.find(row=>row.id===table.header)!;
+      sheet.rows=[header,...Array.from({length:5000},(_,i)=>({id:`large-row-${i}`}))];table.rows=sheet.rows.slice(1).map(row=>row.id);
+      sheet.cells=Object.fromEntries(Object.entries(sheet.cells).filter(([address])=>address.startsWith(header.id+':')));sheet.validations=[];
+      sheet.groups=Array.from({length:250},(_,i)=>({id:`large-group-${i}`,axis:'row' as const,kind:'summary' as const,table:table.id,members:table.rows.slice(i*20,i*20+20),collapsed:false,label:`Synthetic group ${i}`}));
+      await store.save(state.book,state.version,'Large synthetic table outlines');
+    }finally{store.close();}
+  });
+  const start=Date.now();await page.reload();
+  await expect(page.locator('td[data-r="1"] .table-group-controls')).toBeVisible();
+  await page.getByRole('button',{name:'Group controls',exact:true}).click();
+  await expect(page.locator('.group-popover')).toBeVisible();
+  expect(Date.now()-start).toBeLessThan(15000);
+});
 test('moving a nested two-row group outside its parents trims old memberships and rails, with reload and undo',async({page})=>{
   const before=await fixture(page),s=before.sheets[0],members=s.groups.find(g=>g.id==='leaf')!.members;
   await (await menu(page)).getByRole('switch',{name:'Tree view',exact:true}).click();
