@@ -13,7 +13,7 @@ async function state(page:Page):Promise<LocalState>{
 async function seed(page:Page,edited:boolean){
   const book=createDemo();const notebook=book.sheets.find(s=>s.name==='Notebook')!;
   if(edited){book.title='Separate browser workbook';notebook.cells[key(notebook.rows[1].id,notebook.columns[1].id)]={value:'Keep my separate browser edits'};}
-  const pending=[{id:'first',label:'Create starter workbook',time:''},...(edited?[{id:'edit',label:'Edit workbook',time:''}]:[])];
+  const pending=[{id:'first',label:'Create starter workbook',time:''},{id:'migration',label:'Move dropdown records into DD storage',time:''},{id:'visit',label:'Visit table',time:''},...(edited?[{id:'edit',label:'Edit workbook',time:''}]:[])];
   const value:LocalState={book,version:100,pending,updated:''};
   await page.evaluate(async value=>{
     const open=indexedDB.open('fnt-workbook-v1',1),db=await new Promise<IDBDatabase>((resolve,reject)=>{open.onsuccess=()=>resolve(open.result);open.onerror=()=>reject(open.error);});
@@ -30,6 +30,7 @@ test('published site loads the complete testing grid, bypasses stale HTML and wo
     for(const path of ['./','./index.html'])await cache.put(new URL(path,location.href),new Response('<p id="stale-shell">Obsolete cached website</p>',{headers:{'Content-Type':'text/html'}}));
   });
   await page.goto(url);await expect(page.locator('#save-state')).toContainText('Saved');
+  for(const name of ['Meal TEST DATA','Daily log','Notebook TEST'])await expect(page.getByRole('button',{name,exact:true})).toBeVisible();
   expect(JSON.stringify((await state(page)).book.sheets)===JSON.stringify(snapshot.book.sheets)).toBe(true);
   await expect.poll(()=>page.evaluate(()=>!!navigator.serviceWorker.controller)).toBe(true);
   await page.evaluate(async()=>{
@@ -37,7 +38,9 @@ test('published site loads the complete testing grid, bypasses stale HTML and wo
     const name=(await caches.keys()).find(name=>name.startsWith('fnt-shell-'))!;
     await(await caches.open(name)).put(location.href,new Response('<p id="stale-shell">Old cached website</p>',{headers:{'Content-Type':'text/html'}}));
   });
+  const workbookRequests:string[]=[];page.on('request',request=>{if(request.url().endsWith('/testing-workbook.json'))workbookRequests.push(request.url());});
   await page.reload();await expect(page.locator('#save-state')).toContainText('Saved');await expect(page.locator('#stale-shell')).toHaveCount(0);
+  expect(workbookRequests).toEqual([]);
   await context.setOffline(true);await page.reload();await expect(page.locator('#save-state')).toContainText('Saved');
   expect(JSON.stringify((await state(page)).book.sheets)===JSON.stringify(snapshot.book.sheets)).toBe(true);
 });

@@ -6,6 +6,7 @@ interface GroupingHost {
   tables:Table[];
   projection?:ReturnType<typeof tableGroupProjection>;
   rowLayouts:Map<string,SummaryRowLayout>;
+  tableRowLayouts:Map<string,{column:string;rows:Map<string,SummaryRowLayout>}>;
   menuOpen:boolean;setMenuOpen:(open:boolean)=>void;
   change:(label:string,fn:()=>void)=>boolean;selectAll:()=>void;manage:()=>void;
   refuse:(message:string)=>void;
@@ -71,6 +72,21 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;positio
     const shownRows=ownedRows.filter(row=>ownedColumns.some(column=>host.projection?.display(row,column))),shownColumns=ownedColumns.filter(column=>ownedRows.some(row=>host.projection?.display(row,column)));
     return[owner.id,{owner,ownedRows,ownedColumns,shownRows,shownColumns}] as const;
   }));
+  function drawSummary(cell:HTMLElement|undefined|null,layout:SummaryRowLayout|undefined,offset=0,owner?:Table):void{
+    if(!cell||!layout)return;
+    const controls=document.createElement('span');controls.className='row-group-controls';
+    for(const entry of layout.buttons){
+      const el=button(entry.group,entry.depth);if(owner)el.setAttribute('aria-label',`${el.getAttribute('aria-label')} in ${owner.name}`);el.classList.add('summary-chevron');el.style.left=6+offset+entry.left+'px';controls.append(el);
+    }
+    if(controls.children.length)cell.append(controls);
+    for(const entry of layout.rails){
+      const rail=document.createElement('span');rail.className='row-outline-rail';rail.dataset.groupId=entry.group.id;rail.style.left=offset+entry.left+'px';
+      if(entry.start)rail.classList.add('outline-start');
+      if(entry.end)rail.classList.add('outline-end');
+      if(entry.branch&&(entry.end||cell.querySelector('.cell-value')?.textContent?.trim())){const branch=document.createElement('span');branch.className='row-outline-branch';branch.style.width=entry.width+'px';rail.append(branch);}
+      cell.append(rail);
+    }
+  }
   function drawRows():void {
     table.querySelectorAll('.row-group-controls,.row-outline-rail,.row-plain-hints,.column-summary-controls,.column-summary-rail,.table-group-controls').forEach(el=>el.remove());
     table.querySelectorAll<HTMLElement>('[data-table-group-inset]').forEach(cell=>{
@@ -81,21 +97,8 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;positio
       const id=sheet.rows[Number(th.dataset.rowSelect)].id;
       const parents=summaries.filter(e=>e.group.axis==='row'&&e.group.members[0]===id).sort((a,b)=>a.depth-b.depth);
       const cell=th.parentElement?.querySelector<HTMLElement>('td[data-r]'),layout=host.rowLayouts.get(id);
-      const controls=document.createElement('span');controls.className='row-group-controls';
-      for(const entry of layout?.buttons??[]){
-        const el=button(entry.group,entry.depth);el.classList.add('summary-chevron');
-        el.style.left=6+entry.left+'px';
-        controls.append(el);
-      }
-      if(controls.children.length)cell?.append(controls);
+      drawSummary(cell,layout);
       const hints=rowHints.get(id);
-      for(const entry of layout?.rails??[]){
-        const rail=document.createElement('span');rail.className='row-outline-rail';rail.dataset.groupId=entry.group.id;rail.style.left=entry.left+'px';
-        if(entry.start)rail.classList.add('outline-start');
-        if(entry.end)rail.classList.add('outline-end');
-        if(entry.branch&&(entry.end||cell?.querySelector('.cell-value')?.textContent?.trim())){const branch=document.createElement('span');branch.className='row-outline-branch';branch.style.width=entry.width+'px';rail.append(branch);}
-        cell?.append(rail);
-      }
       const firstRow=table.querySelector<HTMLElement>(`tbody [data-row-select="${sheet.rows.findIndex(r=>r.id===host.rows[0])}"]`)?.parentElement;
       if(firstRow&&firstRow===th.parentElement)for(const entry of summaries.filter(e=>e.group.axis==='column'&&host.columns.includes(e.group.members[0]))){
         const at=host.columns.indexOf(entry.group.members[0]),cell=firstRow.querySelector<HTMLElement>(`td[data-c="${sheet.columns.findIndex(c=>c.id===entry.group.members[0])}"]`);
@@ -125,21 +128,38 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;positio
       const cluster=document.createElement('span');cluster.className='row-plain-hints';
       rowHints.get('')!.forEach(e=>cluster.append(button(e.group,e.depth)));corner.append(cluster);
     }
+    for(const [tableId,layout] of host.tableRowLayouts){
+      const column=sheet.columns.findIndex(column=>column.id===layout.column);
+      for(const cell of table.querySelectorAll<HTMLElement>(`tbody td[data-c="${column}"][data-r]`)){
+        const row=sheet.rows[Number(cell.dataset.r)].id;
+        drawSummary(cell,layout.rows.get(row),layout.column===host.columns[0]?host.rowLayouts.get(row)?.inset??0:0,tableLayouts.get(tableId)?.owner);
+      }
+    }
     for(const entry of entries.filter(e=>e.group.table&&(e.group.kind==='summary'||host.hints))){
+      if(entry.group.kind==='summary'&&entry.group.axis==='row')continue;
       const layout=tableLayouts.get(entry.group.table!);if(!layout)continue;
       const {owner,ownedRows,ownedColumns,shownRows,shownColumns}=layout;
       const anchor=entry.group.kind==='summary'?entry.group.members[0]:precedingGroupMember(sheet,entry.group,entry.group.axis==='row'?shownRows:shownColumns);
-      const row=entry.group.axis==='row'?anchor:owner.header,column=entry.group.axis==='column'?anchor:ownedColumns[0];
+      const row=entry.group.axis==='row'?anchor:owner.header,column=entry.group.axis==='column'?anchor:shownColumns[0];
       const cell=table.querySelector<HTMLElement>(`td[data-r="${sheet.rows.findIndex(r=>r.id===row)}"][data-c="${sheet.columns.findIndex(c=>c.id===column)}"]`)
         ??(entry.group.kind!=='summary'?table.querySelector<HTMLElement>(`td[data-display-r="${sheet.rows.findIndex(r=>r.id===(row??ownedRows[0]))}"][data-display-c="${sheet.columns.findIndex(c=>c.id===(column??ownedColumns[0]))}"]`):null);
       if(!cell)continue;
       cell.removeAttribute('aria-hidden');
       let controls=cell.querySelector<HTMLElement>('.table-group-controls');
-      if(!controls){controls=document.createElement('span');controls.className='table-group-controls';cell.append(controls);cell.dataset.tableGroupInset=cell.style.getPropertyValue('--summary-text-inset')||'0px';}
+      if(!controls){controls=document.createElement('span');controls.className='table-group-controls';cell.append(controls);cell.dataset.tableGroupInset=cell.style.getPropertyValue('--summary-text-inset')||'0px';controls.style.left=6+parseFloat(cell.dataset.tableGroupInset)+'px';}
       const control=button(entry.group,entry.depth);
       control.setAttribute('aria-label',`${control.getAttribute('aria-label')} in ${owner.name}`);
       controls.append(control);cell.classList.add('summary-cell');
       cell.style.setProperty('--summary-text-inset',(parseFloat(cell.dataset.tableGroupInset!)+controls.children.length*26)+'px');
+      if(host.tree&&entry.group.kind==='summary'&&entry.group.axis==='column'&&!entry.group.collapsed&&anchor){
+        const start=shownColumns.indexOf(anchor),members=new Set(entry.group.members);let end=start;
+        shownColumns.forEach((column,i)=>{if(members.has(column))end=Math.max(end,i);});
+        for(let i=start;i>=0&&i<=end;i++){
+          const target=table.querySelector<HTMLElement>(`td[data-r="${sheet.rows.findIndex(row=>row.id===owner.header)}"][data-c="${sheet.columns.findIndex(column=>column.id===shownColumns[i])}"]`);if(!target)continue;
+          const rail=document.createElement('span');rail.className='column-summary-rail';rail.dataset.groupId=entry.group.id;rail.style.bottom=3+(entry.depth-1)*3+'px';
+          if(i===start)rail.style.left='18px';if(i===end)rail.style.right='50%';target.append(rail);
+        }
+      }
     }
   }
   function closeMenu(focus=false):void {

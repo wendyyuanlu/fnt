@@ -25,3 +25,10 @@ export function excelDateText(serial:number):string|undefined {
   const date=excelDateParts(serial);
   return date?`${String(date.year).padStart(4,'0')}-${String(date.month).padStart(2,'0')}-${String(date.day).padStart(2,'0')}`:undefined;
 }
+
+export function displayExcelDate(serial:number,currentYear=new Date().getFullYear()):string|undefined {
+  const date=excelDateParts(serial);
+  if(!date)return;
+  const day=String(date.day).padStart(2,'0');
+  return date.year<currentYear?`${String(date.year%100).padStart(2,'0')}/${String(date.month).padStart(2,'0')}/${day}`:`${date.month}/${day}`;
+}

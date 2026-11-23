@@ -36,6 +36,33 @@ it('reorders only table records, following exact formula targets, DD links, vali
   expect(book.references[0].archivedRows).toEqual([rows[0]]);
   expect(neighbors()).toEqual(before);
 });
+for(const axis of ['row','column'] as const)it(`drops table ${axis}s into a nested summary and its parents without moving neighboring cells`,()=>{
+  const sheet=blankSheet('Scoped group drops',12,10),book:Workbook={schema:1,id:'drop-book',title:'Drop test',revision:0,sheets:[sheet],tables:[],names:[],pickerSources:{}};
+  const table={id:'drop-table',name:'Items',sheet:sheet.id,header:sheet.rows[0].id,rows:sheet.rows.slice(1,6).map(row=>row.id),columns:sheet.columns.slice(1,6).map((column,i)=>({id:'field-'+i,name:'Field '+i,column:column.id}))};book.tables.push(table);
+  for(let r=0;r<12;r++)for(let c=0;c<10;c++)sheet.cells[key(sheet.rows[r].id,sheet.columns[c].id)]={value:r*10+c};
+  for(const field of table.columns)sheet.cells[key(table.header,field.column)]={value:field.name};
+  const members=axis==='row'?table.rows:table.columns.map(field=>field.column);
+  sheet.groups=[{id:'outer',kind:'summary',axis,table:table.id,members:members.slice(0,4),collapsed:false,label:'Outer'},{id:'inner',kind:'summary',axis,table:table.id,members:members.slice(1,3),collapsed:true,label:'Inner'}];
+  const targetRow=sheet.rows[9].id,targetColumn=sheet.columns[8].id;
+  sheet.cells[key(targetRow,targetColumn)]={formula:compile(axis==='row'?'=C6':'=F3',book,sheet.id,targetRow,targetColumn)};
+  const own=new Set([table.header,...table.rows].flatMap(row=>table.columns.map(field=>key(row,field.column))));
+  const neighbors=()=>Object.fromEntries(Object.entries(book.sheets[0].cells).filter(([address])=>!own.has(address)&&address!==key(targetRow,targetColumn)));
+  const before=neighbors(),originalRows=clone(sheet.rows),originalColumns=clone(sheet.columns),result=new Engine(book).cell(sheet.id,targetRow,targetColumn);
+  const moved=editTableAxis(book,table.id,axis,{kind:'move',ids:[members[4]],boundary:4,group:'inner'});
+  const after=book.sheets[0];
+  expect(after.rows).toEqual(originalRows);expect(after.columns).toEqual(originalColumns);
+  expect(after.groups.find(group=>group.id==='inner')).toMatchObject({members:[members[1],members[2],moved[0]],collapsed:true,table:table.id});
+  expect(after.groups.find(group=>group.id==='outer')!.members).toContain(moved[0]);
+  expect(neighbors()).toEqual(before);expect(new Engine(book).cell(sheet.id,targetRow,targetColumn)).toEqual(result);
+});
+it('retains a two-member table summary when its only detail is dropped back into the same group',()=>{
+  const {book,s,table,rows}=fixture();
+  s.groups=[{id:'small',kind:'summary',axis:'row',table:table.id,members:rows.slice(0,2),collapsed:true,label:'Small'}];
+  const before=clone(book);
+  editTableAxis(book,table.id,'row',{kind:'move',ids:[rows[1]],boundary:3,group:'small'});
+  expect(book.sheets[0].groups).toEqual(before.sheets[0].groups);
+  expect(book.sheets[0].cells).toEqual(before.sheets[0].cells);
+});
 it('deletion removes only owner cells and makes deleted direct references and linked records explicit errors',()=>{
   const {book,s,table,rows,columns,formula,value,neighbors}=fixture(),before=neighbors();
   formula(10,9,'=C3');formula(11,9,'=SUM(Pantry[Value])');

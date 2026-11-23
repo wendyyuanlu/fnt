@@ -1,8 +1,8 @@
-import { allTables,allSheets,clone,getCell,inheritTableRow,key,summaryMoveMembers,translate,uid,uniqueName,type Cell,type Workbook} from './model';
+import { allTables,allSheets,clone,getCell,groupMoveTarget,inheritTableRow,key,summaryMoveMembers,translate,uid,uniqueName,type Cell,type Workbook} from './model';
 import {relocate} from './cell-operations';
 
 type Axis='row'|'column';
-export type TableAxisEdit={kind:'insert';boundary:number;count:number}|{kind:'delete';ids:string[]}|{kind:'duplicate';ids:string[]}|{kind:'move';ids:string[];boundary:number};
+export type TableAxisEdit={kind:'insert';boundary:number;count:number}|{kind:'delete';ids:string[]}|{kind:'duplicate';ids:string[]}|{kind:'move';ids:string[];boundary:number;group?:string};
 type Entry={source?:string;copy?:string};
 export class TableExpansionConflict extends Error{
   constructor(public axis:Axis,public boundary:number,public count:number){
@@ -20,6 +20,12 @@ export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableA
   if(old.some((id,i)=>!positions.has(id)||i>0&&positions.get(id)!<=positions.get(old[i-1])!))throw Error('Repair the table ordering before editing its records or fields.');
   const selected=new Set(edit.kind==='insert'?[]:summaryMoveMembers({...sheet,groups:sheet.groups.filter(group=>group.table===table.id)},axis,edit.ids,table.id));
   if(edit.kind!=='insert'&&(!selected.size||[...selected].some(id=>!old.includes(id))))throw Error('Select only records or fields in this table, not its header or neighboring cells.');
+  const joining=new Set<string>();
+  if(edit.kind==='move'&&edit.group){
+    const target=groupMoveTarget({...sheet,groups:sheet.groups.filter(group=>group.table===table.id)},axis,edit.ids,edit.group,table);
+    if(target.boundary!==edit.boundary)throw Error('The destination group changed. Select it again.');
+    for(const group of [target.group,...target.parents])joining.add(group.id);
+  }
   const before=edit.kind==='insert'||edit.kind==='move'?old.filter(id=>positions.get(id)!<edit.boundary).length:0;
   if((edit.kind==='insert'||edit.kind==='move')&&(!Number.isInteger(edit.boundary)||edit.boundary<(axis==='row'?positions.get(table.header)!+1:positions.get(old[0])!)||edit.boundary>(positions.get(old.at(-1)??table.header)!+1)))throw Error('Choose a destination inside this table.');
   let entries:Entry[]=old.map(source=>({source})),addedAt=-1,addedCount=0;
@@ -85,7 +91,7 @@ export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableA
     let original=group.members;
     const indices=group.members.map(id=>old.indexOf(id)).filter(i=>i>=0);
     if(edit.kind==='move'&&!group.members.every(id=>selected.has(id))){
-      const inside=indices.length>0&&before>Math.min(...indices)&&before<=Math.max(...indices);
+      const inside=joining.has(group.id)||indices.length>0&&before>Math.min(...indices)&&before<=Math.max(...indices);
       original=inside?[...new Set([...group.members,...selected])]:group.members.filter(id=>!selected.has(id));
     }
     const mapped=original.flatMap(id=>axisMap.has(id)?[axisMap.get(id)!]:[]);

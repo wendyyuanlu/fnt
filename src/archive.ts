@@ -20,14 +20,15 @@ export function parseArchive(source:string):unknown {
   if(parsed?.format!=='fnt-packed-v1')return parsed;
   if(!Array.isArray(parsed.asts)||!('data'in parsed))throw Error('Invalid formula archive.');
   const restore=(value:unknown):unknown=>{
-    if(Array.isArray(value))return value.map(restore);
+    if(Array.isArray(value)){for(let i=0;i<value.length;i++)value[i]=restore(value[i]);return value;}
     if(value&&typeof value==='object'){
       const object=value as Record<string,unknown>;
       if('$ast'in object){
         if(Object.keys(object).length!==1||!Number.isInteger(object.$ast)||Number(object.$ast)<0||Number(object.$ast)>=parsed.asts.length)throw Error('Missing archived formula.');
         return parsed.asts[Number(object.$ast)];
       }
-      return Object.fromEntries(Object.entries(object).map(([k,v])=>[k,restore(v)]));
+      for(const key of Object.keys(object))object[key]=restore(object[key]);
+      return object;
     }
     return value;
   };

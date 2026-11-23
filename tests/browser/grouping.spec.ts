@@ -39,6 +39,38 @@ async function menu(page:Page){
   if(!await page.locator('.group-popover').count())await page.getByRole('button',{name:'Group controls',exact:true}).click();
   return page.locator('.group-popover');
 }
+for(const collapsed of [false,true])test(`plain grouping a table summary row includes its complete ${collapsed?'collapsed':'expanded'} summary and nested details`,async({page})=>{
+  await fixture(page);
+  const owner=await page.evaluate(async collapsed=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,sheet=state.book.sheets[0],owner=state.book.tables.find(table=>table.sheet===sheet.id)!;
+      owner.rows=sheet.rows.slice(1,21).map(row=>row.id);
+      for(const group of sheet.groups.filter(group=>group.axis==='row'))group.table=owner.id;
+      sheet.groups.find(group=>group.id==='outer')!.collapsed=collapsed;
+      await store.save(state.book,state.version,'Table summary fixture');return owner.id;
+    }finally{store.close();}
+  },collapsed);
+  await page.reload();await expect(page.locator('.grid')).toBeVisible();
+  const scope=page.locator('.corner [data-action="table-selection"]');
+  if(await scope.getAttribute('aria-pressed')!=='true')await scope.click();
+  const before=await snapshot(page);
+  await page.locator('[data-row-select="1"] .row-index').click();await page.keyboard.press('Control+Alt+g');
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const grouped=await snapshot(page),plain=grouped.sheets[0].groups.at(-1)!;
+  expect(plain.kind).toBe('range');expect(plain.table).toBe(owner);
+  expect(grouped.sheets[0].groups.slice(0,-1)).toEqual(before.sheets[0].groups);
+  await page.locator(`.grid [data-group-id="${plain.id}"]`).click();
+  for(let row=1;row<10;row++)await expect(page.locator(`td[data-r="${row}"][data-c="0"]`)).toHaveCount(0);
+  await expect(page.locator('td[data-r="10"][data-c="0"]')).toBeVisible();
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(page.locator('td[data-r="1"][data-c="0"]')).toBeVisible();
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const undone=await snapshot(page);
+  expect(undone.sheets[0].groups).toEqual(before.sheets[0].groups);
+  expect(undone.sheets.map(sheet=>sheet.cells)).toEqual(before.sheets.map(sheet=>sheet.cells));
+});
 test('group popover keeps its anchor after toggles with a rearranged and scrolled toolbar',async({page})=>{
   await fixture(page);
   await page.evaluate(async()=>{
@@ -71,7 +103,7 @@ test('thousands of table rows with hundreds of summary groups remain responsive'
     }finally{store.close();}
   });
   const start=Date.now();await page.reload();
-  await expect(page.locator('td[data-r="1"] .table-group-controls')).toBeVisible();
+  await expect(page.locator('td[data-r="1"] [data-group-id="large-group-0"]')).toBeVisible();
   await page.getByRole('button',{name:'Group controls',exact:true}).click();
   await expect(page.locator('.group-popover')).toBeVisible();
   expect(Date.now()-start).toBeLessThan(15000);

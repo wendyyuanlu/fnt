@@ -25,7 +25,7 @@ test('targeted Excel import keeps existing data, identifies browser-local state,
   await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
   await expect(page.locator('#browser-workbook')).toContainText('Ingredients: 3 records');
   await expect(page.locator('#browser-workbook')).toContainText('No Excel source has been imported');
-  await expect(page.locator('#browser-workbook')).toContainText('http://127.0.0.1:5173');
+  await expect(page.locator('#browser-workbook')).toContainText(new URL(page.url()).origin);
   await expect(page.getByRole('button',{name:'Export Excel projection + embedded Fnt archive',exact:true})).toBeVisible();
   await page.getByRole('button',{name:'Close dialog',exact:true}).click();
   await page.getByRole('button',{name:'Notebook',exact:true}).click();
@@ -43,14 +43,14 @@ test('targeted Excel import keeps existing data, identifies browser-local state,
   await page.getByRole('button',{name:'Notebook',exact:true}).click();await expect(page.locator('td[data-r="1"][data-c="0"]')).toHaveText('Local note kept');
   await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
   await page.getByRole('button',{name:'Recovery checkpoints',exact:true}).click();
-  await expect(page.getByRole('button',{name:'Download full recovery archive',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Download full recovery archive',exact:true}).first()).toBeVisible();
   await page.getByRole('dialog').getByRole('button',{name:'Close dialog',exact:true}).click();
   await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
   await expect(page.locator('#browser-workbook')).toContainText('Ingredients: 4 records');
   await expect(page.locator('#browser-workbook')).toContainText('An Excel source is attached locally');
   const separate=await browser.newContext();
   try{
-    const other=await separate.newPage();await other.goto('http://127.0.0.1:5173/');
+    const other=await separate.newPage();await other.goto(new URL('/',page.url()).href);
     await other.getByRole('button',{name:'Workbook and backups',exact:true}).click();
     await expect(other.locator('#browser-workbook')).toContainText('Ingredients: 3 records');
     await expect(other.locator('#browser-workbook')).toContainText('No Excel source has been imported');

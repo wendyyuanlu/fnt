@@ -1,11 +1,36 @@
 import { defineConfig } from 'vite';
+import {readFileSync,statSync} from 'node:fs';
+import {resolve} from 'node:path';
+let publicDirectory='';
+let publishedVersion:{modified:number;size:number;id:string}|undefined;
+function publishedId():string{
+  const file=resolve(publicDirectory,'testing-workbook.json'),info=statSync(file);
+  if(publishedVersion?.modified===info.mtimeMs&&publishedVersion.size===info.size)return publishedVersion.id;
+  const archive=JSON.parse(readFileSync(file,'utf8')),snapshot=archive.format==='fnt-packed-v1'?archive.data:archive;
+  if(snapshot?.format!=='fnt-published-testing'||typeof snapshot.id!=='string'||!snapshot.id)throw Error('Invalid published testing workbook.');
+  publishedVersion={modified:info.mtimeMs,size:info.size,id:snapshot.id};
+  return snapshot.id;
+}
 export default defineConfig({
   base: process.env.FNT_BASE_PATH ?? './', server: { host: '127.0.0.1' },
   plugins:[{
     name:'fnt-offline-shell',
+    configResolved(config){publicDirectory=config.publicDir;},
+    configureServer(server){
+      server.middlewares.use((request,response,next)=>{
+        if(request.url?.split('?')[0]!=='/testing-workbook-version.json'){next();return;}
+        try{
+          response.setHeader('Content-Type','application/json');
+          response.setHeader('Cache-Control','no-cache');
+          response.end(JSON.stringify({format:'fnt-published-version',version:1,id:publishedId()}));
+        }catch(error){next(error);}
+      });
+    },
     generateBundle(_options,bundle){
-      const files=['./','./index.html','./icon.svg','./manifest.webmanifest','./testing-workbook.json',...Object.keys(bundle).map(k=>'./'+k)];
-      const version=Object.keys(bundle).sort().join('|');
+      const id=publishedId();
+      this.emitFile({type:'asset',fileName:'testing-workbook-version.json',source:JSON.stringify({format:'fnt-published-version',version:1,id})});
+      const files=[...new Set(['./','./index.html','./icon.svg','./manifest.webmanifest','./testing-workbook.json','./testing-workbook-version.json',...Object.keys(bundle).map(k=>'./'+k)])];
+      const version=Object.keys(bundle).sort().join('|')+'|'+id;
       this.emitFile({type:'asset',fileName:'sw.js',source:`
 const CACHE='fnt-shell-'+${JSON.stringify(version)};
 const FILES=${JSON.stringify(files)};
@@ -25,7 +50,7 @@ self.addEventListener('message',event=>{
 });
 self.addEventListener('fetch',event=>{
   if(event.request.method!=='GET'||new URL(event.request.url).origin!==self.location.origin)return;
-  if(event.request.mode==='navigate'||new URL(event.request.url).pathname===new URL('./testing-workbook.json',self.registration.scope).pathname){
+  if(event.request.mode==='navigate'||['./testing-workbook.json','./testing-workbook-version.json'].some(file=>new URL(event.request.url).pathname===new URL(file,self.registration.scope).pathname)){
     event.respondWith(fetch(event.request).then(async response=>{
       if(!response.ok)throw Error('Website update returned '+response.status);
       const cache=await caches.open(CACHE);await cache.put(event.request,response.clone());return response;

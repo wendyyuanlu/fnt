@@ -318,6 +318,30 @@ test('toolbar icons share size and styling while formatting and colors persist',
   await expect(cell).toHaveCSS('font-style','italic');await expect(cell).toHaveCSS('text-decoration-line','underline line-through');await expect(cell).toHaveCSS('color','rgb(192, 0, 0)');await expect(cell).toHaveCSS('background-color','rgb(255, 242, 204)');
 });
 
+test('typing after keyboard navigation filters assigned DD without replacing data and respects saved Custom mode',async({page})=>{
+  await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();
+  await page.locator('th[data-col="2"] .column-index').click();await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.getByRole('checkbox',{name:'Snack / Country',exact:true}).check();await page.getByRole('button',{name:'Apply dropdown'}).click();
+  const first=page.locator('td[data-r="2"][data-c="2"]'),second=page.locator('td[data-r="3"][data-c="2"]'),search=page.getByRole('searchbox',{name:'Search dropdown options'});
+  const navigate=async(row:number)=>{await page.locator(`td[data-r="${row}"][data-c="1"]`).click();await page.keyboard.press('ArrowRight');};
+  await navigate(2);await page.keyboard.type('Jap');
+  await expect(search).toHaveValue('Jap');await expect(search).toBeFocused();await expect(first).toHaveText('');
+  await page.keyboard.press('Enter');await expect(first).toHaveText('Japan');await expect(first).toHaveClass(/linked/);
+  await navigate(2);await page.keyboard.type('Can');await expect(search).toHaveValue('Can');
+  await page.keyboard.press('Escape');await expect(first).toHaveText('Japan');await expect(first).toHaveClass(/linked/);
+  await navigate(3);await page.keyboard.press('Alt+ArrowDown');await page.getByRole('button',{name:'Custom',exact:true}).click();
+  await page.getByRole('textbox',{name:'Edit selected cell'}).fill('Own place');await page.keyboard.press('Enter');
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.reload();
+  await navigate(4);await page.keyboard.type('=not a formula');
+  await expect(page.locator('.cell-dropdown')).toHaveCount(0);await page.keyboard.press('Enter');
+  await expect(page.locator('td[data-r="4"][data-c="2"]')).toHaveText('=not a formula');
+  await expect(page.locator('td[data-r="4"][data-c="2"]')).not.toHaveClass(/calculated/);
+  await navigate(2);await page.keyboard.type('raw');await expect(page.locator('.cell-dropdown')).toHaveCount(0);
+  await page.keyboard.press('Escape');await expect(first).toHaveText('Japan');await expect(first).toHaveClass(/linked/);
+  await navigate(5);await page.keyboard.press('Alt+ArrowDown');await page.getByRole('tab',{name:'Snack / Country',exact:true}).click();await page.keyboard.press('Escape');
+  await navigate(3);await page.keyboard.type('custom');await expect(page.locator('.cell-dropdown')).toHaveCount(0);
+  await page.keyboard.press('Escape');await expect(second).toHaveText('Own place');
+  await navigate(5);await page.keyboard.type('Can');await expect(search).toHaveValue('Can');await page.keyboard.press('Escape');
+});
 test('assigned dropdown opens directly from the cell, supports keyboard, manual text, and closes DD as a toggle',async({page})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();

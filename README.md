@@ -1,8 +1,8 @@
 # Fnt
 
 A custom, local-first spreadsheet for a personal nutrition workbook. No external
-spreadsheet runtime, analytics, or backend account. Local development starts with
-invented data. The published review build includes the owner-authorized testing
+spreadsheet runtime, analytics, or backend account. Local development and the
+published review build start with the same owner-authorized testing
 workbook, but not the original Excel attachment or private recovery archives.
 
 **Review build, not a certified Excel replacement. Keep the original Excel file
@@ -35,14 +35,16 @@ not import into an unshared user tab. **File** shows that profile's origin,
 Ingredients record count and whether an Excel source is attached; use
 **Import Ingredients into this workbook** in the browser you actually use.
 Save and wait for confirmation before refreshing to pick up a code update.
-Refreshing does not sync edits from another browser profile. Production loads
+Refreshing does not sync edits from another browser profile. Both development and production load
 `testing-workbook.json` into new profiles and upgrades untouched old starters,
 preserving a full recovery checkpoint first. Existing edited, synced or imported
 workbooks are never automatically replaced. **File > Load published testing
 workbook** explicitly loads that snapshot while preserving the previous archive.
-The authorized testing snapshot contains Meals, Ingredients and their required
+The authorized testing snapshot contains Meals, Ingredients, the existing
+**Tests** tabs (Meal TEST DATA, Daily log, Notebook TEST), and their required
 dropdown/conversion dependencies, including the owner's explicitly approved
-meal and ingredient data. It excludes unrelated daily/weight-tracking sheets.
+meal and ingredient data. The Tests Daily log is synthetic; unrelated original
+daily/weight-tracking sheets remain excluded.
 Meals row outlines have been converted to table-constrained summary groups
 where the preceding row is ungrouped; column plain groups retain their kind
 and are constrained to their containing table.
@@ -50,8 +52,22 @@ The authorized testing snapshot is the only published workbook data. Original
 Excel packages, recovery histories, tokens and subsequent browser edits are not
 automatically bundled or published.
 
+Browser tests run their synthetic starter on a separate development server at
+`http://127.0.0.1:5174`, with `VITE_FNT_SYNTHETIC_STARTER=true`. Normal development
+does not enable that test-only setting. Merely visiting demo tables or migrating
+their supporting dropdown records does not prevent an untouched demo upgrade;
+actual user edits, sync configuration and attached originals still do.
+
+The self-contained `dialog-audit.html` preserves Audit 1 and the pre-deletion
+Audit 2 with all 50 dialogs. Current contains 47; the three unused N/A dialogs
+remain viewable only in history.
+
 ## Use
 
+- Date-formatted cells display `M/DD` (for example `9/29` or `10/02`).
+  Dates before the current calendar year display `YY/MM/DD`, such as
+  `25/09/29`. Stored date serials, formulas, text notes and original Excel
+  export format codes are unchanged.
 - Dialogs fit their contents and grow only as needed, up to 1000px or the
   available screen height. Dropdown lists and search results use that room
   before scrolling; short dialogs remain compact.
@@ -265,6 +281,10 @@ automatically bundled or published.
   One nesting level shows one button per axis without redundant level headings.
   **Plain group hints** default on; the eye controls remain available whether
   groups are expanded or collapsed. Toggle them off explicitly to hide them.
+  Table-constrained summaries also show nested tree indentation, chevrons and
+  connector rails inside their own table, including compacted rows/columns.
+  Drop onto an expanded or collapsed table summary to join it and its parent
+  groups; only the table's cells move, with neighboring data unchanged.
   Tree view and hint preferences are stored with each sheet in autosave, manual
   saves, native backups and optional private sync, not as a global setting.
   Plain-range hints sit on the preceding visible row/column; a summary-row
@@ -355,7 +375,10 @@ automatically bundled or published.
   a dropdown assignment, even with a manual value; it reflects assignments, not
   whether the popup is open. Click an assigned cell or its dropdown arrow
   to search and choose options; Alt+Down opens it from the keyboard. Escape
-  dismisses the list. **Manual**, F2 and the expanded editor remain
+  dismisses the list. After keyboard navigation, typing opens and filters the
+  assigned list without replacing the existing value. A cell with a Custom
+  value, or a remembered Custom column default, stays in direct text editing.
+  **Manual**, F2 and the expanded editor remain
   available. Choices retain exact source identities, including duplicate labels
   and distinct blank/space options. Selecting a table-backed option links it
   automatically; there is no separate linking step. Manual text never silently
@@ -480,6 +503,8 @@ automatically bundled or published.
   **Browse values** searches and scrubs dates or values from a chosen column,
   then jumps to the corresponding row. Pinned columns use IDs and can be
   non-first or multi-column selections; pinning changes only the temporary view.
+  Frozen columns retain their natural order and position while visible, then
+  stick to the left or right edge as scrolling takes them out of view.
 
 ## Reference integrity
 
@@ -496,6 +521,9 @@ Updates activate without waiting for every old tab to close; old assets remain
 available until open clients acknowledge the current bundle. A **Save and update**
 notice applies later code updates without silently discarding drafts. Offline
 reload continues to use the cached shell and testing snapshot.
+Returning to an unchanged published workbook checks only a small version file;
+the complete workbook is downloaded and unpacked only for a new snapshot or an
+explicit restore. Saved browser edits skip published-data replacement entirely.
 `scripts/check-dropdown-catalog.mjs` compares the bundled catalog with a read-only
 local XLSX supplied through `FNT_REFERENCE`, in an isolated browser with
 non-local network blocked. It prints only aggregate results.

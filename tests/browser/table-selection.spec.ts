@@ -51,6 +51,67 @@ async function scopedSelection(page:Page,axis:'row'|'column',mobile:boolean){
   await activate(page.locator(axis==='row'?'[data-row-select="10"] .row-index':'th[data-col="1"] .column-index'),mobile);
   await extend(page,axis,axis==='row'?12:3,mobile);
 }
+async function groupFixture(page:Page,axis:'row'|'column',collapsed:boolean){
+  await fixture(page);
+  await page.evaluate(async({axis,collapsed})=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,sheet=state.book.sheets[0],owner=state.book.tables.find(table=>table.id==='scope-middle')!;
+      if(axis==='row'){
+        owner.rows.push(sheet.rows[14].id);
+        for(const field of owner.columns)sheet.cells[`${sheet.rows[14].id}:${field.column}`]={value:'Extra row '+field.name};
+      }else{
+        const field={id:'extra-field',name:'Extra',column:sheet.columns[4].id};owner.columns.push(field);
+        sheet.cells[`${owner.header}:${field.column}`]={value:field.name};
+        for(const row of owner.rows)sheet.cells[`${row}:${field.column}`]={value:'Extra column'};
+      }
+      const members=axis==='row'?owner.rows:owner.columns.map(field=>field.column);
+      sheet.groups.push({id:'scoped-outer',axis,kind:'summary',table:owner.id,members:members.slice(0,3),collapsed:false,label:'Scoped parent'},{id:'scoped-inner',axis,kind:'summary',table:owner.id,members:members.slice(1,3),collapsed,label:'Scoped child'});
+      sheet.outlineView={tree:true};
+      await store.save(state.book,state.version,'Nested table summaries');
+    }finally{store.close();}
+  },{axis,collapsed});
+  await page.reload();await expect(page.locator('.grid')).toBeVisible();
+}
+test('table summary tree toggles local indentation and rails without changing adjacent tables',async({page})=>{
+  await groupFixture(page,'row',false);
+  const nested=page.locator('td[data-r="11"][data-c="1"]'),neighbor=page.locator('td[data-r="11"][data-c="5"]');
+  await expect(nested).toHaveCSS('--summary-text-inset','48px');
+  await expect(nested.locator('.row-outline-rail[data-group-id="scoped-outer"]')).toHaveCount(1);
+  await expect(neighbor.locator('.row-outline-rail,.row-group-controls')).toHaveCount(0);await expect(neighbor).not.toHaveClass(/summary-cell/);
+  const before=await snapshot(page);
+  await page.getByRole('button',{name:'Group controls',exact:true}).click();
+  await page.getByRole('switch',{name:'Tree view',exact:true}).click();
+  await expect(nested).toHaveCSS('--summary-text-inset','24px');await expect(page.locator('.row-outline-rail')).toHaveCount(0);
+  await page.getByRole('switch',{name:'Tree view',exact:true}).click();
+  await expect(nested).toHaveCSS('--summary-text-inset','48px');await page.keyboard.press('Escape');
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.reload();
+  await expect(nested).toHaveCSS('--summary-text-inset','48px');
+  expect((await snapshot(page)).sheets.map(sheet=>sheet.cells)).toEqual(before.sheets.map(sheet=>sheet.cells));
+});
+for(const axis of ['row','column'] as const)for(const collapsed of [false,true])test(`table-constrained ${axis} drops join ${collapsed?'collapsed':'expanded'} summaries and parents without moving neighbors`,async({page,isMobile})=>{
+  await groupFixture(page,axis,collapsed);
+  if(axis==='column'&&!collapsed)await expect(page.locator('td[data-r="9"][data-c="2"] .column-summary-rail')).not.toHaveCount(0);
+  await page.getByRole('button',{name:'Table-constrained header selection',exact:true}).click();await chooseTarget(page,'scope-middle');
+  const source=page.locator(axis==='row'?'td[data-r="14"][data-c="1"]':'td[data-r="9"][data-c="4"]');
+  const display=Number(await source.getAttribute(axis==='row'?'data-display-r':'data-display-c'));
+  await page.locator(axis==='row'?`[data-row-select="${display}"] .row-index`:`th[data-col="${display}"] .column-index`).click();
+  const before=await snapshot(page),owner=before.tables.find(table=>table.id==='scope-middle')!,own=new Set([owner.header,...owner.rows].flatMap(row=>owner.columns.map(field=>`${row}:${field.column}`)));
+  const neighbors=(book:typeof before)=>Object.fromEntries(Object.entries(book.sheets[0].cells).filter(([address])=>!own.has(address)));
+  const handle=page.locator(axis==='row'?`[data-move-row="${display}"]`:`[data-move-column="${display}"]`),target=page.locator('.grid .group-control[data-group-id="scoped-inner"]');
+  if(isMobile){await handle.click();await target.click();}
+  else{
+    const transfer=await page.evaluateHandle(()=>new DataTransfer());await handle.dispatchEvent('dragstart',{dataTransfer:transfer});
+    const rect=(await target.boundingBox())!;await target.dispatchEvent('dragover',{dataTransfer:transfer,clientX:rect.x+rect.width/2,clientY:rect.y+rect.height/2});
+    await expect(target.locator('xpath=ancestor::td')).toHaveAttribute('data-drop-group','scoped-inner');
+    await target.dispatchEvent('drop',{dataTransfer:transfer});
+  }
+  const after=await snapshot(page),inner=after.sheets[0].groups.find(group=>group.id==='scoped-inner')!,outer=after.sheets[0].groups.find(group=>group.id==='scoped-outer')!;
+  expect(inner.members).toHaveLength(3);expect(inner.collapsed).toBe(collapsed);expect(outer.members).toHaveLength(4);
+  expect(neighbors(after)).toEqual(neighbors(before));expect(after.sheets[0].rows).toEqual(before.sheets[0].rows);expect(after.sheets[0].columns).toEqual(before.sheets[0].columns);
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  const undone=await snapshot(page);expect(undone.sheets[0].groups).toEqual(before.sheets[0].groups);expect(undone.sheets[0].cells).toEqual(before.sheets[0].cells);
+});
 test('existing headers constrain selection, resolve shared axes, extend on touch and never add cell-edge targets',async({page,isMobile})=>{
   await fixture(page);const before=await snapshot(page);
   await activate(page.getByRole('button',{name:'Table-constrained header selection'}),isMobile);
@@ -114,7 +175,7 @@ for(const axis of ['row','column'] as const)for(const kind of ['summary','range'
     expect(group.axis).toBe(axis);expect(group.kind).toBe(kind);
     await expect(page.locator(`[data-group-card="${group.id}"]`)).toContainText('Table: Middle');
     await page.getByRole('button',{name:'Close group manager'}).click();
-    await page.locator(`.table-group-controls [data-group-id="${group.id}"]`).click();
+    await page.locator(`.group-control[data-group-id="${group.id}"]`).click();
     const r=axis==='row'?11:10,c=axis==='row'?1:2;
     await expect(page.locator(`td[data-r="${r}"][data-c="${c}"]`)).toHaveCount(0);
     await expect(page.locator(`td[data-r="${r}"][data-c="5"]`)).not.toHaveClass(/scoped-hidden/);

@@ -4,6 +4,24 @@ const cell=(page:Page,r:number,c:number)=>page.locator(`td[data-r="${r}"][data-c
 async function edit(page:Page,r:number,c:number,value:string){
   await cell(page,r,c).click();await page.getByRole('textbox',{name:'Cell value or formula',exact:true}).fill(value);await page.locator('#formula').press('Enter');
 }
+test('date display adapts by year without changing serials, formulas or text notes',async({page})=>{
+  await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
+  const serials=await page.evaluate(async()=>{
+    const storage='/src/storage.ts',dates='/src/dates.ts',{Store}=await import(/* @vite-ignore */storage) as typeof import('../../src/storage'),{excelDate}=await import(/* @vite-ignore */dates) as typeof import('../../src/dates'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0],year=new Date().getFullYear(),values=[excelDate(year,9,29)!,excelDate(year,10,2)!,excelDate(year-1,9,29)!];
+      values.forEach((value,i)=>{s.cells[`${s.rows[i+4].id}:${s.columns[0].id}`]=i===1?{formula:{kind:'literal',value},format:{number:'date'}}:{value,format:{number:'date'}};});
+      s.cells[`${s.rows[7].id}:${s.columns[0].id}`]={value:'Recipe note: 9/29',format:{number:'date'}};
+      s.cells[`${s.rows[8].id}:${s.columns[0].id}`]={value:values[0]};
+      await store.save(state.book,state.version,'Synthetic date display');return{values,year};
+    }finally{store.close();}
+  });
+  await page.reload();await expect(cell(page,4,0)).toHaveText('9/29');await expect(cell(page,5,0)).toHaveText('10/02');
+  await expect(cell(page,6,0)).toHaveText(`${String((serials.year-1)%100).padStart(2,'0')}/09/29`);
+  await expect(cell(page,7,0)).toHaveText('Recipe note: 9/29');await expect(cell(page,8,0)).toHaveText(String(serials.values[0]));
+  await cell(page,4,0).click();await expect(page.locator('#formula')).toHaveValue(String(serials.values[0]));
+  await cell(page,5,0).click();await expect(page.locator('#formula')).toHaveValue('='+serials.values[1]);
+});
 test('table end strokes follow visible identities and the true bottom through virtual scrolling and column moves',async({page})=>{
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
   await page.evaluate(async()=>{
@@ -110,10 +128,10 @@ test('checkpoint restore keeps full recovery and pending IDs, and disconnects th
 test('date formatting agrees with formula serials at the 1900 boundary and persists after reload',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();
   await edit(page,1,1,'=DATE(1900,2,29)');await page.locator('[data-action="format"]').click();await page.locator('#number-format').selectOption('date');await page.getByRole('button',{name:'Apply to selection',exact:true}).click();
-  await expect(cell(page,1,1)).toHaveText('1900-02-29');await expect(page.locator('#save-state')).toContainText('Saved');
-  await page.reload();await expect(cell(page,1,1)).toHaveText('1900-02-29');
-  await edit(page,1,1,'=DATE(1900,3,1)');await expect(cell(page,1,1)).toHaveText('1900-03-01');
-  await edit(page,1,1,'=DATE(1900,1,1)');await expect(cell(page,1,1)).toHaveText('1900-01-01');
+  await expect(cell(page,1,1)).toHaveText('00/02/29');await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.reload();await expect(cell(page,1,1)).toHaveText('00/02/29');
+  await edit(page,1,1,'=DATE(1900,3,1)');await expect(cell(page,1,1)).toHaveText('00/03/01');
+  await edit(page,1,1,'=DATE(1900,1,1)');await expect(cell(page,1,1)).toHaveText('00/01/01');
 });
 test('in-cell and formula-bar typing share one draft, one commit and one undo',async({page})=>{
   await page.goto('/');await cell(page,1,2).click();await page.keyboard.type('120');

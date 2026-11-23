@@ -19,20 +19,42 @@ test('freeform cell shifts and cut moves keep dependent formulas, undo and durab
   await expect(page.locator('#save-state')).toContainText('Saved');await page.reload();await page.getByRole('button',{name:'Notebook',exact:true}).click();
   await expect(cell(page,2,5)).toHaveText('2');await expect(cell(page,0,3)).toHaveText('9');
 });
-test('non-first selected columns stay pinned and value/date browsing navigates without editing data',async({page})=>{
+test('non-first selected columns retain natural positions and stick at the left edge without editing data',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();
   await edit(page,0,2,'2025-06-01');await edit(page,1,2,'2025-06-02');await edit(page,0,3,'Test note');
-  await page.locator('th[data-col="2"]').click();await page.locator('th[data-col="3"]').click({modifiers:['Shift']});
+  await page.locator('th[data-col="2"] .column-index').click();await page.locator('th[data-col="3"] .column-index').click({modifiers:['Shift']});
+  await page.locator('#grid-scroll').evaluate(el=>{el.scrollLeft=el.querySelector<HTMLElement>('th[data-col="2"]')!.offsetLeft-el.querySelector<HTMLElement>('.corner')!.offsetWidth;});
+  const before=await cell(page,0,2).boundingBox(),order=await page.locator('.grid thead [data-col]').evaluateAll(elements=>elements.map(el=>el.getAttribute('data-col')));
   await page.getByRole('button',{name:'Pin selected columns',exact:true}).click();
   await expect(cell(page,0,2)).toHaveCSS('position','sticky');await expect(cell(page,0,3)).toHaveCSS('position','sticky');
-  const before=await cell(page,0,2).boundingBox();await page.locator('#grid-scroll').evaluate(el=>{el.scrollLeft=500;});
-  const after=await cell(page,0,2).boundingBox();expect(Math.abs(after!.x-before!.x)).toBeLessThan(2);
+  expect((await cell(page,0,2).boundingBox())!.x).toBeCloseTo(before!.x,0);
+  expect(await page.locator('.grid thead [data-col]').evaluateAll(elements=>elements.map(el=>el.getAttribute('data-col')))).toEqual(order);
+  await page.locator('#grid-scroll').evaluate(el=>{el.scrollLeft=700;});
+  const after=await cell(page,0,2).boundingBox(),corner=await page.locator('.corner').boundingBox();
+  expect(after!.x).toBeCloseTo(corner!.x+corner!.width,0);
+  expect((await cell(page,0,3).boundingBox())!.x).toBeCloseTo(after!.x+after!.width,0);
   await page.getByRole('button',{name:'Browse values',exact:true}).click();await page.locator('#browse-column').selectOption('2');
   await expect(page.locator('#browse-preview')).toContainText('2025-06-01');
   await page.locator('#browse-position').focus();await page.locator('#browse-position').press('ArrowRight');
   await expect(page.locator('#browse-preview')).toContainText('2025-06-02');await page.getByRole('button',{name:'Go to row',exact:true}).click();
   await expect(page.locator('.address')).toHaveText('C2');await expect(cell(page,1,2)).toHaveText('2025-06-02');
   await page.getByRole('button',{name:'Unpin columns',exact:true}).click();await expect(cell(page,1,2)).toHaveCSS('position','relative');
+});
+test('a visible frozen column moves naturally in view and clamps to the right only when offscreen',async({page})=>{
+  await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();
+  const heading=page.locator('th[data-col="11"]'),target=cell(page,0,11),grid=page.locator('#grid-scroll');
+  await grid.evaluate(el=>{const heading=el.querySelector<HTMLElement>('th[data-col="11"]')!;el.scrollLeft=heading.offsetLeft-el.clientWidth/2;});
+  await heading.locator('.column-index').click();const before=(await target.boundingBox())!;
+  await page.getByRole('button',{name:'Pin selected columns',exact:true}).click();
+  expect((await target.boundingBox())!.x).toBeCloseTo(before.x,0);
+  await grid.evaluate(el=>{el.scrollLeft+=20;});
+  expect((await target.boundingBox())!.x).toBeCloseTo(before.x-20,0);
+  await grid.evaluate(el=>{el.scrollLeft=0;});
+  const right=await grid.evaluate(el=>el.getBoundingClientRect().left+el.clientLeft+el.clientWidth),clamped=(await target.boundingBox())!;
+  expect(clamped.x+clamped.width).toBeCloseTo(right,0);
+  expect((await heading.boundingBox())!.x).toBeCloseTo(clamped.x,0);
+  await page.getByRole('button',{name:'Unpin columns',exact:true}).click();
+  expect((await target.boundingBox())!.x).toBeGreaterThan(right);
 });
 test('mobile touch range mode selects cells by dragging without changing their contents',async({page,isMobile,context})=>{
   test.skip(!isMobile,'Desktop range selection is covered by Shift-selection.');

@@ -1,6 +1,26 @@
 import { describe,expect,it } from 'vitest';
 import { compile,Engine } from '../src/formula';
 import { createDemo } from '../src/model';
+import { displayExcelDate,excelDate,excelDateText } from '../src/dates';
+
+describe('year-aware date display',()=>{
+  it('uses an unpadded month and two-digit day except for earlier years',()=>{
+    expect(displayExcelDate(excelDate(2026,9,29)!,2026)).toBe('9/29');
+    expect(displayExcelDate(excelDate(2026,10,2)!,2026)).toBe('10/02');
+    expect(displayExcelDate(excelDate(2025,9,29)!,2026)).toBe('25/09/29');
+    expect(displayExcelDate(excelDate(2000,1,2)!,2026)).toBe('00/01/02');
+    expect(displayExcelDate(excelDate(2027,1,2)!,2026)).toBe('1/02');
+  });
+  it('changes the display at a year boundary without changing the stored serial or ISO date',()=>{
+    const serial=excelDate(2026,12,31)!;
+    expect(displayExcelDate(serial,2026)).toBe('12/31');
+    expect(displayExcelDate(serial,2027)).toBe('26/12/31');
+    expect(excelDateText(serial)).toBe('2026-12-31');
+  });
+  it('retains explicit invalid-date handling',()=>{
+    for(const value of [-1,Infinity,NaN,2958466])expect(displayExcelDate(value,2026)).toBeUndefined();
+  });
+});
 
 describe('Excel date boundaries without cached values',()=>{
   const cases:[string,number|string][]=[
