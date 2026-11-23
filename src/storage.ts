@@ -1,6 +1,7 @@
 import { clone, uid, type Workbook } from './model';
 import { compressArchive, decompressArchive, stringifyArchive } from './archive';
 import {validateHypotheticalStyle} from './hypothetical';
+import type {UndoHistory} from './undo-history';
 
 export interface Pending { id: string; label: string; time: string }
 export interface SyncConfig { owner: string; repo: string; branch: string; path: string }
@@ -36,6 +37,9 @@ export function validateBook(value: unknown): asserts value is Workbook {
   if (!value || typeof value !== 'object') throw Error('Not a workbook.');
   const b = value as Partial<Workbook>;
   if (b.schema !== 1 || typeof b.id !== 'string' || typeof b.title !== 'string' || !Number.isInteger(b.revision) || !Array.isArray(b.sheets) || !b.sheets.length || !Array.isArray(b.tables) || !Array.isArray(b.names) || !b.pickerSources) throw Error('Invalid or unsupported workbook format.');
+  if(b.dropdownData!==undefined&&(!b.dropdownData||typeof b.dropdownData!=='object'||!Array.isArray(b.dropdownData.sheets)||!Array.isArray(b.dropdownData.tables)))throw Error('Invalid DD storage.');
+  const sheets=[...b.sheets,...b.dropdownData?.sheets??[]],tables=[...b.tables,...b.dropdownData?.tables??[]];
+  if(b.dropdownData?.tables.some(table=>!b.dropdownData!.sheets.some(sheet=>sheet.id===table.sheet))||b.tables.some(table=>!b.sheets!.some(sheet=>sheet.id===table.sheet)))throw Error('A table is stored outside its owning sheet collection.');
   if(b.hypotheticalStyle!==undefined)validateHypotheticalStyle(b.hypotheticalStyle);
   for(const field of ['toolbarOrder','toolbarDividers'] as const){
     const ids=b[field];
@@ -65,8 +69,12 @@ export function validateBook(value: unknown): asserts value is Workbook {
     }
   };
   const safeId=(v:unknown)=>typeof v==='string'&&/^[a-zA-Z0-9_.-]{1,128}$/.test(v);
+  if(b.sheetTabGroups!==undefined&&(!b.sheetTabGroups||typeof b.sheetTabGroups!=='object'||Array.isArray(b.sheetTabGroups)||Object.entries(b.sheetTabGroups).some(([id,group])=>!safeId(id)||typeof group!=='string'||!group.trim()||group.length>120)))throw Error('Invalid visual sheet groups.');
+  if(b.sheetTabCollapsed!==undefined&&(!Array.isArray(b.sheetTabCollapsed)||b.sheetTabCollapsed.some(group=>typeof group!=='string'||!group.trim()||group.length>120)||new Set(b.sheetTabCollapsed).size!==b.sheetTabCollapsed.length))throw Error('Invalid collapsed sheet groups.');
+  if(b.tableManagerSort!==undefined&&!['activity','frequent','az','za'].includes(b.tableManagerSort))throw Error('Invalid table manager sort.');
+  if(b.tableActivity!==undefined&&(!b.tableActivity||typeof b.tableActivity!=='object'||Array.isArray(b.tableActivity)||Object.entries(b.tableActivity).some(([id,activity])=>!safeId(id)||!activity||typeof activity!=='object'||Array.isArray(activity)||activity.editedAt!==undefined&&(!Number.isSafeInteger(activity.editedAt)||activity.editedAt<0)||activity.visits!==undefined&&(!Number.isSafeInteger(activity.visits)||activity.visits<0))))throw Error('Invalid table activity.');
   const id = (v: unknown) => { if (!safeId(v) || ids.has(v as string)) throw Error('Missing, invalid or duplicate identity in workbook.'); ids.add(v as string); };
-  for (const s of b.sheets) {
+  for (const s of sheets) {
     id(s.id);
     if (typeof s.name !== 'string' || !Array.isArray(s.rows) || !s.rows.length || s.rows.length>100000 || !Array.isArray(s.columns) || !s.columns.length || s.columns.length>512 || !s.cells || !Array.isArray(s.groups) || !Array.isArray(s.validations)) throw Error('Invalid or oversized sheet.');
     if(s.outlineView!==undefined&&(!s.outlineView||typeof s.outlineView!=='object'||Array.isArray(s.outlineView)||Object.entries(s.outlineView).some(([k,v])=>!['tree','plainGroupHints'].includes(k)||typeof v!=='boolean')))throw Error('Invalid sheet outline preferences.');
@@ -90,9 +98,9 @@ export function validateBook(value: unknown): asserts value is Workbook {
       if(typeof c.value==='number'&&!Number.isFinite(c.value))throw Error('Invalid numeric cell value.');
     }
   }
-  for (const t of b.tables) {
+  for (const t of tables) {
     id(t.id);if(typeof t.name!=='string'||!Array.isArray(t.columns)||!Array.isArray(t.rows))throw Error('Invalid table.');
-    const s=b.sheets.find(s=>s.id===t.sheet);if(!s||!s.rows.some(r=>r.id===t.header))throw Error('Missing table header.');
+    const s=sheets.find(s=>s.id===t.sheet);if(!s||!s.rows.some(r=>r.id===t.header))throw Error('Missing table header.');
     const rows=new Set(s.rows.map(r=>r.id)),cols=new Set(s.columns.map(c=>c.id));
     if(t.rows.some(r=>!rows.has(r)))throw Error('Missing table record.');
     t.columns.forEach(c=>{id(c.id);if(!cols.has(c.column)||typeof c.name!=='string')throw Error('Missing table column.');});
@@ -130,7 +138,13 @@ export class Store {
   async originalCount():Promise<number>{
     return request(this.db.transaction('originals').objectStore('originals').count());
   }
-  async save(book: Workbook, expected: number, label: string, checkpoint = false, original?: {id:string;name:string;data:string}, options?:{localOnly?:boolean;recoveryArchive?:string;publishedSnapshot?:string}): Promise<LocalState> {
+  async undoHistory(version:number,book:string):Promise<UndoHistory|undefined>{
+    const saved=await request(this.db.transaction('state').objectStore('state').get('undo')) as {version:number;book:string;history:UndoHistory}|undefined;
+    if(!saved||saved.version!==version||saved.book!==book)return;
+    if(!saved.history||!Array.isArray(saved.history.undo)||!Array.isArray(saved.history.redo))throw Error('Saved undo history is damaged. Export a backup before continuing.');
+    return saved.history;
+  }
+  async save(book: Workbook, expected: number, label: string, checkpoint = false, original?: {id:string;name:string;data:string}, options?:{localOnly?:boolean;recoveryArchive?:string;publishedSnapshot?:string;undoHistory?:UndoHistory}): Promise<LocalState> {
     const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx);
     const store = tx.objectStore('state');
     let result: LocalState | undefined, conflict = false, failure:unknown;
@@ -146,6 +160,7 @@ export class Store {
       if (checkpoint && previous) tx.objectStore('history').put({id:uid(),label:`Before ${label}`,time:new Date().toISOString(),book:previous.book,...(options?.recoveryArchive?{backup:options.recoveryArchive}:{})} satisfies Checkpoint);
       if (original) tx.objectStore('originals').put(original);
       store.put(result,'current');
+      if(options?.undoHistory)store.put({version:result.version,book:result.book.id,history:clone(options.undoHistory)},'undo');else store.delete('undo');
       }catch(e){failure=e;tx.abort();}
     };
     try { await done; } catch (e) { if (conflict) throw Error('Another tab changed this workbook. Your edits are still in memory. Download a backup before reloading.'); throw failure??e; }
@@ -159,6 +174,12 @@ export class Store {
       const state = r.result as LocalState;
       if (state.version !== expected) { conflict = true; tx.abort(); return; }
       result = { ...change(state), version:expected+1 }; store.put(result,'current');
+      const history=store.get('undo');
+      history.onsuccess=()=>{
+        const saved=history.result as {version:number;book:string;history:UndoHistory}|undefined;
+        if(saved?.version===expected&&JSON.stringify(state.book)===JSON.stringify(result.book))store.put({...saved,version:result.version},'undo');
+        else store.delete('undo');
+      };
     };
     try { await done; } catch (e) { if (conflict) throw Error('Workbook changed during this operation. Retry after saving.'); throw e; }
     return result!;
@@ -191,6 +212,7 @@ export class Store {
         pending:[...new Map([...previous.pending,...backup.state.pending].map(p=>[p.id,p])).values(), {id:uid(),label:'Restore backup',time:new Date().toISOString()}] };
       delete result.sync;delete result.remoteSha;
       store.put(result,'current');
+      store.delete('undo');
       }catch(e){failure=e;tx.abort();}
     };
     try { await done; } catch (e) { if (conflict) throw Error('Another tab changed the workbook. Restore cancelled.'); throw failure??e; }

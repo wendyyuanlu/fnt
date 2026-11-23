@@ -1,4 +1,5 @@
 type Token={kind:'literal';value:string}|{kind:'any'|'star'};
+type MatchRange={start:number;end:number};
 export interface TextSearchOptions {matchCase:boolean;entire:boolean}
 
 export function createTextSearch(query:string,options:TextSearchOptions){
@@ -9,13 +10,17 @@ export function createTextSearch(query:string,options:TextSearchOptions){
     else if(value==='*'){if(tokens.at(-1)?.kind!=='star')tokens.push({kind:'star'});}
     else tokens.push(value==='?'?{kind:'any'}:{kind:'literal',value});
   }
-  if(!tokens.length)return {matches:()=>false,replace:(text:string)=>text};
+  if(!tokens.length)return {matches:()=>false,ranges:():MatchRange[]=>[],replace:(text:string)=>text};
   const fold=(value:string)=>options.matchCase?value:value.toLowerCase();
   if(!tokens.some(token=>token.kind==='star')){
     const pattern=tokens.map(token=>token.kind==='literal'?token.value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'):'.').join('');
     const regex=new RegExp(options.entire?`^(?:${pattern})$`:pattern,options.matchCase?'su':'isu');
     const matches=(text:string)=>{const match=regex.exec(text);return!!match&&(!options.entire||match[0].length===text.length);};
-    return {matches,replace:(text:string,value:string)=>matches(text)?text.replace(new RegExp(regex.source,regex.flags+'g'),()=>value):text};
+    return {
+      matches,
+      ranges:(text:string):MatchRange[]=>matches(text)?Array.from(text.matchAll(new RegExp(regex.source,regex.flags+'g')),match=>({start:match.index,end:match.index+match[0].length})):[],
+      replace:(text:string,value:string)=>matches(text)?text.replace(new RegExp(regex.source,regex.flags+'g'),()=>value):text
+    };
   }
   const literals=tokens.map(token=>token.kind==='literal'?fold(token.value):'');
   // Track earliest starts per prefix instead of backtracking through wildcard spans.
@@ -42,6 +47,7 @@ export function createTextSearch(query:string,options:TextSearchOptions){
   };
   return {
     matches:(text:string)=>!!span(text),
+    ranges:(text:string):MatchRange[]=>{const match=span(text);return match?[match]:[];},
     replace:(text:string,value:string)=>{const match=span(text);return match?text.slice(0,match.start)+value+text.slice(match.end):text;}
   };
 }

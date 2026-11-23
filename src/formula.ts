@@ -1,4 +1,4 @@
-import { columnIndex, fault, getCell, isFault, key, letters, tableAt, type Fault, type Scalar, type Value, type Workbook } from './model';
+import { allSheets,allTables, columnIndex, fault, getCell, isFault, key, letters, tableAt, type Fault, type Scalar, type Value, type Workbook } from './model';
 import { excelDate,excelDateParts } from './dates';
 
 export type Ast =
@@ -67,12 +67,12 @@ export function compile(source: string, book: Workbook, sheetId: string, rowId: 
   const ref = (text: string, sid: string, explicit=false): Ast => {
     const m = text.match(/^(\$?)([A-Za-z]+)(\$?)(\d+)$/);
     if (!m) return { kind: 'error', value: fault('#REF!', 'Invalid cell address.') };
-    const sheet = book.sheets.find(s => s.id === sid);
+    const sheet = allSheets(book).find(s => s.id === sid);
     return { kind: 'ref', sheet: sid, row: sheet?.rows[Number(m[4]) - 1]?.id ?? 'deleted',
       column: sheet?.columns[columnIndex(m[2])]?.id ?? 'deleted', absRow: !!m[3], absCol: !!m[1], explicit };
   };
   const structured = (text: string, tableName?: string): Ast => {
-    const table = tableName ? book.tables.find(t => t.name.toLowerCase() === tableName.toLowerCase()) : tableAt(book, sheetId, rowId, colId);
+    const table = tableName ? allTables(book).find(t => t.name.toLowerCase() === tableName.toLowerCase()) : tableAt(book, sheetId, rowId, colId);
     if (!table) return { kind: 'error', value: fault('#REF!', `Unknown table ${tableName ?? '(this row)'}`) };
     const stack:{text:string;child:boolean}[]=[],leaves:string[]=[];
     for(let i=0;i<text.length;i++){
@@ -106,7 +106,7 @@ export function compile(source: string, book: Workbook, sheetId: string, rowId: 
     if (token.type === 'bracket') return structured(token.text);
     if (token.text.startsWith('#')) return { kind: 'error', value: fault(token.text) };
     if (take('!')) {
-      const sid = book.sheets.find(s => s.name.toLowerCase() === token.text.toLowerCase())?.id ?? 'deleted';
+      const sid = allSheets(book).find(s => s.name.toLowerCase() === token.text.toLowerCase())?.id ?? 'deleted';
       const address = tokens[pos++];
       if (!address) throw Error('Missing sheet address.');
       return ref(address.text, sid, true);
@@ -145,7 +145,7 @@ export function compile(source: string, book: Workbook, sheetId: string, rowId: 
       let right = expression(p + (op === '^' ? 0 : 1));
       if (op === ':') {
         if (left.kind === 'ref' && right.kind === 'ref' && left.explicit && !right.explicit) {
-          const rightRef=right,sourceSheet=book.sheets.find(s=>s.id===rightRef.sheet),targetSheet=book.sheets.find(s=>s.id===(left as Extract<Ast,{kind:'ref'}>).sheet);
+          const rightRef=right,sourceSheet=allSheets(book).find(s=>s.id===rightRef.sheet),targetSheet=allSheets(book).find(s=>s.id===(left as Extract<Ast,{kind:'ref'}>).sheet);
           const r=sourceSheet?.rows.findIndex(r=>r.id===rightRef.row)??-1,c=sourceSheet?.columns.findIndex(c=>c.id===rightRef.column)??-1;
           right={...rightRef,sheet:left.sheet,row:targetSheet?.rows[r]?.id??'deleted',column:targetSheet?.columns[c]?.id??'deleted',explicit:true};
         }
@@ -167,13 +167,13 @@ export function displayFormula(ast: Ast, book: Workbook): string {
       case 'literal': return typeof n.value === 'string' ? `"${n.value.replace(/"/g, '""')}"` : n.value === null ? '' : typeof n.value === 'boolean' ? String(n.value).toUpperCase() : String(n.value);
       case 'error': return n.value.error;
       case 'ref': {
-        const s = book.sheets.find(s => s.id === n.sheet);
+        const s = allSheets(book).find(s => s.id === n.sheet);
         const r = s?.rows.findIndex(r => r.id === n.row) ?? -1, c = s?.columns.findIndex(c => c.id === n.column) ?? -1;
         if (!s || r < 0 || c < 0) return '#REF!';
         return `${n.explicit?`'${s.name.replace(/'/g, "''")}'!`:''}${n.absCol ? '$' : ''}${letters(c)}${n.absRow ? '$' : ''}${r + 1}`;
       }
       case 'structured': {
-        const t = book.tables.find(t => t.id === n.table);
+        const t = allTables(book).find(t => t.id === n.table);
         if (!t) return '#REF!';
         const cols = n.columns.map(id => t.columns.find(c => c.id === id)?.name?.replace(/['[\]#@]/g,c=>"'"+c));
         if (cols.some(x => x === undefined)) return '#REF!';
@@ -256,10 +256,10 @@ export class Engine {
   private spillAnchors=new Map<string,{row:string;column:string;r:number;c:number}[]>();
   beginPass():void {this.remaining=500_000;}
   constructor(public book: Workbook) {
-    this.sheets=new Map(book.sheets.map(s=>[s.id,s]));
-    this.rowSets=new Map(book.sheets.map(s=>[s.id,new Set(s.rows.map(r=>r.id))]));
-    this.colSets=new Map(book.sheets.map(s=>[s.id,new Set(s.columns.map(c=>c.id))]));
-    for(const s of book.sheets){
+    this.sheets=new Map(allSheets(book).map(s=>[s.id,s]));
+    this.rowSets=new Map(allSheets(book).map(s=>[s.id,new Set(s.rows.map(r=>r.id))]));
+    this.colSets=new Map(allSheets(book).map(s=>[s.id,new Set(s.columns.map(c=>c.id))]));
+    for(const s of allSheets(book)){
       const rows=new Map(s.rows.map((r,i)=>[r.id,i])),cols=new Map(s.columns.map((c,i)=>[c.id,i]));
       this.spillAnchors.set(s.id,Object.entries(s.cells).filter(([,cell])=>cell.formula&&(cell.spillHint??(!book.importReport&&maySpill(cell.formula)))).map(([k])=>{
         const [row,column]=k.split(':');return{row,column,r:rows.get(row)!,c:cols.get(column)!};
@@ -303,7 +303,7 @@ export class Engine {
     let result: Value;
     try {
       if (cell.binding) {
-        const t = this.book.tables.find(t => t.id === cell.binding!.table);
+        const t = allTables(this.book).find(t => t.id === cell.binding!.table);
         const c = t?.columns.find(c => c.id === cell.binding!.column);
         result = t && c && t.rows.includes(cell.binding.row) ? this.cell(t.sheet, cell.binding.row, c.column) : fault('#REF!', 'Linked record was deleted.');
       } else result = cell.formula ? this.evaluate(cell.formula, sheetId, row, col) : cell.value ?? null;
@@ -346,7 +346,7 @@ export class Engine {
         try { return this.evaluate(n.formula, n.context, row, col, env); } finally { this.visiting.delete(visit); }
       }
       case 'structured': {
-        const t = this.book.tables.find(t => t.id === ast.table);
+        const t = allTables(this.book).find(t => t.id === ast.table);
         if (!t) return fault('#REF!', 'Table was deleted.');
         const columns = ast.columns.map(id => t.columns.find(c => c.id === id));
         if (columns.some(c => !c)) return fault('#REF!', 'Column was deleted.');
@@ -415,7 +415,7 @@ export class Engine {
       return{sheet:s.id,rows:s.rows.slice(Math.min(r1,r2),Math.max(r1,r2)+1).map(r=>r.id),columns:s.columns.slice(Math.min(c1,c2),Math.max(c1,c2)+1).map(c=>c.id)};
     }
     if(ast.kind==='structured'){
-      const t=this.book.tables.find(t=>t.id===ast.table);if(!t)return;
+      const t=allTables(this.book).find(t=>t.id===ast.table);if(!t)return;
       const cols=ast.columns.map(id=>t.columns.find(c=>c.id===id)?.column);if(cols.some(c=>!c))return;
       return{sheet:t.sheet,rows:ast.mode==='row'?[row]:ast.mode==='headers'?[t.header]:ast.mode==='all'?[t.header,...t.rows]:t.rows,columns:cols as string[]};
     }
@@ -510,7 +510,7 @@ export class Engine {
     }
     if (name === 'ROW') {
       const ref = args[0];
-      if (!ref) return this.book.sheets.find(s => s.id === sheet)!.rows.findIndex(r => r.id === row)+1;
+      if (!ref) return allSheets(this.book).find(s => s.id === sheet)!.rows.findIndex(r => r.id === row)+1;
       const resolved=this.reference(ref,sheet,row,col,env);
       if(resolved){
         const s=this.sheets.get(resolved.sheet);if(!s)return fault('#REF!');
@@ -518,13 +518,13 @@ export class Engine {
         if(positions.some(p=>p===0))return fault('#REF!');
         return positions.length===1?positions[0]:positions.map(p=>[p]);
       }
-      if (ref.kind === 'ref') return this.book.sheets.find(s => s.id === ref.sheet)?.rows.findIndex(r => r.id === ref.row)!+1 || fault('#REF!');
+      if (ref.kind === 'ref') return allSheets(this.book).find(s => s.id === ref.sheet)?.rows.findIndex(r => r.id === ref.row)!+1 || fault('#REF!');
       if (ref.kind === 'structured') {
-        const t = this.book.tables.find(t => t.id === ref.table), s = this.book.sheets.find(s => s.id === t?.sheet);
+        const t = allTables(this.book).find(t => t.id === ref.table), s = allSheets(this.book).find(s => s.id === t?.sheet);
         return t && s ? (ref.mode === 'row' ? [row] : t.rows).map(r => [s.rows.findIndex(x => x.id === r)+1]) : fault('#REF!');
       }
       if (ref.kind === 'range' && ref.start.kind === 'ref' && ref.end.kind === 'ref') {
-        const s = this.book.sheets.find(s => s.id === (ref.start as Extract<Ast,{kind:'ref'}>).sheet);
+        const s = allSheets(this.book).find(s => s.id === (ref.start as Extract<Ast,{kind:'ref'}>).sheet);
         const a = s?.rows.findIndex(r => r.id === (ref.start as Extract<Ast,{kind:'ref'}>).row) ?? -1;
         const b = s?.rows.findIndex(r => r.id === (ref.end as Extract<Ast,{kind:'ref'}>).row) ?? -1;
         return a < 0 || b < 0 ? fault('#REF!') : Array.from({length:Math.abs(b-a)+1},(_,i) => [Math.min(a,b)+i+1]);

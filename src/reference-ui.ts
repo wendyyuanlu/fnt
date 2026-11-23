@@ -1,5 +1,5 @@
 import { createReference,duplicateReference,normalizeReferenceGroup,referenceCaption,referenceLabel,referenceNavigation,referenceUsages,setDerivedSource,setReferencePresentation,type ReferenceNavigation } from './references';
-import { clone,uniqueName,type ReferenceSource,type Workbook } from './model';
+import { allTables, clone,uniqueName,type ReferenceSource,type Workbook } from './model';
 import { dropdownManualActionHtml,dropdownOptionsKey,mountDropdownOptions } from './dropdown-ui';
 
 export interface ReferenceHost{
@@ -8,7 +8,7 @@ export interface ReferenceHost{
   askText:(title:string,value:string,fn:(value:string)=>void)=>void;
   importSource:(file?:File)=>Promise<void>;open:(id:string,selection?:string[])=>void;bind:(source:ReferenceSource,selection?:ReferenceSource[])=>void;
 }
-function mountGroupPicker(host:ReferenceHost,d:HTMLDialogElement):void{
+export function mountGroupPicker(host:ReferenceHost,d:HTMLDialogElement,visualGroups?:string[]):void{
   const input=d.querySelector<HTMLInputElement>('#reference-group')!;
   input.removeAttribute('list');input.hidden=true;d.querySelector('#reference-groups')?.remove();
   const trigger=document.createElement('button');trigger.type='button';trigger.className='reference-group-picker';trigger.setAttribute('role','combobox');trigger.setAttribute('aria-label','Group');trigger.setAttribute('aria-haspopup','listbox');trigger.setAttribute('aria-expanded','false');
@@ -31,16 +31,17 @@ function mountGroupPicker(host:ReferenceHost,d:HTMLDialogElement):void{
     };
     const choices=[{value:'',label:'Standalone'}];
     const collect=(nodes:ReferenceNavigation[])=>{for(const node of nodes)if(node.group){choices.push({value:node.group,label:node.group});collect(node.children);}};
-    collect(referenceNavigation(host.book()));
+    if(visualGroups)for(const group of visualGroups)choices.push({value:group,label:group});else collect(referenceNavigation(host.book()));
     const panel=popup.querySelector<HTMLElement>('.dropdown-panel')!,{search,list}=mountDropdownOptions(panel,{choices,value:choice=>choice.label,selected:choice=>choice.value===input.value,name:'Group',searchLabel:'Search groups',position,
       choose:choice=>{input.value=choice.value;input.dispatchEvent(new Event('input',{bubbles:true}));display();close();trigger.focus({preventScroll:true});}});
     const custom=popup.querySelector<HTMLButtonElement>('.dropdown-manual-action')!;custom.setAttribute('aria-label','Custom');custom.querySelector('span')!.textContent='Custom';
     custom.onclick=()=>{close();manualStart=input.value;manualChanged=input.dataset.changed;manualEmpty=input.dataset.emptyLabel;trigger.hidden=true;input.hidden=false;input.focus();input.select();};
     const add=document.createElement('button'),creator=document.createElement('div'),newName=document.createElement('input'),create=document.createElement('button'),problem=document.createElement('div');
-    add.type='button';add.className='reference-create-category';add.textContent='+ New category';add.setAttribute('aria-label','New category');
+    add.type='button';add.className='reference-create-category';add.textContent=visualGroups?'+ New group':'+ New category';add.setAttribute('aria-label',visualGroups?'New group':'New category');
     creator.className='reference-category-create';creator.hidden=true;newName.setAttribute('aria-label','New category path');newName.placeholder='Category / Subcategory / Third level';create.type='button';create.textContent='Create category';problem.className='error';problem.setAttribute('role','alert');problem.hidden=true;creator.append(newName,create,problem);popup.append(add,creator);
     add.onclick=()=>{creator.hidden=false;add.hidden=true;newName.value=search.value||(input.value&&input.value.split(' / ').length<3?input.value+' / ':'');newName.focus({preventScroll:true});position();};
-    create.onclick=()=>{try{const group=normalizeReferenceGroup(newName.value);if(!group)throw Error('Enter a category name.');if(choices.some(choice=>choice.value.toLowerCase()===group.toLowerCase()))throw Error('That category already exists. Choose it from the list.');input.value=group;input.dispatchEvent(new Event('input',{bubbles:true}));display();close();trigger.focus({preventScroll:true});}catch(e){problem.textContent=e instanceof Error?e.message:String(e);problem.hidden=false;position();}};
+    if(visualGroups){newName.placeholder='Visual group name';newName.setAttribute('aria-label','New visual group');create.textContent='Create group';}
+    create.onclick=()=>{try{const group=visualGroups?newName.value.trim():normalizeReferenceGroup(newName.value);if(!group)throw Error('Enter a group name.');if(group.length>120)throw Error('Use at most 120 characters.');if(choices.some(choice=>choice.value.toLowerCase()===group.toLowerCase()))throw Error('That group already exists. Choose it from the list.');input.value=group;input.dispatchEvent(new Event('input',{bubbles:true}));display();close();trigger.focus({preventScroll:true});}catch(e){problem.textContent=e instanceof Error?e.message:String(e);problem.hidden=false;position();}};
     newName.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();e.stopPropagation();create.click();}if(e.key==='Escape'){e.preventDefault();e.stopPropagation();creator.hidden=true;add.hidden=false;search.focus({preventScroll:true});position();}};
     popup.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();close();trigger.focus({preventScroll:true});}else if(e.key==='Tab'&&!creator.contains(e.target as Node))close();else dropdownOptionsKey(e,search,list);e.stopPropagation();};
     d.append(popup);trigger.setAttribute('aria-expanded','true');position();
@@ -107,9 +108,9 @@ export function groupReference(host:ReferenceHost,source:ReferenceSource):void{
 }
 export function editConnection(host:ReferenceHost,source:ReferenceSource):void{
   const b=host.book(),esc=host.esc;
-  host.dialog('Live dropdown connection',`<form id="derived-form"><label>Table<select id="derived-table" required><option value="">Choose original source</option>${b.tables.map(t=>`<option value="${t.id}" ${source.derived?.table===t.id?'selected':''}>${esc(t.name)}</option>`).join('')}</select></label><label>Options field<select id="derived-column" required></select></label><label>Filter field<select id="derived-filter"></select></label><label>Equals<input id="derived-equals" value="${esc(source.derived?.filter?.value??'TRUE')}"></label><button class="primary">Save connection</button></form>`,d=>{
+  host.dialog('Live dropdown connection',`<form id="derived-form"><label>Table<select id="derived-table" required><option value="">Choose original source</option>${allTables(b).map(t=>`<option value="${t.id}" ${source.derived?.table===t.id?'selected':''}>${esc(t.name)}</option>`).join('')}</select></label><label>Options field<select id="derived-column" required></select></label><label>Filter field<select id="derived-filter"></select></label><label>Equals<input id="derived-equals" value="${esc(source.derived?.filter?.value??'TRUE')}"></label><button class="primary">Save connection</button></form>`,d=>{
     const table=d.querySelector<HTMLSelectElement>('#derived-table')!,field=d.querySelector<HTMLSelectElement>('#derived-column')!,filter=d.querySelector<HTMLSelectElement>('#derived-filter')!;
-    const fields=()=>{const t=b.tables.find(t=>t.id===table.value);field.innerHTML=(t?.columns??[]).map(c=>`<option value="${c.id}" ${c.id===source.derived?.column?'selected':''}>${esc(c.name)}</option>`).join('');filter.innerHTML='<option value="">No filter</option>'+(t?.columns??[]).map(c=>`<option value="${c.id}" ${c.id===source.derived?.filter?.column?'selected':''}>${esc(c.name)}</option>`).join('');};table.onchange=fields;fields();
+    const fields=()=>{const t=allTables(b).find(t=>t.id===table.value);field.innerHTML=(t?.columns??[]).map(c=>`<option value="${c.id}" ${c.id===source.derived?.column?'selected':''}>${esc(c.name)}</option>`).join('');filter.innerHTML='<option value="">No filter</option>'+(t?.columns??[]).map(c=>`<option value="${c.id}" ${c.id===source.derived?.filter?.column?'selected':''}>${esc(c.name)}</option>`).join('');};table.onchange=fields;fields();
     d.querySelector('form')!.onsubmit=e=>{e.preventDefault();const raw=d.querySelector<HTMLInputElement>('#derived-equals')!.value,value=raw==='TRUE'?true:raw==='FALSE'?false:raw.trim()&&Number.isFinite(Number(raw))?Number(raw):raw;if(host.mutate('Connect derived list',()=>setDerivedSource(b,source,table.value,field.value,filter.value||undefined,value))){d.close();host.open(source.id);}};
   });
 }

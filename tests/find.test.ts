@@ -26,3 +26,12 @@ it('handles many wildcard spans without exponential regex backtracking',()=>{
   expect(search.matches(text)).toBe(false);
   expect(search.matches(text+'b')).toBe(true);
 });
+it('returns matching character ranges using the same case, wildcard and Unicode rules',()=>{
+  expect(createTextSearch('cat',options).ranges('cat CAT cat')).toEqual([{start:0,end:3},{start:4,end:7},{start:8,end:11}]);
+  expect(createTextSearch('cat',{...options,matchCase:true}).ranges('CAT cat')).toEqual([{start:4,end:7}]);
+  expect(createTextSearch('a?',options).ranges('😀A😺!')).toEqual([{start:2,end:5}]);
+  expect(createTextSearch('a*e',options).ranges('--AxxE--')).toEqual([{start:2,end:6}]);
+  expect(createTextSearch('~*',options).ranges('a*b')).toEqual([{start:1,end:2}]);
+  expect(createTextSearch('cat',{...options,entire:true}).ranges('cat\n')).toEqual([]);
+  expect(createTextSearch('',options).ranges('cat')).toEqual([]);
+});

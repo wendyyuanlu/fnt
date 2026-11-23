@@ -6,6 +6,22 @@ Use 14px by 14px glyphs for row/column header icons and 18px by 18px glyphs for 
 
 Reuse shared header and toolbar styles rather than adding per-icon size, stroke, or color overrides. Button hit areas can differ for their layout or touch target independently of the glyph size.
 
+Every toolbar button, including new group controls, must reuse `.icon-button` styling.
+
+# Dialogs
+
+All dialogs, including the nonmodal group manager, reuse `.dialog-surface` and the
+shared tokens in `src/dialog.css`. Do not add independent shell padding, corner
+radii, heading typography or widths to feature-specific dialog selectors.
+The default width is 600px; `.popover` is the 336px variant and uses an H2 title.
+Other dialog titles use the shared H1 styling based on Find and replace.
+H2 styling follows Dropdown settings. The manual-tag overwrite comparison is
+the explicit 1950px width exception. Preserve responsive 10px viewport gutters.
+
+The workbook grid and Find previews share `.spreadsheet-grid` cell presentation.
+Keep cell strokes, spacing and typography in that shared CSS rather than copying
+them into the result preview.
+
 # Scrollbars
 
 Reuse the shared slim-scrollbar rules in `src/style.css` for scrollable surfaces. Preserve explicit scrollbar-free cases, including both `scrollbar-width: none` and hidden WebKit scrollbars for in-cell editors and cell displays.

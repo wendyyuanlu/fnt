@@ -1,5 +1,6 @@
 import { compare,compile,displayFormula,Engine,flatten,scalar,type Ast } from './formula';
-import { addRow,blankSheet,clone,deleteRows,duplicateSheet,getCell,isFault,key,mapAst,move,moveRows,setInput,uid,uniqueName,type Cell,type ReferenceSource,type Scalar,type Sheet,type Table,type Validation,type Workbook } from './model';
+import { allTables,allSheets, addRow,blankSheet,clone,deleteRows,duplicateSheet,getCell,isFault,key,mapAst,move,moveRows,setInput,uid,uniqueName,type Cell,type ReferenceSource,type Scalar,type Sheet,type Table,type Validation,type Workbook } from './model';
+import {editTableAxis} from './table-operations';
 
 export interface ReferenceChoice {row:string;value:string;binding:{table:string;row:string;column:string}}
 export const referenceLabel=(source:ReferenceSource)=>source.label??source.name;
@@ -15,7 +16,8 @@ export function referenceGroups(book:Workbook){
 export interface ReferenceNavigation {label:string;group?:string;members:ReferenceSource[];children:ReferenceNavigation[]}
 export function referenceNavigation(book:Workbook):ReferenceNavigation[]{
   const roots:ReferenceNavigation[]=[];
-  for(const source of (book.references??[]).filter(s=>s.kind!=='units'&&s.kind!=='conversions')){
+  const stored=new Set(book.dropdownData?.tables.map(table=>table.id));
+  for(const source of (book.references??[]).filter(source=>source.kind!=='units'&&source.kind!=='conversions'||!!source.table&&stored.has(source.table))){
     let children=roots,path='';
     for(const label of source.group?.split('/').map(s=>s.trim()).filter(Boolean)??[]){
       path=path?`${path} / ${label}`:label;
@@ -115,7 +117,7 @@ export function reorderReferenceSelection(book:Workbook,tokens:string[],target:s
   book.references=draft.references;book.pickerSources=draft.pickerSources;
 }
 export function referenceTable(book:Workbook,source:ReferenceSource):{table:Table;sheet:Sheet}{
-  const table=book.tables.find(t=>t.id===source.table),sheet=book.sheets.find(s=>s.id===table?.sheet);
+  const table=allTables(book).find(t=>t.id===source.table),sheet=allSheets(book).find(s=>s.id===table?.sheet);
   if(!table||!sheet)throw Error('The original reference table is missing. Restore or reconnect it explicitly.');
   return{table,sheet};
 }
@@ -134,9 +136,9 @@ export function duplicateReference(book:Workbook,source:ReferenceSource):Referen
     cells:Object.fromEntries(Object.entries(sheet.cells).filter(([k])=>{const[r,c]=k.split(':');return rows.has(r)&&columns.has(c);})),
     groups:sheet.groups.filter(g=>g.kind!=='summary'||(g.axis==='row'?rows:columns).has(g.members[0])).map(g=>({...g,members:g.members.filter(id=>(g.axis==='row'?rows:columns).has(id))})).filter(g=>g.kind==='summary'?g.members.length>1:g.members.length),
     validations:sheet.validations.map(v=>({...v,rows:v.rows.filter(r=>rows.has(r)),columns:v.columns.filter(c=>columns.has(c))})).filter(v=>v.rows.length&&v.columns.length)};
-  const draft={...book,sheets:[...book.sheets],tables:book.tables.filter(t=>t.sheet!==sheet.id||t.id===table.id),names:book.names.filter(n=>n.sheet!==sheet.id)};
-  const copied=duplicateSheet(draft,scoped),newTable=draft.tables.at(-1)!;
-  newTable.name=uniqueName(book.tables.map(t=>t.name),table.name+'_copy');
+  const draft={...book,dropdownData:undefined,sheets:[...allSheets(book)],tables:allTables(book).filter(t=>t.sheet!==sheet.id||t.id===table.id),names:book.names.filter(n=>n.sheet!==sheet.id)};
+  const copied=duplicateSheet(draft,scoped),newTable=allTables(draft).at(-1)!;
+  newTable.name=uniqueName(allTables(book).map(t=>t.name),table.name+'_copy');
   const rowIds=new Map(scoped.rows.map((r,i)=>[r.id,copied.rows[i].id])),columnIds=new Map(scoped.columns.map((c,i)=>[c.id,copied.columns[i].id])),fields=new Map(table.columns.map((c,i)=>[c.id,newTable.columns[i].id]));
   const formula=(ast:Ast):Ast=>{
     mapAst(ast,node=>{if(node.kind==='range'&&node.start.kind==='ref'&&node.end.kind==='ref'&&node.start.sheet===sheet.id&&node.end.sheet===sheet.id){
@@ -155,12 +157,12 @@ export function duplicateReference(book:Workbook,source:ReferenceSource):Referen
   if(!copy.column)throw Error('The original DD field is missing.');
   copy.archivedRows=source.archivedRows.map(r=>rowIds.get(r)??r);
   if(copy.conversion)copy.conversion={from:fields.get(copy.conversion.from)!,to:fields.get(copy.conversion.to)!,factor:fields.get(copy.conversion.factor)!};
-  book.sheets.push(copied);book.tables.push(newTable);book.references.push(copy);return copy;
+  const storage=book.dropdownData??book;storage.sheets.push(copied);storage.tables.push(newTable);book.references.push(copy);return copy;
 }
 export function referenceChoices(book:Workbook,source:ReferenceSource,includeArchived=false,includeBlank=false):ReferenceChoice[]{
   if(source.archived&&!includeArchived)return[];
   const derived=source.kind==='derived'?source.derived:undefined;
-  const table=book.tables.find(t=>t.id===(derived?.table??source.table)),column=table?.columns.find(c=>c.id===(derived?.column??source.column));
+  const table=allTables(book).find(t=>t.id===(derived?.table??source.table)),column=table?.columns.find(c=>c.id===(derived?.column??source.column));
   if(!table||!column)throw Error(source.kind==='derived'?'Original derived source unavailable. Choose a source explicitly; example Meals are not substituted.':'The original list or field is missing.');
   const filter=derived?.filter,filterColumn=filter?table.columns.find(c=>c.id===filter.column):undefined;
   if(filter&&!filterColumn)throw Error('The original derived filter field is missing.');
@@ -187,7 +189,7 @@ export function validationReference(book:Workbook,ast:Ast,context:string,visited
     return named?validationReference(book,named.formula,named.context,visited):undefined;
   }
   if(ast.kind==='call'&&ast.name==='INDIRECT'&&ast.args[0]?.kind==='literal'&&typeof ast.args[0].value==='string'){
-    const s=book.sheets.find(s=>s.id===context);if(!s)throw Error('Dropdown context is missing.');
+    const s=allSheets(book).find(s=>s.id===context);if(!s)throw Error('Dropdown context is missing.');
     return validationReference(book,compile(ast.args[0].value,book,context,s.rows[0].id,s.columns[0].id),context,visited);
   }
   if(ast.kind==='structured'&&ast.columns.length===1)return book.references?.find(s=>s.table===ast.table&&s.column===ast.columns[0]&&s.kind!=='conversions');
@@ -217,7 +219,7 @@ export function validationChoiceGroups(book:Workbook,validation:Validation,row:s
       return ast.args.flatMap(arg=>validationChoiceGroups(book,{...validation,source:JSON.stringify(arg),sheet:context},row,column,engine,new Set(visited)));
     }
     if(ast.kind==='structured'&&ast.mode==='data'&&ast.columns.length===1){
-      const structured=ast,table=book.tables.find(t=>t.id===structured.table),field=table?.columns.find(c=>c.id===structured.columns[0]);
+      const structured=ast,table=allTables(book).find(t=>t.id===structured.table),field=table?.columns.find(c=>c.id===structured.columns[0]);
       if(!table||!field)throw Error('The dropdown table or field was deleted.');
       const source=book.references?.find(s=>s.table===table.id);
       return[{id:`${table.id}:${field.id}`,name:source?referenceCaption(source):table.name,target:{table:table.id,column:field.id},choices:source?.archived?[]:table.rows.filter(r=>!source?.archivedRows.includes(r)).map(r=>{
@@ -239,17 +241,18 @@ export function createReference(book:Workbook,name:string,kind:ReferenceSource['
   const source:ReferenceSource={id:uid(),name:name.trim(),kind,archivedRows:[]};
   book.references??=[];book.references.push(source);
   if(kind==='derived'){
-    source.nameId=uid();book.names.push({id:source.nameId,name:'Source_'+source.id.replace(/-/g,'_'),context:book.sheets[0].id,original:'=#REF!',formula:{kind:'error',value:{error:'#REF!',detail:'Choose the derived list source explicitly.'}}});return source;
+    source.nameId=uid();book.names.push({id:source.nameId,name:'Source_'+source.id.replace(/-/g,'_'),context:allSheets(book)[0].id,original:'=#REF!',formula:{kind:'error',value:{error:'#REF!',detail:'Choose the derived list source explicitly.'}}});return source;
   }
-  let sheet=kind==='conversions'?undefined:book.sheets.find(s=>s.supporting&&s.name==='Lists');
-  if(!sheet){sheet=blankSheet(uniqueName(book.sheets.map(s=>s.name),kind==='conversions'?name:'Lists'),100,kind==='conversions'?3:6);sheet.supporting=kind!=='conversions';book.sheets.push(sheet);}
-  const end=Math.max(-3,...book.tables.filter(t=>t.sheet===sheet.id).flatMap(t=>[t.header,...t.rows].map(id=>sheet!.rows.findIndex(r=>r.id===id))),...Object.keys(sheet.cells).map(k=>sheet!.rows.findIndex(r=>r.id===k.split(':')[0])));
+  const storage=book.dropdownData??book;
+  let sheet=kind==='conversions'?undefined:storage.sheets.find(s=>s.supporting&&s.name==='Lists');
+  if(!sheet){sheet=blankSheet(uniqueName(allSheets(book).map(s=>s.name),kind==='conversions'?name:'Lists'),100,kind==='conversions'?3:6);sheet.supporting=!!book.dropdownData||kind!=='conversions';storage.sheets.push(sheet);}
+  const end=Math.max(-3,...allTables(book).filter(t=>t.sheet===sheet.id).flatMap(t=>[t.header,...t.rows].map(id=>sheet!.rows.findIndex(r=>r.id===id))),...Object.keys(sheet.cells).map(k=>sheet!.rows.findIndex(r=>r.id===k.split(':')[0])));
   const at=kind==='conversions'?0:end+3;while(sheet.rows.length<=at+2)sheet.rows.push({id:uid()});
   const fields=kind==='conversions'?['From Unit','To Unit','Conversion Factor']:['Value'];
-  const table:Table={id:uid(),name:kind==='conversions'?uniqueName(book.tables.map(t=>t.name),name):'List_'+uid().replace(/-/g,'_'),sheet:sheet.id,header:sheet.rows[at].id,rows:[],columns:fields.map((name,i)=>({id:uid(),column:sheet!.columns[i].id,name}))};
+  const table:Table={id:uid(),name:kind==='conversions'?uniqueName(allTables(book).map(t=>t.name),name):'List_'+uid().replace(/-/g,'_'),sheet:sheet.id,header:sheet.rows[at].id,rows:[],columns:fields.map((name,i)=>({id:uid(),column:sheet!.columns[i].id,name}))};
   source.table=table.id;source.column=table.columns[0].id;
   if(kind==='conversions')source.conversion={from:table.columns[0].id,to:table.columns[1].id,factor:table.columns[2].id};
-  book.tables.push(table);for(const c of table.columns)setInput(book,sheet,table.header,c.column,c.name);
+  storage.tables.push(table);for(const c of table.columns)setInput(book,sheet,table.header,c.column,c.name);
   return source;
 }
 export function addReferenceValue(book:Workbook,source:ReferenceSource,label:string):string{
@@ -269,7 +272,7 @@ export function renameReferenceValue(book:Workbook,source:ReferenceSource,row:st
 export function referenceUsages(book:Workbook,source:ReferenceSource,row?:string):{linked:number;formulas:number;manual:number;dropdowns:number}{
   const target=source.derived?.table??source.table,labels=row?referenceChoices(book,source,true).filter(o=>o.row===row).map(o=>o.value):[];
   let linked=0,formulas=0,manual=0,dropdowns=0;
-  const sourceSheet=referenceSheet(book,source),table=book.tables.find(t=>t.id===target),records=new Set(table?[table.header,...table.rows]:[]),columns=new Set(table?.columns.map(c=>c.column));
+  const sourceSheet=referenceSheet(book,source),table=allTables(book).find(t=>t.id===target),records=new Set(table?[table.header,...table.rows]:[]),columns=new Set(table?.columns.map(c=>c.column));
   const references=(ast:Ast,visited=new Set<string>()):boolean=>{
     let found=false;mapAst(ast,n=>{
       if(n.kind==='structured'&&n.table===target||n.kind==='ref'&&n.sheet===sourceSheet&&records.has(n.row)&&columns.has(n.column))found=true;
@@ -277,7 +280,7 @@ export function referenceUsages(book:Workbook,source:ReferenceSource,row?:string
       return n;
     });return found;
   };
-  for(const s of book.sheets){
+  for(const s of allSheets(book)){
     for(const c of Object.values(s.cells)){
       if(c.binding&&c.binding.table===target&&(!row||c.binding.row===row))linked++;
       if(c.formula&&references(c.formula)||c.calculation&&references(c.calculation))formulas++;
@@ -294,9 +297,9 @@ export function referenceUsages(book:Workbook,source:ReferenceSource,row?:string
   for(const n of book.names)if(references(n.formula))formulas++;
   return{linked,formulas,manual,dropdowns};
 }
-function referenceSheet(book:Workbook,source:ReferenceSource):string|undefined{return book.tables.find(t=>t.id===(source.derived?.table??source.table))?.sheet;}
+function referenceSheet(book:Workbook,source:ReferenceSource):string|undefined{return allTables(book).find(t=>t.id===(source.derived?.table??source.table))?.sheet;}
 function exclusiveRow(book:Workbook,sheet:Sheet,table:Table,row:string):void{
-  if(book.tables.some(t=>t.id!==table.id&&t.sheet===sheet.id&&(t.header===row||t.rows.includes(row))))throw Error('Another table shares this row. Archive the option instead.');
+  if(allTables(book).some(t=>t.id!==table.id&&t.sheet===sheet.id&&(t.header===row||t.rows.includes(row))))throw Error('Another table shares this row. Archive the option instead.');
   const columns=new Set(table.columns.map(c=>c.column));
   if(Object.entries(sheet.cells).some(([address,c])=>address.startsWith(row+':')&&!columns.has(address.split(':')[1])&&(c.value!=null||c.formula||c.binding||c.note||c.link)))throw Error('This row contains unrelated freeform data. Archive the option instead.');
 }
@@ -307,24 +310,25 @@ export function moveReferenceValue(book:Workbook,source:ReferenceSource,row:stri
   if(Math.abs(sheet.rows.findIndex(r=>r.id===row)-sheet.rows.findIndex(r=>r.id===other))!==1)throw Error('Non-list rows separate these options. Rearrange the backing sheet explicitly instead.');
   moveRows(book,sheet,[row],sheet.rows.findIndex(r=>r.id===other)+(direction===1?1:0),table);
 }
-export function removeReferenceValue(book:Workbook,source:ReferenceSource,row:string,replacement?:string):void{
+export function removeReferenceValue(book:Workbook,source:ReferenceSource,row:string,replacement?:string,tableLocal=false):void{
   if(source.kind==='derived')throw Error('Edit the derived source, not a generated option.');
   const usage=referenceUsages(book,source,row),{table,sheet}=referenceTable(book,source);
   if(usage.formulas||usage.manual)throw Error('Formula/text lookups may use this value. Archive it, or update those references explicitly before deleting.');
   if(usage.linked&&!replacement)throw Error('This option is linked. Replace its links, archive it, or cancel.');
   if(replacement&&(!table.rows.includes(replacement)||replacement===row||source.archivedRows.includes(replacement)))throw Error('Choose a different active replacement from this list.');
-  exclusiveRow(book,sheet,table,row);
-  for(const s of book.sheets)for(const[k,c]of Object.entries(s.cells))if(c.binding?.table===table.id&&c.binding.row===row)s.cells[k]={...c,binding:{...c.binding,row:replacement!}};
-  deleteRows(book,sheet,[row]);source.archivedRows=source.archivedRows.filter(id=>id!==row);
+  if(!tableLocal)exclusiveRow(book,sheet,table,row);
+  for(const s of allSheets(book))for(const[k,c]of Object.entries(s.cells))if(c.binding?.table===table.id&&c.binding.row===row)s.cells[k]={...c,binding:{...c.binding,row:replacement!}};
+  if(tableLocal)editTableAxis(book,table.id,'row',{kind:'delete',ids:[row]});
+  else{deleteRows(book,sheet,[row]);source.archivedRows=source.archivedRows.filter(id=>id!==row);}
 }
 export function setDerivedSource(book:Workbook,source:ReferenceSource,tableId:string,columnId:string,filterColumn?:string,value:Scalar=true):void{
-  const table=book.tables.find(t=>t.id===tableId),column=table?.columns.find(c=>c.id===columnId),filter=table?.columns.find(c=>c.id===filterColumn);
+  const table=allTables(book).find(t=>t.id===tableId),column=table?.columns.find(c=>c.id===columnId),filter=table?.columns.find(c=>c.id===filterColumn);
   if(source.kind!=='derived'||!table||!column||filterColumn&&!filter)throw Error('Choose an existing source and fields explicitly.');
   source.derived={table:tableId,column:columnId,...(filter?{filter:{column:filter.id,value}}:{})};
   const data:Ast={kind:'structured',table:table.id,columns:[column.id],mode:'data'};
   const formula:Ast=filter?{kind:'call',name:'FILTER',args:[data,{kind:'binary',op:'=',left:{kind:'structured',table:table.id,columns:[filter.id],mode:'data'},right:{kind:'literal',value}}]}:data;
   const named=book.names.find(n=>n.id===source.nameId);if(named){named.formula=clone(formula);named.original=displayFormula(formula,book);}
-  if(source.anchor){const s=book.sheets.find(s=>s.id===source.anchor!.sheet);if(s)s.cells[key(source.anchor.row,source.anchor.column)]={...getCell(s,source.anchor.row,source.anchor.column),formula:clone(formula),value:undefined,spillHint:true};}
+  if(source.anchor){const s=allSheets(book).find(s=>s.id===source.anchor!.sheet);if(s)s.cells[key(source.anchor.row,source.anchor.column)]={...getCell(s,source.anchor.row,source.anchor.column),formula:clone(formula),value:undefined,spillHint:true};}
 }
 export function referenceFormula(source:ReferenceSource):Ast{
   if(source.nameId)return{kind:'name',id:source.nameId};

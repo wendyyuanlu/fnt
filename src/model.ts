@@ -69,6 +69,8 @@ export interface Table {
   id: string; name: string; sheet: string; rows: string[];
   columns: { id: string; column: string; name: string }[]; header: string;
 }
+export type TableSort='activity'|'frequent'|'az'|'za';
+export interface TableActivity {editedAt?:number;visits?:number}
 export interface Named { id: string; name: string; sheet?: string; context: string; formula: Ast; original: string }
 export interface HypotheticalTreatment {
   pattern:'none'|'lines'|'dots'|'crosshatch'|'grid'|'checkerboard';
@@ -85,6 +87,11 @@ export interface HypotheticalStyle {
 export interface Workbook {
   schema: 1; id: string; title: string; revision: number; sheets: Sheet[]; tables: Table[]; names: Named[];
   pickerSources: Record<string, string>;
+  dropdownData?:{sheets:Sheet[];tables:Table[]};
+  sheetTabGroups?:Record<string,string>;
+  sheetTabCollapsed?:string[];
+  tableActivity?:Record<string,TableActivity>;
+  tableManagerSort?:TableSort;
   references?:ReferenceSource[];
   catalogMigrations?:string[];
   hypotheticalStyle?:HypotheticalStyle;
@@ -97,6 +104,13 @@ export const key = (row: string, column: string) => `${row}:${column}`;
 export const fault = (error: string, detail?: string): Fault => ({ error, ...(detail ? { detail } : {}) });
 export const isFault = (v: Value): v is Fault => !!v && typeof v === 'object' && !Array.isArray(v) && 'error' in v;
 export const clone = <T>(value: T): T => structuredClone(value);
+export const allSheets=(book:Workbook):Sheet[]=>book.dropdownData?[...book.sheets,...book.dropdownData.sheets]:book.sheets;
+export const allTables=(book:Workbook):Table[]=>book.dropdownData?[...book.tables,...book.dropdownData.tables]:book.tables;
+export function replaceTables(book:Workbook,tables:Table[]):void{
+  const ddSheets=new Set(book.dropdownData?.sheets.map(sheet=>sheet.id));
+  book.tables=tables.filter(table=>!ddSheets.has(table.sheet));
+  if(book.dropdownData)book.dropdownData.tables=tables.filter(table=>ddSheets.has(table.sheet));
+}
 export function letters(index: number): string {
   let out = '';
   for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) out = String.fromCharCode(65 + (n - 1) % 26) + out;
@@ -114,7 +128,7 @@ export function getCell(sheet: Sheet, row: string, column: string): Cell {
   return sheet.cells[key(row, column)] ?? {};
 }
 export function setInput(book: Workbook, sheet: Sheet, row: string, column: string, input: string): void {
-  const header=book.tables.find(t=>t.sheet===sheet.id&&t.header===row&&t.columns.some(c=>c.column===column));
+  const header=allTables(book).find(t=>t.sheet===sheet.id&&t.header===row&&t.columns.some(c=>c.column===column));
   if(header){
     if(input.startsWith('='))throw Error('Table headers must be names, not formulas.');
     renameColumn(book,header,header.columns.find(c=>c.column===column)!.id,input);return;
@@ -136,7 +150,7 @@ export function setInput(book: Workbook, sheet: Sheet, row: string, column: stri
   sheet.cells[key(row, column)] = cell;
 }
 export function tableAt(book: Workbook, sheet: string, row: string, column?: string): Table | undefined {
-  return book.tables.find(t => t.sheet === sheet && (t.rows.includes(row) || t.header === row) && (!column || t.columns.some(c => c.column === column)));
+  return allTables(book).find(t => t.sheet === sheet && (t.rows.includes(row) || t.header === row) && (!column || t.columns.some(c => c.column === column)));
 }
 export function uniqueName(names: string[], base: string): string {
   let name = base, n = 2;
@@ -148,7 +162,7 @@ export function renameColumn(book: Workbook, table: Table, id: string, name: str
   const col = table.columns.find(c => c.id === id);
   if (!col) throw Error('Column no longer exists.');
   col.name = name;
-  const sheet = book.sheets.find(s => s.id === table.sheet)!;
+  const sheet = allSheets(book).find(s => s.id === table.sheet)!;
   sheet.cells[key(table.header, col.column)] = { ...getCell(sheet, table.header, col.column), value: name };
 }
 export function move<T>(items: T[], from: number, to: number): void {
@@ -158,17 +172,17 @@ export function move<T>(items: T[], from: number, to: number): void {
 export function deleteRows(book: Workbook, sheet: Sheet, ids: string[]): void {
   const removed=new Set(ids);
   sheet.rows = sheet.rows.filter(r => !removed.has(r.id));
-  for (const t of book.tables.filter(t => t.sheet === sheet.id)) t.rows = t.rows.filter(r => !removed.has(r));
-  book.tables = book.tables.filter(t => t.sheet!==sheet.id||!removed.has(t.header));
+  for (const t of allTables(book).filter(t => t.sheet === sheet.id)) t.rows = t.rows.filter(r => !removed.has(r));
+  replaceTables(book,allTables(book).filter(t => t.sheet!==sheet.id||!removed.has(t.header)));
   for (const k of Object.keys(sheet.cells)) if (removed.has(k.split(':')[0])) delete sheet.cells[k];
   sheet.groups=sheet.groups.filter(g=>g.axis!=='row'||g.kind!=='summary'||!removed.has(g.members[0])).map(g=>g.axis==='row'?{...g,members:g.members.filter(id=>!removed.has(id))}:g).filter(g=>g.kind==='summary'?g.members.length>1:g.members.length);
   sheet.validations=sheet.validations.map(v=>({...v,rows:v.rows.filter(id=>!removed.has(id))})).filter(v=>v.rows.length);
 }
 export function deleteColumn(book: Workbook, sheet: Sheet, id: string): void {
   sheet.columns = sheet.columns.filter(c => c.id !== id);
-  for (const t of book.tables.filter(t => t.sheet === sheet.id)) t.columns = t.columns.filter(c => c.column !== id);
+  for (const t of allTables(book).filter(t => t.sheet === sheet.id)) t.columns = t.columns.filter(c => c.column !== id);
   for (const k of Object.keys(sheet.cells)) if (k.endsWith(`:${id}`)) delete sheet.cells[k];
-  book.tables=book.tables.filter(t=>t.sheet!==sheet.id||t.columns.length>0);
+  replaceTables(book,allTables(book).filter(t=>t.sheet!==sheet.id||t.columns.length>0));
   sheet.groups=sheet.groups.filter(g=>g.axis!=='column'||g.kind!=='summary'||g.members[0]!==id).map(g=>g.axis==='column'?{...g,members:g.members.filter(c=>c!==id)}:g).filter(g=>g.kind==='summary'?g.members.length>1:g.members.length);
   sheet.validations=sheet.validations.map(v=>({...v,columns:v.columns.filter(c=>c!==id)})).filter(v=>v.columns.length);
 }
@@ -193,7 +207,7 @@ function stationaryGroupBounds(group:Group,positions:ReadonlyMap<string,number>,
   }
   return {first,last};
 }
-function inheritInsertedGroups(sheet:Sheet,axis:Group['axis'],insertions:{at:number;id:string}[],owners:ReadonlySet<string>=new Set()):void {
+export function inheritInsertedGroups(sheet:Sheet,axis:Group['axis'],insertions:{at:number;id:string}[],owners:ReadonlySet<string>=new Set()):void {
   if(!sheet.groups.some(group=>group.axis===axis))return;
   const positions=new Map((axis==='row'?sheet.rows:sheet.columns).map((item,index)=>[item.id,index]));
   for(const group of sheet.groups.filter(g=>g.axis===axis&&(!g.table||owners.has(g.table)))){
@@ -206,7 +220,7 @@ function inheritInsertedGroups(sheet:Sheet,axis:Group['axis'],insertions:{at:num
     }
   }
 }
-function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string,at:number,preserve=false,templates?:ReadonlySet<string>):void {
+export function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string,at:number,preserve=false,templates?:ReadonlySet<string>):void {
   const candidates=[...table.rows.slice(0,at).reverse(),...table.rows.slice(at+1)].filter(id=>!templates||templates.has(id));
   const marker=table.columns.find(c=>['ismeal','isday'].includes(c.name.toLowerCase())),label=table.columns.find(c=>['meal','weight'].includes(c.name.toLowerCase()));
   const engine=marker||label?new Engine(book):undefined;
@@ -243,10 +257,10 @@ function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string,at:num
 }
 function tableRowsToAdd(book:Workbook,sheet:Sheet,table:Table,ids:string[]):string[]{
   const existing=new Set(sheet.rows.map(r=>r.id));
-  if(!book.tables.includes(table)||table.sheet!==sheet.id||!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!existing.has(id)))throw Error('Select existing rows and a table on their sheet.');
+  if(!allTables(book).includes(table)||table.sheet!==sheet.id||!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!existing.has(id)))throw Error('Select existing rows and a table on their sheet.');
   if(ids.includes(table.header))throw Error('A table header cannot be converted into a record.');
   const members=new Set(table.rows),added=ids.filter(id=>!members.has(id)),columns=new Set(table.columns.map(c=>c.column));
-  for(const id of added)if(book.tables.some(t=>t!==table&&t.sheet===sheet.id&&(t.header===id||t.rows.includes(id))&&t.columns.some(c=>columns.has(c.column))))throw Error('These rows already belong to another table using the same columns.');
+  for(const id of added)if(allTables(book).some(t=>t!==table&&t.sheet===sheet.id&&(t.header===id||t.rows.includes(id))&&t.columns.some(c=>columns.has(c.column))))throw Error('These rows already belong to another table using the same columns.');
   return added;
 }
 export function addTableRows(book:Workbook,sheet:Sheet,table:Table,ids:string[]):void{
@@ -257,10 +271,10 @@ export function addTableRows(book:Workbook,sheet:Sheet,table:Table,ids:string[])
   for(const id of added)inheritTableRow(book,sheet,table,id,table.rows.indexOf(id),true,templates);
 }
 export function addTableColumns(book:Workbook,sheet:Sheet,table:Table,ids:string[]):void{
-  if(!book.tables.includes(table)||table.sheet!==sheet.id||!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!sheet.columns.some(c=>c.id===id)))throw Error('Select existing columns and a table on their sheet.');
+  if(!allTables(book).includes(table)||table.sheet!==sheet.id||!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!sheet.columns.some(c=>c.id===id)))throw Error('Select existing columns and a table on their sheet.');
   const added=ids.filter(id=>!table.columns.some(c=>c.column===id)),rows=new Set([table.header,...table.rows]);
   if(!added.length)throw Error('The selected columns already belong to this table.');
-  if(book.tables.some(t=>t!==table&&t.sheet===sheet.id&&[t.header,...t.rows].some(id=>rows.has(id))&&t.columns.some(c=>added.includes(c.column))))throw Error('These columns already belong to another table using the same rows.');
+  if(allTables(book).some(t=>t!==table&&t.sheet===sheet.id&&[t.header,...t.rows].some(id=>rows.has(id))&&t.columns.some(c=>added.includes(c.column))))throw Error('These columns already belong to another table using the same rows.');
   for(const id of added){
     const column=sheet.columns.find(c=>c.id===id)!,header=getCell(sheet,table.header,id);
     const name=uniqueName(table.columns.map(c=>c.name),typeof header.value==='string'&&header.value.trim()?header.value.trim():column.label||`Column ${letters(sheet.columns.indexOf(column))}`);
@@ -273,8 +287,8 @@ export function addTableColumns(book:Workbook,sheet:Sheet,table:Table,ids:string
 export type TableMembershipGap={sheet:string;table:string;axis:Group['axis'];member:string;index:number};
 export function tableMembershipGaps(book:Workbook):TableMembershipGap[]{
   const gaps:TableMembershipGap[]=[];
-  for(const table of book.tables){
-    const sheet=book.sheets.find(s=>s.id===table.sheet)!;
+  for(const table of allTables(book)){
+    const sheet=allSheets(book).find(s=>s.id===table.sheet)!;
     for(const axis of ['row','column'] as const){
       const items=axis==='row'?sheet.rows:sheet.columns,members=new Set(axis==='row'?[table.header,...table.rows]:table.columns.map(c=>c.column));
       const positions=items.flatMap((item,index)=>members.has(item.id)?[index]:[]);
@@ -288,11 +302,11 @@ export function expandAdjacentTable(book:Workbook,sheet:Sheet,row:string,column:
   if(tableAt(book,sheet.id,row,column))return;
   const at=sheet.rows.findIndex(r=>r.id===row);
   if(at<1)return;
-  const candidates=book.tables.filter(t=>t.sheet===sheet.id&&t.columns.some(c=>c.column===column)&&
+  const candidates=allTables(book).filter(t=>t.sheet===sheet.id&&t.columns.some(c=>c.column===column)&&
     Math.max(sheet.rows.findIndex(r=>r.id===t.header),...t.rows.map(id=>sheet.rows.findIndex(r=>r.id===id)))===at-1);
   if(candidates.length!==1)return;
   const table=candidates[0];
-  if(book.tables.some(t=>t!==table&&t.sheet===sheet.id&&(t.header===row||t.rows.includes(row))&&t.columns.some(c=>table.columns.some(x=>x.column===c.column))))return;
+  if(allTables(book).some(t=>t!==table&&t.sheet===sheet.id&&(t.header===row||t.rows.includes(row))&&t.columns.some(c=>table.columns.some(x=>x.column===c.column))))return;
   if(table.columns.some(c=>{
     const cell=getCell(sheet,row,c.column);return cell.formula||cell.calculation||cell.binding||cell.value!=null&&cell.value!==''||cell.note||cell.link;
   }))return;
@@ -304,10 +318,10 @@ export function expandAdjacentTable(book:Workbook,sheet:Sheet,row:string,column:
 export function insertColumn(book:Workbook,sheet:Sheet,at:number,scope?:Table):Column {
   if(at<0||at>sheet.columns.length)throw Error('Column insertion is outside the sheet.');
   const right=sheet.columns[at]?.id,column:Column={id:uid(),label:'New column',width:145};
-  const owners=new Set(book.tables.filter(t=>t.sheet===sheet.id&&(scope?t.id===scope.id:t.columns.some(field=>field.column===right))).map(t=>t.id));
+  const owners=new Set(allTables(book).filter(t=>t.sheet===sheet.id&&(scope?t.id===scope.id:t.columns.some(field=>field.column===right))).map(t=>t.id));
   inheritInsertedGroups(sheet,'column',[{at,id:column.id}],owners);
   sheet.columns.splice(at,0,column);
-  for(const t of book.tables.filter(t=>t.sheet===sheet.id&&(!scope||t.id===scope.id))){
+  for(const t of allTables(book).filter(t=>t.sheet===sheet.id&&(!scope||t.id===scope.id))){
     const index=scope?t.columns.filter(c=>sheet.columns.findIndex(x=>x.id===c.column)<at).length:t.columns.findIndex(c=>c.column===right);
     if(index>=0){
       const name=uniqueName(t.columns.map(c=>c.name),'New column');
@@ -362,7 +376,7 @@ export function groupMoveTarget(sheet:Sheet,axis:Group['axis'],ids:string[],grou
 export function moveIntoGroup(book:Workbook,sheet:Sheet,axis:Group['axis'],ids:string[],groupId:string,scope?:Table):number{
   const target=groupMoveTarget(sheet,axis,ids,groupId,scope);
   if(target.group.table){
-    const owner=book.tables.find(t=>t.id===target.group.table&&t.sheet===sheet.id);
+    const owner=allTables(book).find(t=>t.id===target.group.table&&t.sheet===sheet.id);
     if(!owner||target.members.some(id=>!(axis==='row'?owner.rows:owner.columns.map(c=>c.column)).includes(id)))throw Error("Move only this table's members into its group. Other table and sheet data will not be joined implicitly.");
     scope=owner;
   }
@@ -380,7 +394,7 @@ export function moveRows(book:Workbook,sheet:Sheet,ids:string[],boundary:number,
     const slots=sheet.rows.map((r,i)=>scope.rows.includes(r.id)?i:-1).filter(i=>i>=0),records=slots.map(i=>sheet.rows[i]);
     const columns=new Set(scope.columns.map(c=>c.column));
     for(const row of records){
-      if(book.tables.some(t=>t.id!==scope.id&&t.sheet===sheet.id&&(t.header===row.id||t.rows.includes(row.id)))||Object.entries(sheet.cells).some(([address,c])=>address.startsWith(row.id+':')&&!columns.has(address.split(':')[1])&&(c.value!=null||c.formula||c.binding||c.note||c.link)))throw Error('These rows share other data. Move them in the full sheet instead.');
+      if(allTables(book).some(t=>t.id!==scope.id&&t.sheet===sheet.id&&(t.header===row.id||t.rows.includes(row.id)))||Object.entries(sheet.cells).some(([address,c])=>address.startsWith(row.id+':')&&!columns.has(address.split(':')[1])&&(c.value!=null||c.formula||c.binding||c.note||c.link)))throw Error('These rows share other data. Move them in the full sheet instead.');
     }
     const at=slots.filter((i,n)=>i<boundary&&!selected.has(records[n].id)).length,moving=records.filter(r=>selected.has(r.id)),remaining=records.filter(r=>!selected.has(r.id));
     remaining.splice(at,0,...moving);slots.forEach((i,n)=>sheet.rows[i]=remaining[n]);scope.rows=remaining.map(r=>r.id);
@@ -389,7 +403,7 @@ export function moveRows(book:Workbook,sheet:Sheet,ids:string[],boundary:number,
   }
   const at=sheet.rows.slice(0,boundary).filter(r=>!selected.has(r.id)).length,moving=sheet.rows.filter(r=>selected.has(r.id));
   const remaining=sheet.rows.filter(r=>!selected.has(r.id)),positions=new Map(remaining.map((row,index)=>[row.id,index]));
-  const targets=book.tables.filter(t=>t.sheet===sheet.id&&!selected.has(t.header)).flatMap(table=>{
+  const targets=allTables(book).filter(t=>t.sheet===sheet.id&&!selected.has(t.header)).flatMap(table=>{
     const members=[table.header,...table.rows].flatMap(id=>positions.has(id)?[positions.get(id)!]:[]);
     if(!members.length||at<=Math.min(...members)||at>Math.max(...members))return[];
     const added=tableRowsToAdd(book,sheet,table,ids);return added.length?[{table,added}]:[];
@@ -398,7 +412,7 @@ export function moveRows(book:Workbook,sheet:Sheet,ids:string[],boundary:number,
   sheet.rows=remaining;sheet.rows.splice(at,0,...moving);
   applyMoveGroupPlan(sheet,'row',ids,groups);
   for(const target of targets)addTableRows(book,sheet,target.table,target.added);
-  for(const table of book.tables.filter(t=>t.sheet===sheet.id))table.rows.sort((a,b)=>sheet.rows.findIndex(r=>r.id===a)-sheet.rows.findIndex(r=>r.id===b));
+  for(const table of allTables(book).filter(t=>t.sheet===sheet.id))table.rows.sort((a,b)=>sheet.rows.findIndex(r=>r.id===a)-sheet.rows.findIndex(r=>r.id===b));
   return at;
 }
 export function moveColumns(book:Workbook,sheet:Sheet,ids:string[],boundary:number):number {
@@ -409,24 +423,24 @@ export function moveColumns(book:Workbook,sheet:Sheet,ids:string[],boundary:numb
   sheet.columns=sheet.columns.filter(c=>!ids.includes(c.id));
   sheet.columns.splice(at,0,...moving);
   applyMoveGroupPlan(sheet,'column',ids,groups);
-  for(const t of book.tables.filter(t=>t.sheet===sheet.id))t.columns.sort((a,b)=>sheet.columns.findIndex(c=>c.id===a.column)-sheet.columns.findIndex(c=>c.id===b.column));
+  for(const t of allTables(book).filter(t=>t.sheet===sheet.id))t.columns.sort((a,b)=>sheet.columns.findIndex(c=>c.id===a.column)-sheet.columns.findIndex(c=>c.id===b.column));
   return at;
 }
 export function translate(ast: Ast, book: Workbook, sheetId: string, fromRow: string, fromCol: string, toRow: string, toCol: string, targetSheetId=sheetId): Ast {
-  const sheet = book.sheets.find(s => s.id === sheetId)!;
-  const destination=book.sheets.find(s=>s.id===targetSheetId)!;
+  const sheet = allSheets(book).find(s => s.id === sheetId)!;
+  const destination=allSheets(book).find(s=>s.id===targetSheetId)!;
   const dr = destination.rows.findIndex(r => r.id === toRow) - sheet.rows.findIndex(r => r.id === fromRow);
   const dc = destination.columns.findIndex(c => c.id === toCol) - sheet.columns.findIndex(c => c.id === fromCol);
   return mapAst(ast, node => {
     if(node.kind==='structured'&&node.implicit){
-      const source=book.tables.find(t=>t.id===node.table),target=tableAt(book,targetSheetId,toRow,toCol);
+      const source=allTables(book).find(t=>t.id===node.table),target=tableAt(book,targetSheetId,toRow,toCol);
       if(source&&target&&source.id!==target.id)return{...node,table:target.id,columns:node.columns.map(id=>{
         const name=source.columns.find(c=>c.id===id)?.name;
         return target.columns.find(c=>c.name.toLowerCase()===name?.toLowerCase())?.id??'deleted';
       })};
     }
     if (node.kind !== 'ref') return node;
-    const target = book.sheets.find(s => s.id === node.sheet);
+    const target = allSheets(book).find(s => s.id === node.sheet);
     if (!target) return node;
     const newTarget=!node.explicit&&node.sheet===sheetId?destination:target;
     return { ...node,sheet:newTarget.id,
@@ -450,7 +464,7 @@ export function fillCells(book:Workbook,sheet:Sheet,source:{r1:number;r2:number;
   for(let r=target.r1;r<=target.r2;r++)for(let c=target.c1;c<=target.c2;c++){
     if(r>=source.r1&&r<=source.r2&&c>=source.c1&&c<=source.c2)continue;
     const sr=source.r1+((r-source.r1)%height+height)%height,sc=source.c1+((c-source.c1)%width+width)%width,row=sheet.rows[r].id,column=sheet.columns[c].id;
-    if(book.tables.some(t=>t.sheet===sheet.id&&t.header===row&&t.columns.some(x=>x.column===column)))throw Error('Fill cannot overwrite table headers.');
+    if(allTables(book).some(t=>t.sheet===sheet.id&&t.header===row&&t.columns.some(x=>x.column===column)))throw Error('Fill cannot overwrite table headers.');
     const cell=clone(cells[sr-source.r1][sc-source.c1]);
     if(cell.formula||cell.binding||cell.value!=null&&cell.value!=='')expandAdjacentTable(book,sheet,row,column);
     if(cell.formula)cell.formula=translate(cell.formula,book,sheet.id,sheet.rows[sr].id,sheet.columns[sc].id,row,column);
@@ -463,10 +477,11 @@ export function fillCells(book:Workbook,sheet:Sheet,source:{r1:number;r2:number;
   }
 }
 export function duplicateSheet(book: Workbook, source: Sheet): Sheet {
+  const storage=book.dropdownData?.sheets.some(sheet=>sheet.id===source.id)?book.dropdownData:book;
   const mapping = new Map<string, string>([[source.id, uid()]]);
   for (const r of source.rows) mapping.set(r.id, uid());
   for (const c of source.columns) mapping.set(c.id, uid());
-  const tables = book.tables.filter(t => t.sheet === source.id);
+  const tables = allTables(book).filter(t => t.sheet === source.id);
   for (const t of tables) { mapping.set(t.id, uid()); for (const c of t.columns) mapping.set(c.id, uid()); }
   const scopedNames = book.names.filter(n => n.sheet === source.id);
   for (const n of scopedNames) mapping.set(n.id, uid());
@@ -477,16 +492,16 @@ export function duplicateSheet(book: Workbook, source: Sheet): Sheet {
     return v;
   };
   const copy = remap(source) as Sheet;
-  copy.name = uniqueName(book.sheets.map(s => s.name), `${source.name} copy`);
+  copy.name = uniqueName(allSheets(book).map(s => s.name), `${source.name} copy`);
   copy.cells = Object.fromEntries(Object.entries(source.cells).map(([k, v]) => [k.split(':').map(id => mapping.get(id) ?? id).join(':'), remap(v) as Cell]));
   for (const t of tables) {
     const copied = remap(t) as Table;
-    copied.name = uniqueName(book.tables.map(x => x.name), `${t.name}_copy`);
-    book.tables.push(copied);
+    copied.name = uniqueName(allTables(book).map(x => x.name), `${t.name}_copy`);
+    storage.tables.push(copied);
   }
   for (const n of scopedNames) book.names.push(remap(n) as Named);
   copy.groups = copy.groups.map(g => ({ ...g, id: uid() }));
-  book.sheets.push(copy);
+  storage.sheets.push(copy);
   return copy;
 }
 export function createDemo(): Workbook {

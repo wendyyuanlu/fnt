@@ -1,21 +1,25 @@
-import { outlineGroups, outlineLayer, precedingGroupMember,type SummaryRowLayout } from './grouping';
+import { outlineGroups, outlineLayer, precedingGroupMember,type SummaryRowLayout,type tableGroupProjection } from './grouping';
 import {outlineMembers,type Group,type Sheet,type Table} from './model';
 
 interface GroupingHost {
   sheet:Sheet;groups:Group[];grid:HTMLElement;rows:string[];columns:string[];tree:boolean;hints:boolean;
   tables:Table[];
+  projection?:ReturnType<typeof tableGroupProjection>;
   rowLayouts:Map<string,SummaryRowLayout>;
   menuOpen:boolean;setMenuOpen:(open:boolean)=>void;
   change:(label:string,fn:()=>void)=>boolean;selectAll:()=>void;manage:()=>void;
+  refuse:(message:string)=>void;
+  scope?:()=>{enabled:boolean;table?:string};
+  menuButton?:HTMLButtonElement;
 }
 const icon=(path:string)=>`<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
 const chevrons=(collapsed:boolean,axis:Group['axis'])=>icon(`<g${axis==='column'?' transform="rotate(90 12 12)"':''}><path d="${collapsed?'M5 9l7-7 7 7M5 15l7 7 7-7':'M5 2l7 7 7-7M5 22l7-7 7 7'}"/></g>`);
 const eye=(collapsed:boolean)=>icon(`<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>${collapsed?'<path d="M3 3l18 18"/>':''}`);
-const hierarchy=icon('<path d="M6 8v8q0 3 3 3h7"/><circle cx="6" cy="5" r="3"/><circle cx="19" cy="19" r="3"/>');
+const hierarchy=icon('<path vector-effect="non-scaling-stroke" d="M6 8v8q0 3 3 3h7"/><circle vector-effect="non-scaling-stroke" cx="6" cy="5" r="3"/><circle vector-effect="non-scaling-stroke" cx="19" cy="19" r="3"/>').replace('<svg ','<svg class="toolbar-icon" ');
 let rememberedFocus:string|undefined;
 
 export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:()=>void} {
-  if(!host.groups.length){host.setMenuOpen(false);return{drawRows:()=>{},close:()=>{}};}
+  if(!host.groups.length&&!host.menuButton){host.setMenuOpen(false);return{drawRows:()=>{},close:()=>{}};}
   const {sheet,grid}=host,table=grid.querySelector<HTMLTableElement>('.grid')!,entries=outlineGroups(host.groups),summaries=entries.filter(e=>e.group.kind==='summary'&&!e.group.table);
   const controller=new AbortController(),corner=table.querySelector<HTMLElement>('.corner')!;
   let menu:HTMLDivElement|undefined;
@@ -28,12 +32,15 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
     el.setAttribute('aria-label',`${action} ${group.label} ${group.axis==='row'?'rows':'columns'}`);
     el.title=`${el.getAttribute('aria-label')} · ${plain?'plain range':`level ${outlineLayer(depth)}`}`;
     el.setAttribute(plain?'aria-pressed':'aria-expanded',String(!group.collapsed));
-    el.onclick=e=>{e.stopPropagation();host.change('Toggle group',()=>{group.collapsed=!group.collapsed;});};
+    el.onclick=e=>{e.stopPropagation();
+      const scope=host.scope?.();if(scope?.enabled&&group.table!==scope.table&&!(group.collapsed&&!scope.table)){host.refuse('This group belongs to another table or sheet scope. Select its table, or turn off Table selection first.');return;}
+      host.change('Toggle group',()=>{group.collapsed=!group.collapsed;});
+    };
     el.ondblclick=e=>e.stopPropagation();
     return el;
   }
-  const menuButton=document.createElement('button');menuButton.type='button';menuButton.className='group-control group-menu-button';menuButton.innerHTML=hierarchy;menuButton.setAttribute('aria-label','Group controls');menuButton.setAttribute('aria-expanded',String(host.menuOpen));menuButton.setAttribute('aria-haspopup','true');
-  corner.prepend(menuButton);
+  const menuButton=host.menuButton??document.createElement('button');menuButton.type='button';if(!host.menuButton)menuButton.className='group-control group-menu-button';menuButton.innerHTML=hierarchy;menuButton.setAttribute('aria-label','Group controls');menuButton.setAttribute('aria-expanded',String(host.menuOpen));menuButton.setAttribute('aria-haspopup','true');
+  if(!host.menuButton)corner.prepend(menuButton);
   corner.querySelector<HTMLElement>('[data-action="select-all"]')?.remove();
   const header=(id:string)=>table.querySelector<HTMLElement>(`thead [data-col="${sheet.columns.findIndex(c=>c.id===id)}"]`);
   const ranges=entries.filter(e=>e.group.kind!=='summary'&&!e.group.table);
@@ -115,10 +122,13 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
       const owner=host.tables.find(t=>t.id===entry.group.table&&t.sheet===sheet.id);if(!owner)continue;
       const ownedRows=host.rows.filter(id=>id===owner.header||owner.rows.includes(id));
       const ownedColumns=host.columns.filter(id=>owner.columns.some(field=>field.column===id));
-      const anchor=entry.group.kind==='summary'?entry.group.members[0]:precedingGroupMember(sheet,entry.group,entry.group.axis==='row'?ownedRows:ownedColumns);
+      const shownRows=ownedRows.filter(row=>ownedColumns.some(column=>host.projection?.display(row,column))),shownColumns=ownedColumns.filter(column=>ownedRows.some(row=>host.projection?.display(row,column)));
+      const anchor=entry.group.kind==='summary'?entry.group.members[0]:precedingGroupMember(sheet,entry.group,entry.group.axis==='row'?shownRows:shownColumns);
       const row=entry.group.axis==='row'?anchor:owner.header,column=entry.group.axis==='column'?anchor:ownedColumns[0];
-      const cell=table.querySelector<HTMLElement>(`td[data-r="${sheet.rows.findIndex(r=>r.id===row)}"][data-c="${sheet.columns.findIndex(c=>c.id===column)}"]`);
+      const cell=table.querySelector<HTMLElement>(`td[data-r="${sheet.rows.findIndex(r=>r.id===row)}"][data-c="${sheet.columns.findIndex(c=>c.id===column)}"]`)
+        ??(entry.group.kind!=='summary'?table.querySelector<HTMLElement>(`td[data-display-r="${sheet.rows.findIndex(r=>r.id===(row??ownedRows[0]))}"][data-display-c="${sheet.columns.findIndex(c=>c.id===(column??ownedColumns[0]))}"]`):null);
       if(!cell)continue;
+      cell.removeAttribute('aria-hidden');
       let controls=cell.querySelector<HTMLElement>('.table-group-controls');
       if(!controls){controls=document.createElement('span');controls.className='table-group-controls';cell.append(controls);cell.dataset.tableGroupInset=cell.style.getPropertyValue('--summary-text-inset')||'0px';}
       const control=button(entry.group,entry.depth);
@@ -143,14 +153,15 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
       line.append(label,toggle);return line;
     };
     menu.append(switchLine('Tree view',host.tree,'tree'));
-    const depth=Math.max(1,...entries.filter(e=>e.group.kind==='summary').map(e=>e.depth)),matrix=document.createElement('div');matrix.className='outline-layer-grid';
+    const scope=host.scope?.(),menuEntries=entries.filter(entry=>!scope?.enabled||entry.group.table===scope.table);
+    const depth=Math.max(1,...menuEntries.filter(e=>e.group.kind==='summary').map(e=>e.depth)),matrix=document.createElement('div');matrix.className='outline-layer-grid';
     matrix.style.gridTemplateColumns=`50px repeat(${depth===1?1:depth+1},32px)`;
     if(depth>1){matrix.append(document.createElement('span'));for(const text of ['All',...Array.from({length:depth},(_,i)=>outlineLayer(i+1))]){const heading=document.createElement('strong');heading.textContent=text;matrix.append(heading);}}
     for(const axis of ['row','column'] as const){
       const hidden=(owner?:string)=>new Set(host.groups.filter(g=>g.table===owner&&g.axis===axis&&g.collapsed).flatMap(g=>outlineMembers(g,sheet.groups)));
       const label=document.createElement('strong');label.textContent=axis==='row'?'Rows':'Columns';label.className='outline-axis-label';matrix.append(label);
       for(const level of depth===1?[0]:[0,...Array.from({length:depth},(_,i)=>i+1)]){
-        const targets=entries.filter(e=>e.group.axis===axis&&(!level||e.group.kind==='summary'&&e.depth===level));
+        const targets=menuEntries.filter(e=>e.group.axis===axis&&(!level||e.group.kind==='summary'&&e.depth===level));
         const collapsed=targets.length>0&&targets.every(e=>e.group.collapsed||!level&&[...e.members].every(id=>hidden(e.group.table).has(id)));
         const el=document.createElement('button');el.type='button';el.className='group-control';el.innerHTML=chevrons(collapsed,axis);el.disabled=!targets.length;
         el.dataset.outlineAxis=axis;el.dataset.outlineLevel=String(level);el.setAttribute('aria-pressed',String(collapsed));el.setAttribute('aria-label',`${collapsed?'Expand':'Collapse'} ${level?'level '+outlineLayer(level):'all'} ${axis==='row'?'rows':'columns'}`);
@@ -161,7 +172,7 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;close:(
     const plain=document.createElement('div');plain.className='outline-plain-groups';plain.append(switchLine('Plain group hints',host.hints,'plainGroupHints'));
     for(const axis of ['row','column'] as const){
       const section=document.createElement('div');section.className='outline-plain-axis';const heading=document.createElement('strong');heading.textContent=axis==='row'?'Rows':'Columns';section.append(heading);
-      for(const entry of entries.filter(e=>e.group.kind!=='summary'&&e.group.axis===axis)){const line=document.createElement('div');line.className='outline-plain-line';const label=document.createElement('span');const owner=host.tables.find(t=>t.id===entry.group.table);label.textContent=entry.group.label+(owner?` (${owner.name})`:'');line.append(label,button(entry.group,entry.depth));section.append(line);}
+      for(const entry of menuEntries.filter(e=>e.group.kind!=='summary'&&e.group.axis===axis)){const line=document.createElement('div');line.className='outline-plain-line';const label=document.createElement('span');const owner=host.tables.find(t=>t.id===entry.group.table);label.textContent=entry.group.label+(owner?` (${owner.name})`:'');line.append(label,button(entry.group,entry.depth));section.append(line);}
       plain.append(section);
     }
     menu.append(plain);

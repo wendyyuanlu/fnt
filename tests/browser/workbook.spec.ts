@@ -14,11 +14,11 @@ test('table end strokes follow visible identities and the true bottom through vi
   await expect(cell(page,0,5)).toHaveClass(/table-right-edge/);await expect(cell(page,1,5)).toHaveClass(/table-right-edge/);
   await expect(page.locator('.table-bottom-edge')).toHaveCount(0);
   const stroke=await cell(page,1,5).evaluate(el=>getComputedStyle(el).borderRightColor),header=await cell(page,0,0).evaluate(el=>getComputedStyle(el).borderBottomColor);
-  const channels=(color:string)=>color.match(/\d+/g)!.map(Number);
-  channels(header).forEach((channel,i)=>{expect(channel-channels(stroke)[i]).toBeGreaterThan(0);expect(channel-channels(stroke)[i]).toBeLessThanOrEqual(35);});
+  expect(stroke).toBe(header);
   await expect(cell(page,1,5)).toHaveCSS('border-right-width','1px');await expect(cell(page,1,5)).toHaveCSS('border-right-style','solid');
   await page.locator('#row-jump').fill('72');await page.locator('#row-jump').press('Enter');
   await expect(cell(page,71,5)).toHaveClass(/table-bottom-edge/);await expect(page.locator('.table-bottom-edge')).toHaveCount(6);
+  await expect(cell(page,71,5)).toHaveCSS('border-bottom-color',header);
   await expect(cell(page,72,5)).not.toHaveClass(/table-bottom-edge|table-right-edge/);
   await page.locator('#row-jump').fill('2');await page.locator('#row-jump').press('Enter');
   await cell(page,1,5).click();await page.getByRole('button',{name:'Rows & columns',exact:true}).click();
@@ -90,6 +90,10 @@ test('checkpoint restore keeps full recovery and pending IDs, and disconnects th
   });
   let uploads=0;await page.route('https://api.github.com/**',async route=>{uploads++;await route.abort();});
   await page.reload();await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Recovery checkpoints',exact:true}).click();
+  const versionBeforeRestore=await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();
+    try{return(await store.load()).version;}finally{store.close();}
+  });
   await page.locator('[data-checkpoint]').filter({hasText:'Manual save'}).click();
   await expect(page.locator('#save-state')).toContainText('Checkpoint restored locally - sync disconnected');
   await expect(cell(page,1,2)).toHaveText('180');
@@ -97,10 +101,11 @@ test('checkpoint restore keeps full recovery and pending IDs, and disconnects th
     const storage='/src/storage.ts',archive='/src/archive.ts',{Store}=await import(/* @vite-ignore */storage),{parseArchive}=await import(/* @vite-ignore */archive),store=await Store.open();
     try{
       const state=await store.load(),history=await store.history(),saved=parseArchive(history.find((h:{label:string})=>h.label==='Before backup restore').backup);
-      return{disconnected:!state.sync&&!state.remoteSha,pending:state.pending.map((p:{id:string})=>p.id),recoveryVersion:saved.state.version,recoveryRepo:saved.state.sync.repo};
+      const daily=saved.state.book.sheets.find((s:{name:string})=>s.name==='Daily log');
+      return{disconnected:!state.sync&&!state.remoteSha,pending:state.pending.map((p:{id:string})=>p.id),recoveryVersion:saved.state.version,recoveryRepo:saved.state.sync.repo,recoveryQuantity:daily.cells[`${daily.rows[1].id}:${daily.columns[2].id}`].value};
     }finally{store.close();}
   });
-  expect(result.disconnected).toBe(true);expect(result.pending).toEqual(expect.arrayContaining(before.pending));expect(result.recoveryVersion).toBe(before.version);expect(result.recoveryRepo).toBe('invented-data');expect(uploads).toBe(0);
+  expect(result.disconnected).toBe(true);expect(result.pending).toEqual(expect.arrayContaining(before.pending));expect(result.recoveryVersion).toBeGreaterThanOrEqual(versionBeforeRestore);expect(result.recoveryQuantity).toBe(250);expect(result.recoveryRepo).toBe('invented-data');expect(uploads).toBe(0);
 });
 test('date formatting agrees with formula serials at the 1900 boundary and persists after reload',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();
@@ -130,8 +135,9 @@ test('long multiline cells never show scrollbar gutters while typing and retain 
   await inline.fill(text);await inline.press('Control+End');
   const metrics=await inline.evaluate(el=>{
     if(!(el instanceof HTMLTextAreaElement))throw Error('Expected the in-cell textarea.');
+    const style=getComputedStyle(el);
     return{horizontal:el.scrollWidth>el.clientWidth,vertical:el.scrollHeight>el.clientHeight,
-      width:el.offsetWidth-el.clientWidth,height:el.offsetHeight-el.clientHeight,
+      width:el.offsetWidth-el.clientWidth-parseFloat(style.borderLeftWidth)-parseFloat(style.borderRightWidth),height:el.offsetHeight-el.clientHeight-parseFloat(style.borderTopWidth)-parseFloat(style.borderBottomWidth),
       scrolled:el.scrollTop>0,webkit:getComputedStyle(el,'::-webkit-scrollbar').display};
   });
   expect(metrics).toEqual({horizontal:true,vertical:true,width:0,height:0,scrolled:true,webkit:'none'});

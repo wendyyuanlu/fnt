@@ -2,9 +2,9 @@ type ToolbarHost={order?:readonly string[];dividers?:readonly string[];editing:b
 
 export function mountToolbar(toolbar:HTMLElement,host:ToolbarHost):()=>void{
   const groups=[...toolbar.querySelectorAll<HTMLElement>('.tool-set:not(.toolbar-layout-controls)')];
-  const tools=groups.flatMap(group=>[...group.querySelectorAll<HTMLButtonElement|HTMLSelectElement>(':scope > button,:scope > select')]);
+  const tools=groups.flatMap(group=>[...group.querySelectorAll<HTMLElement>(':scope > button,:scope > select,:scope > .toolbar-split')]);
   const identities=new Map(tools.map(tool=>{
-    const id=tool.dataset.toolbarControl?`control:${tool.dataset.toolbarControl}`:tool.dataset.action?`action:${tool.dataset.action}`:`control:${tool.id}`;
+    const id=tool.dataset.toolbarId??(tool.dataset.toolbarControl?`control:${tool.dataset.toolbarControl}`:tool.dataset.action?`action:${tool.dataset.action}`:`control:${tool.id}`);
     tool.dataset.toolbarTool=id;return [id,tool] as const;
   }));
   const order=[...host.order??[]].filter(id=>identities.has(id));
@@ -37,7 +37,7 @@ export function mountToolbar(toolbar:HTMLElement,host:ToolbarHost):()=>void{
   groups.forEach(group=>group.remove());
   toolbar.classList.toggle('arranging-toolbar',host.editing);
   if(!host.editing)return()=>{};
-  for(const tool of tools){tool.draggable=false;tool.disabled=false;tool.title='Drag selected tools; Shift-click a range, Ctrl/Cmd-click to toggle; Alt+Left/Right to move';}
+  for(const tool of tools){tool.draggable=false;if(tool instanceof HTMLButtonElement||tool instanceof HTMLSelectElement)tool.disabled=false;tool.title='Drag selected tools; Shift-click a range, Ctrl/Cmd-click to toggle; Alt+Left/Right to move';}
   const controller=new AbortController(),options={signal:controller.signal};
   const visible=()=>order.filter(id=>!identities.get(id)!.hidden);
   const selection=host.selection;

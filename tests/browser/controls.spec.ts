@@ -1,5 +1,69 @@
 import {expect,test} from '@playwright/test';
 
+test('dialog close controls share a real 18px icon and are actions, not toggles',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const check=async()=>{
+    const close=page.locator('.dialog-heading > .close').last(),icon=close.locator('svg.toolbar-icon');
+    await expect(close).toHaveAttribute('type','button');await expect(close).not.toHaveAttribute('aria-pressed');await expect(close).not.toHaveAttribute('aria-expanded');
+    await expect(close).toHaveText('');await expect(icon).toHaveAttribute('width','18');await expect(icon).toHaveAttribute('height','18');await expect(icon).toHaveAttribute('stroke-width','1');
+    expect(await close.boundingBox()).toMatchObject({width:24,height:24});await close.click();await expect(close).toHaveCount(0);
+  };
+  await page.getByRole('button',{name:'Rows & columns',exact:true}).click();await check();
+  await page.getByRole('button',{name:'Text color',exact:true}).click();await check();
+  await page.getByRole('button',{name:'Group controls',exact:true}).click();await page.getByRole('button',{name:'Manage groups',exact:true}).click();await check();
+});
+
+test('all dialog families inherit one responsive surface and heading stylesheet',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const width=page.viewportSize()!.width;
+  await page.addStyleTag({content:':root{--dialog-radius:17px;--dialog-padding:13px;--dialog-h1-size:23px;--dialog-h2-size:19px}'});
+  const check=async(popover=false)=>{
+    const surface=page.getByRole('dialog'),title=surface.locator('.dialog-heading').locator('h1,h2');
+    await expect(surface).toHaveClass(/dialog-surface/);
+    await expect(surface).toHaveCSS('border-radius','17px');await expect(surface).toHaveCSS('padding','13px');
+    expect((await surface.boundingBox())!.width).toBe(Math.min(popover?336:600,width-20));
+    await expect(title).toHaveCSS('font-size',popover?'19px':'23px');
+    expect(await title.evaluate(el=>el.tagName)).toBe(popover?'H2':'H1');
+    await surface.locator('.close').click();
+  };
+  await page.keyboard.press('Control+f');await check();
+  await page.getByRole('button',{name:'Rows & columns',exact:true}).click();await check();
+  await page.locator('.tab-actions').getByRole('button',{name:'Sheet settings',exact:true}).click();await check();
+  await page.getByRole('button',{name:'Group controls',exact:true}).click();await page.getByRole('button',{name:'Manage groups',exact:true}).click();await check();
+  await page.getByRole('button',{name:'Text color',exact:true}).click();await check(true);
+  await page.locator('.reference-manager').click();
+  await page.locator('.tab-actions').getByRole('button',{name:'Dropdown settings',exact:true}).click();await check();
+  await page.locator('.sheet-tab.current[data-reference]').click({button:'right'});
+  await page.getByRole('menuitem',{name:'Group',exact:true}).click();await check();
+  await page.setViewportSize({width:320,height:600});
+  await page.getByRole('button',{name:'Text color',exact:true}).click();
+  const popover=page.getByRole('dialog'),bounds=(await popover.boundingBox())!;
+  expect(bounds.width).toBe(300);expect(bounds.x).toBeGreaterThanOrEqual(10);
+  expect(bounds.x+bounds.width).toBeLessThanOrEqual(310);expect(bounds.y).toBeGreaterThanOrEqual(10);
+  expect(bounds.y+bounds.height).toBeLessThanOrEqual(590);
+});
+
+test('row and column insertion buttons share 16px sizing and centered 6px plus icons',async({page})=>{
+  await page.goto('/');await expect(page.locator('.row-boundary').first()).toBeAttached();
+  for(const selector of ['.row-boundary','.row-start','.grid thead .boundary-control']){
+    const dimensions=await page.locator(selector).first().evaluate(button=>{
+      const bounds=button.getBoundingClientRect(),icon=getComputedStyle(button,'::before');
+      return{width:bounds.width,height:bounds.height,iconWidth:icon.width,iconHeight:icon.height,backgroundSize:icon.backgroundSize,left:icon.left,top:icon.top};
+    });
+    expect(dimensions).toMatchObject({width:16,height:16,iconWidth:'6px',iconHeight:'6px',backgroundSize:'6px 1.5px, 1.5px 6px'});
+    expect(dimensions.left).toBe(dimensions.top);
+  }
+});
+
+test('the extra 6px before row numbers selects the row instead of invoking its move grip',async({page,isMobile})=>{
+  await page.goto('/');const number=page.locator('[data-row-select="3"] .row-index');
+  await number.scrollIntoViewIfNeeded();
+  await expect(number).toHaveCSS('padding-left','6px');
+  const bounds=(await number.boundingBox())!,position={x:bounds.x+3,y:bounds.y+bounds.height/2};
+  if(isMobile)await page.touchscreen.tap(position.x,position.y);else await page.mouse.click(position.x,position.y);
+  await expect(page.locator('.grid')).toHaveClass(/selection-rows/);await expect(page.locator('[data-row-select="3"]')).toHaveClass(/row-selected/);
+  await expect(page.locator('.grid')).not.toHaveClass(/rearranging/);
+});
 test('dropdown dialogs grow only for their visible sources and keep scrolling at the height cap',async({page})=>{
   const width=page.viewportSize()!.width;await page.setViewportSize({width,height:1200});
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
@@ -21,23 +85,33 @@ test('dropdown dialogs grow only for their visible sources and keep scrolling at
   expect((await dialog.boundingBox())!.height).toBeLessThan(medium);expect(await scrolls()).toBe(false);
   await search.fill('');await page.setViewportSize({width,height:600});
   const bounds=(await dialog.boundingBox())!,apply=(await page.getByRole('button',{name:'Apply dropdown',exact:true}).boundingBox())!;
-  expect(bounds.height).toBeLessThanOrEqual(576);expect(bounds.y).toBeGreaterThanOrEqual(12);
-  expect(bounds.y+bounds.height).toBeLessThanOrEqual(588);expect(apply.y+apply.height).toBeLessThanOrEqual(bounds.y+bounds.height);
+  expect(bounds.height).toBeLessThanOrEqual(580);expect(bounds.y).toBeGreaterThanOrEqual(10);
+  expect(bounds.y+bounds.height).toBeLessThanOrEqual(590);expect(apply.y+apply.height).toBeLessThanOrEqual(bounds.y+bounds.height);
   expect(await scrolls()).toBe(true);
   await page.getByRole('button',{name:'Close dialog',exact:true}).click();await page.getByRole('button',{name:'Browse values',exact:true}).click();
   expect((await page.getByRole('dialog').boundingBox())!.height).toBeLessThan(400);
 });
 
-test('group controls stay centered in the corner as the outline gutter changes',async({page})=>{
+test('table selection stays centered in the corner and group controls use the toolbar icon-button styling',async({page})=>{
   await page.goto('/');
+  await expect(page.locator('.grid-footer span.desktop')).toHaveCount(0);
   await page.locator('[data-row-select="1"] .row-index').click();await page.locator('[data-row-select="3"] .row-index').click({modifiers:['Shift']});await page.keyboard.press('Control+g');
   const centered=async()=>{
-    const corner=(await page.locator('.grid thead .corner').boundingBox())!,button=(await page.getByRole('button',{name:'Group controls',exact:true}).boundingBox())!;
+    const corner=(await page.locator('.grid thead .corner').boundingBox())!,button=(await page.locator('.corner .table-selection-control').boundingBox())!;
     expect(Math.abs(button.x+button.width/2-corner.x-corner.width/2)).toBeLessThanOrEqual(1);
     expect(Math.abs(button.y+button.height/2-corner.y-corner.height/2)).toBeLessThanOrEqual(1);
   };
   await centered();await page.locator('[data-row-select="5"] .row-index').click();await page.locator('[data-row-select="6"] .row-index').click({modifiers:['Shift']});
   await page.keyboard.press('Control+Alt+g');await centered();
+  await expect(page.locator('.toolbar .group-menu-button')).toHaveClass(/icon-button/);
+  await expect(page.locator('.toolbar .table-selection-control,.corner .group-menu-button')).toHaveCount(0);
+  const styles=await page.locator('.toolbar').evaluate(toolbar=>{
+    const appearance=(button:Element)=>{const s=getComputedStyle(button);return[s.width,s.height,s.minHeight,s.padding,s.border,s.borderRadius,s.backgroundColor,s.color];};
+    return{groups:appearance(toolbar.querySelector('.group-menu-button')!),bold:appearance(toolbar.querySelector('[data-action="bold"]')!)};
+  });
+  expect(styles.groups).toEqual(styles.bold);
+  await page.getByRole('button',{name:'Group controls',exact:true}).click();
+  await expect(page.getByRole('group',{name:'Group controls menu',exact:true})).toBeVisible();
 });
 test('toolbar tools rearrange with mouse or touch, preserve actions and survive undo, reload and DD changes',async({page,isMobile})=>{
   await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
@@ -207,14 +281,14 @@ test('table column dialog manages dropdowns and formula patterns without replaci
   await page.goto('/');await page.getByRole('button',{name:'Ingredients',exact:true}).click();
   const manual=page.locator('td[data-r="2"][data-c="5"]');
   await manual.click();await page.locator('#formula').fill('777');await page.locator('#formula').press('Enter');
-  await page.locator('th[data-col="5"]').dblclick();await expect(page.getByRole('dialog')).toContainText('Table column');
+  await page.locator('th[data-col="5"] .column-index').dblclick();await expect(page.getByRole('dialog')).toContainText('Table column');
   await page.locator('#column-dropdowns').click();
   await page.getByRole('checkbox',{name:/Country$/}).check();await page.getByRole('button',{name:'Apply dropdown',exact:true}).click();
   await expect(manual).toHaveText('777');
-  await page.locator('th[data-col="5"]').dblclick();await expect(page.locator('#column-remove-dropdowns')).toBeEnabled();
+  await page.locator('th[data-col="5"] .column-index').dblclick();await expect(page.locator('#column-remove-dropdowns')).toBeEnabled();
   await page.locator('#column-dropdowns').click();await expect(page.getByRole('checkbox',{name:/Country$/})).toBeChecked();await page.keyboard.press('Escape');
-  await page.locator('th[data-col="5"]').dblclick();await page.locator('#column-remove-dropdowns').click();
-  await page.locator('th[data-col="5"]').dblclick();await expect(page.locator('#column-remove-dropdowns')).toBeDisabled();
+  await page.locator('th[data-col="5"] .column-index').dblclick();await page.locator('#column-remove-dropdowns').click();
+  await page.locator('th[data-col="5"] .column-index').dblclick();await expect(page.locator('#column-remove-dropdowns')).toBeDisabled();
   await page.locator('#column-formulas').click();await page.locator('#column-formula').fill('=SUM(');
   await page.getByRole('button',{name:'Apply formula',exact:true}).click();await expect(page.locator('#column-formula')).toBeVisible();
   await page.locator('#column-formula').fill('=42');await page.getByRole('button',{name:'Apply formula',exact:true}).click();

@@ -1,29 +1,38 @@
 import './style.css';
-import { addRow, addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, columnIndex, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
+import { allSheets,allTables, addRow, addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, columnIndex, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
-import { Store, SyncConflict, syncGitHub, type Backup, type LocalState } from './storage';
+import { Store, SyncConflict, syncGitHub, validateBook, type Backup, type LocalState } from './storage';
+import {applyUndo,structuralUndo,undoLimit,type History} from './undo-history';
 import { parseArchive, stringifyArchive } from './archive';
 import { parseTsv,serializeTsv } from './clipboard';
 import { cutCells, shiftCells } from './cell-operations';
 import { excelDate,excelDateText } from './dates';
 import { RowViewport } from './row-viewport';
-import {captureSelection,headerSelectionTables,tableHeaderBounds,selectionCount,selectionRanges,type SelectionArea,type SelectionBounds} from './selection';
+import {captureSelection,headerSelectionTables,nearestHeaderTables,tableHeaderBounds,selectionCount,selectionRanges,type SelectionArea,type SelectionBounds} from './selection';
 import { defaultHeaderFormula,groupBlockToTop,positionalBlock } from './meal-block';
 import { applyTableColumnFormula,columnCalculations,quantityDiagnostic,restoreCalculation,tableColumnFormulas } from './calculation';
-import { groupReference,newReference,referenceSettings,type ReferenceHost } from './reference-ui';
-import { dropdownArrowHtml,dropdownManualActionHtml,dropdownOptionsKey,mountDropdownOptions,mountSelectDropdown } from './dropdown-ui';
+import { groupReference,mountGroupPicker,newReference,referenceSettings,type ReferenceHost } from './reference-ui';
+import { dropdownArrowHtml,dropdownManualActionHtml,dropdownOptionsKey,mountDropdownOptions,mountSelectDropdown,mountSourcePicker,sourcePickerControlsHtml,sourcePickerBodyHtml } from './dropdown-ui';
 import { duplicateReference,moveReferenceGroup,referenceCaption,referenceChoices,referenceFormula,referenceGroups,referenceLabel,referenceNavigation,referenceUsages,removeReferenceValue,renameReferenceGroup,reorderReferenceSelection,setReferencePresentation,validationChoiceGroups,validationChoices,validationReference,type DropdownChoice,type ReferenceNavigation } from './references';
 import { appendReferenceOption,conversionEditImpact,deleteReferenceColumns,referenceView,writeGridCell } from './reference-grid';
 import { hexToHsv,hsvToHex,normalizeHex } from './colors';
 import { dropdownCatalog,dropdownFormatMigration,dropdownGroupMigration,seedDropdownCatalog,verifiedCatalogOrigins } from './dropdown-catalog';
-import { groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,ungroupPlainGroups } from './grouping';
+import { groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,tableGroupProjection,ungroupPlainGroups } from './grouping';
 import {getHypotheticalStyle,hypotheticalBadgeCss,hypotheticalCss,hypotheticalTextCss} from './hypothetical';
 import {openHypotheticalSettings} from './hypothetical-ui';
 import {toolbarIcon} from './icons';
 import {mountToolbar} from './toolbar';
+import {mountTableSelection} from './table-selection-ui';
+import type {TableAxisEdit} from './table-operations';
+import {planTableAxisEdit} from './table-edit-plan';
+import {confirmTableExpansion} from './table-expansion-ui';
+import {mountStickyTableHeaders} from './sticky-table-headers';
+import {ensureTableSheetSpace} from './sheet-space';
+import {createTable,recordTableEdits,recordTableVisit,renameTable,sortedTables} from './table-management';
 import { mountGroupControls } from './grouping-ui';
 import {createTextSearch} from './find';
 import {loadPublishedTesting,untouchedStarter} from './published';
+import {migrateDropdownData} from './dd-storage';
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
@@ -86,7 +95,7 @@ let book: Workbook, state: LocalState, store: Store, engine: Engine;
 let sheetId = '', selected = {r:1,c:0}, anchor = {...selected}, page = 0, showHypothetical=true;
 let selectionKind:'cells'|'rows'|'columns'='cells';
 let extraSelections:SelectionArea[]=[];
-let renderedSheet='',renderedTarget='',scrollTarget:number|undefined,drawRowWindow:(()=>void)|undefined;
+let renderedSheet='',renderedTarget='',scrollTarget:number|{row:number;contextRows:number}|undefined,drawRowWindow:(()=>void)|undefined;
 let navigationRows:number[]=[],navigationColumns:number[]=[];
 const measuredRowHeights=new Map<string,number>();
 const pinnedColumns=new Map<string,string[]>();
@@ -94,16 +103,17 @@ let touchSelection=false,touchPointer:number|undefined;
 let fillSource:ReturnType<typeof bounds>|undefined,fillPointer:number|undefined;
 let status = 'Opening local workbook...', error = '', busy = false, token = '';
 let savedGeneration = 0, generation = 0, saving: Promise<void> = Promise.resolve();
-type History = {book:Workbook}|{cells:{sheet:string;key:string;value?:Cell}[]};
 const undo: History[] = [], redo: History[] = [];
-let copied: {sheet:string; r:number;c:number;rows:string[];columns:string[];cells:Cell[][];cut?:boolean} | undefined;
+let copied: {sheet:string; r:number;c:number;rows:string[];columns:string[];cells:Cell[][];cut?:boolean;table?:string;kind?:'rows'|'columns'|'cells'} | undefined;
 let saveTimer: ReturnType<typeof setTimeout>;
 let draft:string|undefined;
 let draftLiteral=false;
 let movingColumns:string[]|undefined;
 let movingRows:string[]|undefined,referenceId:string|undefined,selectionTable:string|undefined;
 let tableSelectionMode=false,tableSelectionTarget:string|undefined,selectionScope:string|undefined;
+let lastVisitedTable:string|undefined;
 let extendHeaderSelection=false;
+let viewportSelectionTables=(tables:typeof book.tables,_axis:'row'|'column'):typeof book.tables=>tables;
 let movePreview:{axis:'row'|'column';boundary:number;index:number;after:boolean;groupId?:string}|undefined;
 let appendDraft:{source:string;column:string;value:string}|undefined;
 let colorPicker:{pending:boolean;commit:()=>boolean;close:(apply?:boolean)=>boolean}|undefined;
@@ -111,8 +121,11 @@ let referenceNotice='';
 let awaitingMutationConfirmation=false;
 let hypotheticalOverridePreview:{sheet:string;axis:Group['axis'];ids:Set<string>;table?:string}|undefined;
 let maskedCell:(row:string,column:string)=>boolean=()=>false;
+let groupProjection:ReturnType<typeof tableGroupProjection>|undefined;
 let hypotheticalOverrideSkips=0;
 let arrangingToolbar=false,closeToolbar:(()=>void)|undefined;
+let tableSelectionControl:ReturnType<typeof mountTableSelection>|undefined;
+let stickyTableHeaders:ReturnType<typeof mountStickyTableHeaders>|undefined;
 const toolbarSelection:{ids:Set<string>;anchor?:string}={ids:new Set()};
 let closeCellDropdown:(()=>void)|undefined;
 let groupControls:ReturnType<typeof mountGroupControls>|undefined,groupMenuOpen=false,groupMenuSheet='';
@@ -130,11 +143,11 @@ const editableReference=()=>!activeReference()||activeReference()!.kind!=='deriv
 const inGrid=(r:number,c:number)=>{const view=gridReference(),s=sheet();return!!s.rows[r]&&!!s.columns[c]&&!maskedCell(s.rows[r].id,s.columns[c].id)&&(!view||view.rows.includes(s.rows[r].id)&&view.columns.includes(s.columns[c].id));};
 const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('fnt-edits') : undefined;
 const clipboardId=uid();
-const sheet = () => book.sheets.find(s => s.id === sheetId)!;
+const sheet = () => allSheets(book).find(s => s.id === sheetId)!;
 const current = () => getCell(sheet(),sheet().rows[selected.r].id,sheet().columns[selected.c].id);
 const bounds = () => ({r1:Math.min(anchor.r,selected.r),r2:Math.max(anchor.r,selected.r),c1:Math.min(anchor.c,selected.c),c2:Math.max(anchor.c,selected.c)});
-const scopedSelectionTable=()=>book.tables.find(table=>table.id===selectionScope&&table.sheet===sheetId);
-const currentSelections=()=>selectionRanges(sheet(),bounds(),extraSelections,scopedSelectionTable(),book.tables);
+const scopedSelectionTable=()=>allTables(book).find(table=>table.id===selectionScope&&table.sheet===sheetId);
+const currentSelections=()=>selectionRanges(sheet(),bounds(),extraSelections,scopedSelectionTable(),allTables(book));
 const selectionMode=()=>extraSelections.every(area=>area.kind===selectionKind&&area.table===selectionScope)?selectionKind:'cells';
 const selectedAxisIndices=(axis:'row'|'column')=>{
   const ranges=currentSelections(),items=axis==='row'?sheet().rows:sheet().columns;
@@ -153,25 +166,34 @@ function beginSelection(e:MouseEvent|PointerEvent,kind:typeof selectionKind):voi
   if(kind==='cells'){selectionScope=undefined;extendHeaderSelection=false;}
 }
 function headerSelection(e:MouseEvent,axis:'row'|'column',index:number):void{
-  const s=sheet(),kind=axis==='row'?'rows':'columns',tables=gridReference()?.table?[gridReference()!.table!]:book.tables;
+  const s=sheet(),kind=axis==='row'?'rows':'columns',tables=gridReference()?.table?[gridReference()!.table!]:allTables(book);
   const requestedExtension=e.shiftKey||extendHeaderSelection;extendHeaderSelection=false;
   const apply=(table?:typeof book.tables[number])=>{
+    const items=axis==='row'?s.rows:s.columns,source=table?groupProjection?.axis(table.id,axis,items[index].id):items[index].id;
+    if(table&&!source){flash('This part of the table is collapsed. Expand its group to select those records.');return;}
+    const logical=source?items.findIndex(item=>item.id===source):index;
     const extend=requestedExtension&&selectionKind===kind&&selectionScope===table?.id;
-    const range=table?tableHeaderBounds(s,table,axis,index,extend?(axis==='row'?anchor.r:anchor.c):undefined):
+    const range=table?tableHeaderBounds(s,table,axis,logical,extend?(axis==='row'?anchor.r:anchor.c):undefined):
       axis==='row'?{r1:extend?Math.min(anchor.r,index):index,r2:extend?Math.max(anchor.r,index):index,c1:0,c2:s.columns.length-1}:
       {r1:0,r2:s.rows.length-1,c1:extend?Math.min(anchor.c,index):index,c2:extend?Math.max(anchor.c,index):index};
     beginSelection(e,kind);selectionScope=table?.id;
-    if(axis==='row'){anchor={r:extend?anchor.r:index,c:range.c1};selected={r:index,c:range.c2};}
-    else{anchor={r:range.r1,c:extend?anchor.c:index};selected={r:range.r2,c:index};}
+    if(axis==='row'){anchor={r:extend?anchor.r:logical,c:range.c1};selected={r:logical,c:range.c2};}
+    else{anchor={r:range.r1,c:extend?anchor.c:logical};selected={r:range.r2,c:logical};}
     selectionKind=kind;refreshSelection();root.querySelector<HTMLElement>('#grid-scroll')!.focus({preventScroll:true});
   };
   if(!tableSelectionMode){apply();return;}
-  const candidates=headerSelectionTables(s,tables,axis,index);
+  let candidates=headerSelectionTables(s,tables,axis,index);
+  if(tableSelectionTarget){
+    const locked=candidates.find(table=>table.id===tableSelectionTarget);
+    if(locked)apply(locked);
+    else flash('This header is outside the chosen table. Choose another table in the toolbar, or turn off Table selection for sheet-wide selection.');
+    return;
+  }
+  if(!candidates.length){apply();return;}
+  candidates=viewportSelectionTables(candidates,axis);
   const active=tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id);
-  const preferred=candidates.find(table=>table.id===(tableSelectionTarget??active?.id));
-  if(tableSelectionTarget&&!preferred){flash('This header is outside the chosen table. Choose another table in the toolbar, or turn off Table selection for sheet-wide selection.');return;}
+  const preferred=candidates.find(table=>table.id===active?.id);
   if(preferred||candidates.length===1){apply(preferred??candidates[0]);return;}
-  if(!candidates.length){flash('No table uses this header. Turn off Table selection for sheet-wide selection.');return;}
   dialog('Choose selection table',`<p>Several tables use this ${axis==='row'?'row':'column'}. Choose which one to select; adjacent tables will stay untouched.</p><div class="menu">${candidates.map(table=>`<button data-selection-owner="${esc(table.id)}">${esc(table.name)}</button>`).join('')}</div>`,d=>{
     d.querySelectorAll<HTMLButtonElement>('[data-selection-owner]').forEach(button=>button.onclick=()=>{const table=candidates.find(table=>table.id===button.dataset.selectionOwner)!;d.close();apply(table);});
   });
@@ -180,12 +202,7 @@ function refreshTableSelectionControl():void{
   const button=root.querySelector<HTMLButtonElement>('[data-action="table-selection"]');
   button?.setAttribute('aria-pressed',String(tableSelectionMode));
   const grid=root.querySelector<HTMLElement>('.grid');if(grid)grid.dataset.tableSelection=String(tableSelectionMode);
-  const target=root.querySelector<HTMLSelectElement>('#table-selection-target');
-  if(target){
-    target.hidden=!tableSelectionMode;target.value=tableSelectionTarget??'';
-    const active=tableAt(book,sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id);
-    target.options[0].textContent=active?`Auto: ${active.name}`:'Auto: choose when ambiguous';
-  }
+  tableSelectionControl?.refresh();
   const label=root.querySelector<HTMLElement>('#selection-scope-label');
   if(label)label.textContent=selectionScope?`Table: ${scopedSelectionTable()?.name??'missing table'}`:'Sheet selection';
 }
@@ -193,23 +210,122 @@ function requireRectangle(operation:string):SelectionBounds|undefined{
   const ranges=currentSelections();if(ranges.length===1)return ranges[0];
   flash(`${operation} requires one rectangular range. The unselected cells between your selections will not be changed.`);return;
 }
+function confineRange(range:SelectionBounds):SelectionBounds{
+  const owner=scopedSelectionTable();if(!owner)return range;
+  const s=sheet(),rows=s.rows.map((row,i)=>row.id===owner.header||owner.rows.includes(row.id)?i:-1).filter(i=>i>=0),columns=s.columns.map((column,i)=>owner.columns.some(field=>field.column===column.id)?i:-1).filter(i=>i>=0);
+  const clipped={r1:Math.max(range.r1,rows[0]),r2:Math.min(range.r2,rows.at(-1)!),c1:Math.max(range.c1,columns[0]),c2:Math.min(range.c2,columns.at(-1)!)};
+  if(clipped.r1>clipped.r2||clipped.c1>clipped.c2||s.rows.slice(clipped.r1,clipped.r2+1).some(row=>!rows.includes(s.rows.indexOf(row)))||s.columns.slice(clipped.c1,clipped.c2+1).some(column=>!columns.includes(s.columns.indexOf(column))))throw Error('This operation requires contiguous cells within the selected table.');
+  return clipped;
+}
 function sheetAxisSelectionAllowed(operation:string):boolean{
-  if(referenceId||!selectionScope&&!extraSelections.some(area=>area.table))return true;
-  flash(`${operation} changes whole sheet rows or columns. Turn off Table selection and select sheet headers first; adjacent tables have not been changed.`);return false;
+  if(referenceId||!extraSelections.some(area=>area.table!==selectionScope))return true;
+  flash(`${operation} requires one table or sheet scope at a time. Adjacent tables have not been changed.`);return false;
+}
+function prepareAxisOperation(axis:'row'|'column',index:number):number{
+  if(!tableSelectionMode)return index;
+  const s=sheet(),view=gridReference(),candidates=headerSelectionTables(s,view?.table?[view.table]:allTables(book),axis,index);
+  let owner=candidates.find(table=>table.id===tableSelectionTarget);
+  if(tableSelectionTarget&&!owner)throw Error('This header is outside the chosen table.');
+  if(!tableSelectionTarget){
+    const nearest=viewportSelectionTables(candidates,axis);
+    const active=tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id);
+    owner=nearest.find(table=>table.id===(selectionScope??active?.id))??(nearest.length===1?nearest[0]:undefined);
+    if(nearest.length>1&&!owner)throw Error('Choose a table using the selection dropdown first.');
+  }
+  if(owner){
+    const items=axis==='row'?s.rows:s.columns,source=groupProjection?.axis(owner.id,axis,items[index].id);
+    if(!source)throw Error('This part of the table is collapsed. Expand its group before inserting or moving here.');
+    index=items.findIndex(item=>item.id===source);
+  }
+  const kind=axis==='row'?'rows':'columns';
+  if(selectionScope===owner?.id&&selectionMode()===kind&&selectedAxisIndices(axis).includes(index))return index;
+  const range=owner?tableHeaderBounds(s,owner,axis,index):axis==='row'?{r1:index,r2:index,c1:0,c2:s.columns.length-1}:{r1:0,r2:s.rows.length-1,c1:index,c2:index};
+  selectionScope=owner?.id;extraSelections=[];selectionKind=kind;anchor={r:range.r1,c:range.c1};selected={r:range.r2,c:range.c2};
+  return index;
+}
+function projectedBoundary(table:string,axis:'row'|'column',boundary:number):number{
+  const items=axis==='row'?sheet().rows:sheet().columns,slot=items[boundary];
+  if(!slot)return boundary;
+  const source=groupProjection?.axis(table,axis,slot.id);
+  if(source)return items.findIndex(item=>item.id===source);
+  for(let i=boundary-1;i>=0;i--){
+    const previous=groupProjection?.axis(table,axis,items[i].id);
+    if(previous)return items.findIndex(item=>item.id===previous)+1;
+  }
+  throw Error('Expand the table group before moving its hidden records.');
+}
+function runTableEdit(tableId:string,axis:'row'|'column',edit:TableAxisEdit,label:string,options:{joining?:string[];finish?:(ids:string[])=>void}={}):void{
+  try{
+    if(!editableReference()||gridReference()?.error)throw Error('This source is read-only or unavailable. Edit its original table instead.');
+    const before=book,expected=generation,table=allTables(book).find(t=>t.id===tableId)!;
+    const plan=planTableAxisEdit(book,tableId,axis,edit),at=axis==='row'?bounds().r1:bounds().c1;
+    confirmTableExpansion(before,plan,table.name,dialog,()=>{
+      if(book!==before||generation!==expected){flash('The workbook changed while this edit was open. Select the records or fields and try again.');return false;}
+      return mutate(label,()=>{
+        book=plan.book;selectionScope=tableId;extraSelections=[];movingRows=movingColumns=undefined;clearMovePreview();
+        if(label==='Cut and move table members')copied=undefined;
+        const owner=scopedSelectionTable()!,s=sheet(),items=axis==='row'?s.rows:s.columns;
+        const owned=axis==='row'?owner.rows:owner.columns.map(field=>field.column);
+        for(const group of s.groups.filter(group=>options.joining?.includes(group.id)&&group.table===owner.id)){
+          const members=new Set([...group.members,...plan.ids]),anchor=group.members[0];group.members=owned.filter(id=>members.has(id));
+          if(group.kind==='summary'){group.members.splice(group.members.indexOf(anchor),1);group.members.unshift(anchor);}
+        }
+        options.finish?.(plan.ids);
+        const ids=plan.ids.length?plan.ids:owned.filter(id=>items.findIndex(item=>item.id===id)>=at).slice(0,1);
+        const chosen=ids.length?ids:owned.slice(-1),positions=chosen.map(id=>items.findIndex(item=>item.id===id));
+        if(!positions.length){selected={r:s.rows.findIndex(row=>row.id===owner.header),c:s.columns.findIndex(column=>column.id===owner.columns[0].column)};anchor={...selected};selectionKind='cells';}
+        else{
+          const first=Math.min(...positions),last=Math.max(...positions),range=tableHeaderBounds(s,owner,axis,last,first);
+          anchor={r:range.r1,c:range.c1};selected={r:range.r2,c:range.c2};selectionKind=axis==='row'?'rows':'columns';
+        }
+        renderedTarget=`${sheetId}:${selected.r}`;scrollTarget=edit.kind==='insert'?undefined:selected.r;
+      });
+    });
+  }catch(error){flash(error);}
+}
+function requestInsert(axis:'row'|'column',boundary:number,index?:number):void{
+  try{
+    if(index!==undefined)boundary+=prepareAxisOperation(axis,index)-index;
+    const owner=scopedSelectionTable();
+    if(owner){
+      const count=selectionMode()===(axis==='row'?'rows':'columns')?selectedAxisIndices(axis).length:1;
+      const at=axis==='row'?Math.max(boundary,sheet().rows.findIndex(row=>row.id===owner.header)+1):boundary;
+      runTableEdit(owner.id,axis,{kind:'insert',boundary:at,count},`Insert table ${axis==='row'?'rows':'columns'}`);
+    }else mutate(`Insert ${axis==='row'?'rows':'columns'}`,()=>insertDimensions(axis,boundary));
+  }catch(error){flash(error);}
 }
 function rememberView():void{
-  const s=book?.sheets.find(s=>s.id===sheetId);if(!s?.rows[selected.r]||!s.columns[selected.c])return;
+  const s=allSheets(book).find(s=>s.id===sheetId);if(!s?.rows[selected.r]||!s.columns[selected.c])return;
   const grid=root.querySelector<HTMLElement>('#grid-scroll');
   try{sessionStorage.setItem(`fnt-view:${book.id}`,JSON.stringify({reference:referenceId??null,sheet:sheetId,row:s.rows[selected.r].id,column:s.columns[selected.c].id,anchorRow:s.rows[anchor.r]?.id,anchorColumn:s.columns[anchor.c]?.id,kind:selectionKind,scope:selectionScope,tableMode:tableSelectionMode,target:tableSelectionTarget,scroll:grid?.scrollTop??0,left:grid?.scrollLeft??0,workbookView}));sessionStorage.setItem('fnt-current-reference',referenceId??'');}catch(e){flash(`View preference could not be saved: ${String(e)}`);}
 }
-function restoreView():{scroll:number;left:number}|undefined{
+function referenceOnSheet(id:string,row?:string,column?:string):string|undefined{
+  const sources=book.references?.filter(source=>source.anchor?.sheet===id||allTables(book).some(table=>table.id===source.table&&table.sheet===id))??[];
+  return(sources.find(source=>{
+    const table=allTables(book).find(table=>table.id===source.table);
+    return table&&(!row||table.header===row||table.rows.includes(row))&&(!column||table.columns.some(field=>field.column===column&&(!source.column||field.id===source.column)));
+  })??sources[0])?.id;
+}
+function normalizedBackup(backup:Backup):Backup{
+  return{...backup,state:{...backup.state,book:migrateDropdownData(backup.state.book).book}};
+}
+function adoptSavedWorkbook(target?:string):void{
+  book=clone(state.book);engine=new Engine(book);generation++;savedGeneration=generation;
+  sheetId=book.sheets.some(sheet=>sheet.id===target)?target!:book.sheets[0].id;
+  referenceId=undefined;referenceNotice='';workbookView=undefined;selectionScope=undefined;tableSelectionTarget=undefined;selectionTable=undefined;lastVisitedTable=undefined;
+  selected={r:0,c:0};anchor={...selected};selectionKind='cells';extraSelections=[];selectedTabs.clear();tabSelectionAnchor=undefined;
+  movingRows=movingColumns=undefined;copied=undefined;renderedSheet='';page=0;undo.length=redo.length=0;
+}
+function restoreView(remembered?:string|null):{scroll:number;left:number}|undefined{
   try{
     const raw=sessionStorage.getItem(`fnt-view:${book.id}`),legacy=sessionStorage.getItem('fnt-current-reference');
-    if(!raw){if(legacy&&book.references?.some(s=>s.id===legacy&&s.kind!=='units')){referenceId=legacy;const view=gridReference();if(view?.sheet){sheetId=view.sheet.id;selected={r:Math.max(0,view.sheet.rows.findIndex(r=>r.id===(view.rows[1]??view.rows[0]))),c:Math.max(0,view.sheet.columns.findIndex(c=>c.id===view.columns[0]))};anchor={...selected};}}return;}
+    if(!raw){const source=legacy&&book.references?.some(s=>s.id===legacy)?legacy:remembered&&book.dropdownData?.sheets.some(s=>s.id===remembered)?referenceOnSheet(remembered):undefined;if(source){referenceId=source;const view=gridReference();if(view?.sheet){sheetId=view.sheet.id;selected={r:Math.max(0,view.sheet.rows.findIndex(r=>r.id===(view.rows[1]??view.rows[0]))),c:Math.max(0,view.sheet.columns.findIndex(c=>c.id===view.columns[0]))};anchor={...selected};}}return;}
     const view=JSON.parse(raw);
     if(!view||typeof view.sheet!=='string'||typeof view.row!=='string'||typeof view.column!=='string'||!Number.isFinite(view.scroll)||!Number.isFinite(view.left))throw Error('Invalid saved view preference.');
-    const s=book.sheets.find(s=>s.id===view.sheet);if(!s)return;
-    referenceId=typeof view.reference==='string'&&book.references?.some(s=>s.id===view.reference&&s.kind!=='units')?view.reference:undefined;sheetId=s.id;
+    const s=allSheets(book).find(s=>s.id===view.sheet);if(!s)return;
+    referenceId=typeof view.reference==='string'&&book.references?.some(s=>s.id===view.reference)?view.reference:book.dropdownData?.sheets.some(sheet=>sheet.id===s.id)?referenceOnSheet(s.id,view.row,view.column):undefined;
+    if(!referenceId&&!book.sheets.some(sheet=>sheet.id===s.id))return;
+    sheetId=s.id;
     selected={r:Math.max(0,s.rows.findIndex(r=>r.id===view.row)),c:Math.max(0,s.columns.findIndex(c=>c.id===view.column))};anchor={r:Math.max(0,s.rows.findIndex(r=>r.id===view.anchorRow)),c:Math.max(0,s.columns.findIndex(c=>c.id===view.anchorColumn))};
     selectionKind=['cells','rows','columns'].includes(view.kind)?view.kind:'cells';
     if(view.tableMode!==undefined&&typeof view.tableMode!=='boolean')throw Error('Invalid saved table-selection mode.');
@@ -236,7 +352,7 @@ function flash(e: unknown): void { error = e instanceof Error ? e.message : Stri
 function mutate(label: string, fn: () => void,confirmed=false): boolean {
   if (busy) { flash('Wait for the current save or sync to finish.'); return false; }
   const before = clone(book);
-  const priorBook=book,shape=structureKey(book),metadata=metadataKey(book),cells=new Map(book.sheets.map(s=>[s.id,new Map(Object.entries(s.cells))]));
+  const priorBook=book,shape=structureKey(book),metadata=metadataKey(book),cells=new Map(allSheets(book).map(s=>[s.id,new Map(Object.entries(s.cells))]));
   try {
     fn();
     const impact=confirmed?'':conversionEditImpact(before,book);
@@ -248,21 +364,23 @@ function mutate(label: string, fn: () => void,confirmed=false): boolean {
       return false;
     }
   }
-  catch(e) { book = before; engine = new Engine(book); flash(e); return false; }
+  catch(e) { book = before; engine = new Engine(book); flash(e); render(); return false; }
   const changes:{sheet:string;key:string;value?:Cell}[]=[];
-  if(priorBook===book&&metadata===metadataKey(book)){
-    for(const s of book.sheets){
-      const previous=cells.get(s.id)!,old=before.sheets.find(old=>old.id===s.id)!;
+  const incremental=priorBook===book&&metadata===metadataKey(book);
+  if(incremental){
+    for(const s of allSheets(book)){
+      const previous=cells.get(s.id)!,old=allSheets(before).find(old=>old.id===s.id)!;
       for(const k of new Set([...Object.keys(s.cells),...previous.keys()]))if(previous.get(k)!==s.cells[k])changes.push({sheet:s.id,key:k,value:old.cells[k]});
     }
-    undo.push({cells:changes});
-  }else undo.push({book:before});
-  while(undo.length>30||undo.filter(e=>'book'in e).length>3)undo.shift();
+    if(!changes.length){render();return true;}undo.push({cells:changes});
+  }else{const entry=structuralUndo(before,book);if('patch'in entry&&!entry.patch.length){render();return true;}undo.push(entry);}
+  while(undo.length>undoLimit)undo.shift();
   redo.length = 0;
+  recordTableEdits(before,book,incremental?changes:undefined);
   const reset=priorBook!==book||shape!==structureKey(book);
   if(!reset){
     const changedCells:string[]=[];
-    for(const s of book.sheets){
+    for(const s of allSheets(book)){
       const previous=cells.get(s.id)!;
       for(const [k,v]of Object.entries(s.cells))if(previous.get(k)!==v)changedCells.push(`${s.id}:${k}`);
       for(const k of previous.keys())if(!(k in s.cells))changedCells.push(`${s.id}:${k}`);
@@ -272,24 +390,26 @@ function mutate(label: string, fn: () => void,confirmed=false): boolean {
   changed(label,reset); render();return true;
 }
 function structureKey(b:Workbook):string {
-  return JSON.stringify([b.sheets.map(s=>[s.id,s.name,s.rows.map(r=>r.id),s.columns.map(c=>c.id)]),b.tables,b.names]);
+  return JSON.stringify([allSheets(b).map(s=>[s.id,s.name,s.rows.map(r=>r.id),s.columns.map(c=>c.id)]),allTables(b),b.names]);
 }
 function metadataKey(b:Workbook):string{return JSON.stringify(b,(k,v)=>k==='cells'?undefined:v);}
-function changed(label: string,reset=true): void {
-  book.revision++; generation++; if(reset)engine = new Engine(book); error = '';
-  status = 'Unsaved changes - saving locally...'; clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { void flush(label); },350);
+function changed(label: string,reset=true,quiet=false): void {
+  const preservedStatus=quiet?status:undefined;
+  book.revision++; generation++; if(reset)engine = new Engine(book);
+  if(!quiet){error='';status = 'Unsaved changes - saving locally...';}
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { void flush(label,preservedStatus); },350);
 }
-async function flush(label = 'Edit workbook'): Promise<void> {
+async function flush(label = 'Edit workbook',preservedStatus?:string): Promise<void> {
   clearTimeout(saveTimer);
   saving = saving.then(async () => {
     if (savedGeneration === generation && state) return;
-    const snapshot = clone(book), g = generation;
-    status = 'Saving locally...'; renderStatus();
+    const snapshot = clone(book), g = generation,undoHistory=clone({undo,redo});
+    if(preservedStatus===undefined)status = 'Saving locally...'; renderStatus();
     try {
-      state = await store.save(snapshot,state?.version ?? 0,label);
+      state = await store.save(snapshot,state?.version ?? 0,label,false,undefined,{undoHistory});
       savedGeneration = g;
-      status = state.sync ? `Saved locally - ${state.pending.length} pending changes` : 'Saved in this browser';
+      status = state.sync ? `Saved locally - ${state.pending.length} pending changes` : preservedStatus??'Saved in this browser';
       channel?.postMessage({version:state.version});
     } catch(e) { status = 'NOT SAVED - download a backup'; flash(e); throw e; }
     finally { renderStatus(); }
@@ -307,11 +427,12 @@ async function manualSave(): Promise<void> {
     if(!token){openSync();return;}
     status='Syncing private repository...';renderStatus();
     const originals=(await store.backup(state)).originals;
-    const result = await syncGitHub(state,token,fetch,originals);
+    const result = await syncGitHub(state,token,fetch,originals),received=result.remote?migrateDropdownData(result.remote):undefined;
     if (result.remote) await store.checkpoint('Before remote download',book,result.originals??[]);
-    state = await store.metadata(state.version,s => ({...s,book:clone(result.remote??book),remoteSha:result.sha,pending:[]}));
-    if(result.remote){book=clone(state.book);engine=new Engine(book);sheetId=book.sheets[0].id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';page=0;undo.length=redo.length=0;}
-    status = 'Synced with private repository'; render();
+    if(result.remote&&received?.changed)await store.checkpoint('Remote before DD storage migration',result.remote,result.originals??[]);
+    state = await store.metadata(state.version,s => ({...s,book:clone(received?.book??book),remoteSha:result.sha,pending:received?.changed?[{id:uid(),label:'Move dropdown records into DD storage',time:new Date().toISOString()}]:[]}));
+    if(result.remote)adoptSavedWorkbook();
+    status = received?.changed?'Remote downloaded; DD storage update saved locally - use Save to sync':'Synced with private repository'; render();
   } catch(e) {
     if (e instanceof SyncConflict) {
       await store.checkpoint('Remote conflict - not applied',e.remote,e.originals);
@@ -327,8 +448,9 @@ function openConflict(conflict:SyncConflict):void {
     d.querySelector<HTMLButtonElement>('#use-remote')!.onclick=async()=>{
       if(busy)return;
       try{
-        state=await store.metadata(state.version,s=>({...s,book:clone(conflict.remote),remoteSha:conflict.sha,pending:[]}));
-        book=clone(state.book);engine=new Engine(book);sheetId=book.sheets[0].id;page=0;selected={r:0,c:0};anchor={...selected};selectionKind='cells';generation++;savedGeneration=generation;undo.length=redo.length=0;
+        const received=migrateDropdownData(conflict.remote);
+        state=await store.metadata(state.version,s=>({...s,book:clone(received.book),remoteSha:conflict.sha,pending:received.changed?[{id:uid(),label:'Move dropdown records into DD storage',time:new Date().toISOString()}]:[]}));
+        adoptSavedWorkbook();
         error='';status='Remote version saved locally - previous local version in recovery';render();d.close();
       }catch(e){flash(e);}
     };
@@ -341,6 +463,11 @@ function openConflict(conflict:SyncConflict):void {
 }
 function renderStatus(): void {
   updateCalculationState();
+  for(const [action,entries]of [['undo',undo],['redo',redo]] as const){
+    const button=root.querySelector<HTMLButtonElement>(`[data-action="${action}"]`);if(!button)continue;
+    button.dataset.historyCount=String(entries.length);
+    button.dataset.shortcutLabel=`${action==='undo'?'Undo':'Redo'} (${entries.length} available)`;
+  }
   root.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('#formula,.cell-inline-editor').forEach(el=>el.disabled=busy||!editableReference()||!!gridReference()?.error);
   if(expandedEditor)expandedEditor.input.disabled=busy||!editableReference()||!!gridReference()?.error;
   const el = document.querySelector('#save-state');
@@ -353,6 +480,13 @@ function renderStatus(): void {
   if(root.querySelector('[data-action="bold"]')){
     const format=inGrid(selected.r,selected.c)?current().format:undefined;
     for(const flag of ['bold','italic','underline','strikethrough','wrap'] as const)root.querySelector(`[data-action="${flag}"]`)?.setAttribute('aria-pressed',String(!!format?.[flag]));
+  }
+  const groupAxis=selectionMode()==='rows'?'row':selectionMode()==='columns'?'column':undefined;
+  for(const [action,kind,label]of [['summary-group','summary','summary'],['plain-group','range','plain']] as const){
+    const button=root.querySelector<HTMLButtonElement>(`[data-action="${action}"]`);if(!button)continue;
+    const grouped=!!groupAxis&&groupingSelection(kind,groupAxis).targets.length>0;
+    button.setAttribute('aria-pressed',String(grouped));button.title=`${grouped?'Remove':'Create'} ${label} group`;
+    button.disabled=busy||!editableReference()||!!gridReference()?.error;
   }
   const assignment=root.querySelector<HTMLButtonElement>('[data-action="dropdown-source"]');
   if(assignment){
@@ -372,18 +506,30 @@ function renderStatus(): void {
 function referenceTabsHtml():string{
   const button=(source:ReferenceSource,label=referenceLabel(source),category?:string)=>`<button class="sheet-tab ${!category&&source.id===referenceId?'current ':''}${source.archived?'archived':''}" data-reference="${source.id}" ${category?`data-reference-group="${esc(category)}"`:''}>${esc(label)}</button>`;
   const node=(g:ReferenceNavigation,depth=1):string=>g.group?`<span class="reference-tab-group reference-group-depth-${depth}" role="group" aria-label="${esc(g.group)}">${button(g.members.find(s=>s.id===referenceId)??g.members[0],g.label,g.group)}<span class="reference-group-members" ${book.pickerSources[`dd-group-collapsed:${g.group.toLowerCase()}`]==='true'?'hidden':''}>${g.children.map(child=>node(child,depth+1)).join('')}</span></span>`:button(g.members[0]);
-  return`<div class="tabs">${referenceNavigation(book).map(g=>node(g)).join('')}<button data-action="new-reference" aria-label="Add dropdown source">+</button><span class="tab-drop-marker" hidden></span></div>`;
+  return`<div class="tabs">${referenceNavigation(book).map(g=>node(g)).join('')}<span class="tab-drop-marker" hidden></span></div>`;
+}
+function workbookTabsHtml():string{
+  const button=(tab:Sheet)=>`<button class="sheet-tab ${tab.id===sheetId?'current':''}" data-sheet="${tab.id}" style="--tab-color:${esc(tab.color)}">${esc(tab.name)}</button>`,seen=new Set<string>();
+  const tabs=book.sheets.map(tab=>{
+    const group=book.sheetTabGroups?.[tab.id];if(!group)return button(tab);
+    if(seen.has(group))return'';seen.add(group);
+    const collapsed=book.sheetTabCollapsed?.includes(group);
+    return`<span class="reference-tab-group reference-group-depth-1 sheet-tab-group" role="group" aria-label="${esc(group)}"><button type="button" data-sheet-group="${esc(group)}" aria-expanded="${!collapsed}">${esc(group)}</button><span class="reference-group-members"${collapsed?' hidden':''}>${book.sheets.filter(sheet=>book.sheetTabGroups?.[sheet.id]===group).map(button).join('')}</span></span>`;
+  }).join('');
+  return`<div class="tabs">${tabs}<span class="tab-drop-marker" hidden></span></div>`;
 }
 function render(): void {
   const toolbarScroll=root.querySelector<HTMLElement>('.toolbar')?.scrollLeft??0;
   closeToolbar?.();closeToolbar=undefined;
+  tableSelectionControl?.close();tableSelectionControl=undefined;
+  stickyTableHeaders?.close();stickyTableHeaders=undefined;
   hideShortcutHint();
   groupControls?.close();groupControls=undefined;
   closeCellDropdown?.();
   if(draft===undefined)closeExpandedEditor();
+  if(ensureTableSheetSpace(book)){const warning=error;changed('Add blank sheet space');error=warning;}
   engine.beginPass();
-  if(activeReference()?.kind==='conversions'){const table=book.tables.find(t=>t.id===activeReference()!.table);if(table)sheetId=table.sheet;referenceId=undefined;}
-  if(referenceId&&(!activeReference()||activeReference()?.kind==='units'))referenceId=book.references?.find(s=>s.kind!=='units'&&s.kind!=='conversions')?.id;
+  if(referenceId&&!activeReference())referenceId=book.references?.[0]?.id;
   document.body.classList.toggle('dd-mode',!!referenceId);
   const view=gridReference();
   if(view?.sheet)sheetId=view.sheet.id;
@@ -393,10 +539,10 @@ function render(): void {
   selected.r=Math.min(selected.r,s.rows.length-1); selected.c=Math.min(selected.c,s.columns.length-1);
   anchor.r=Math.min(anchor.r,s.rows.length-1); anchor.c=Math.min(anchor.c,s.columns.length-1);
   if(view?.rows.length&&view.columns.length&&selectionKind==='cells'&&!inGrid(selected.r,selected.c)){selected={r:s.rows.findIndex(r=>r.id===(view.rows[1]??view.rows[0])),c:s.columns.findIndex(c=>c.id===view.columns[0])};anchor={...selected};selectionKind='cells';}
-  const b = bounds(),previousGrid=root.querySelector<HTMLElement>('#grid-scroll'),viewKey=s.id+(referenceId??''),sameSheet=renderedSheet===viewKey;
+  const previousGrid=root.querySelector<HTMLElement>('#grid-scroll'),viewKey=s.id+(referenceId??''),sameSheet=renderedSheet===viewKey;
   if(!sameSheet)extraSelections=[];
-  if(tableSelectionTarget&&!(view?.table?[view.table]:book.tables).some(t=>t.id===tableSelectionTarget&&t.sheet===s.id))tableSelectionTarget=undefined;
-  if(selectionKind==='cells')selectionScope=undefined;
+  if(tableSelectionTarget&&!(view?.table?[view.table]:allTables(book)).some(t=>t.id===tableSelectionTarget&&t.sheet===s.id))tableSelectionTarget=undefined;
+  if(selectionKind==='cells')selectionScope=tableSelectionMode?tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)?.id:undefined;
   if(selectionScope&&!scopedSelectionTable()){selectionScope=undefined;selectionKind='cells';anchor={...selected};}
   const selectedRanges=currentSelections();
   const tabScroll=root.querySelector<HTMLElement>('.tabs')?.scrollLeft??0;
@@ -410,16 +556,26 @@ function render(): void {
   const columns = s.columns.map((c,i) => ({...c,i})).filter(c => !c.hidden && !collapsedColumns.has(c.id)&&(showHypothetical||!hypotheticalColumns.has(c.id)||s.rows.some(row=>!columnHypo(row.id,c.id)))&&(!view||view.columns.includes(c.id)));
   columns.sort((a,b)=>Number(pins.includes(b.id))-Number(pins.includes(a.id)));
   const rows = s.rows.map((r,i) => ({...r,i})).filter(r => !r.hidden && !collapsedRows.has(r.id)&&(showHypothetical||!hypotheticalRows.has(r.id)||columns.some(column=>!rowHypo(r.id,column.id)))&&(!view||view.rows.includes(r.id)));
+  groupProjection=tableGroupProjection(book,s,rows.map(row=>row.id),columns.map(column=>column.id));
+  if(maskedCell(s.rows[selected.r].id,s.columns[selected.c].id)){
+    const owner=tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id);
+    const available=(owned:boolean)=>{
+      for(const row of rows)for(const column of columns)if((!owned||!owner||(row.id===owner.header||owner.rows.includes(row.id))&&owner.columns.some(field=>field.column===column.id))&&!maskedCell(row.id,column.id))return{r:row.i,c:column.i};
+    };
+    const replacement=available(true)??available(false);
+    if(replacement){selected=replacement;anchor={...selected};selectionKind='cells';extraSelections=[];}
+  }
+  const b=bounds();
   navigationRows=rows.map(r=>r.i);navigationColumns=columns.map(c=>c.i);
-  const groups=s.groups.filter(g=>(!g.table||book.tables.some(table=>table.id===g.table&&table.sheet===s.id))&&(!view||g.members.some(id=>(g.axis==='row'?view.rows:view.columns).includes(id))));
+  const groups=s.groups.filter(g=>(!g.table||allTables(book).some(table=>table.id===g.table&&table.sheet===s.id))&&(!view||g.members.some(id=>(g.axis==='row'?view.rows:view.columns).includes(id))));
   const sheetGroups=groups.filter(g=>!g.table);
   const tree=!!s.outlineView?.tree,hints=s.outlineView?.plainGroupHints!==false,outlines=outlineGroups(sheetGroups),gutter=outlineGutter(outlines,rows.map(r=>r.id),tree,s.rows.length,hints);
   const firstColumn=columns[0],rowLayouts=summaryRowLayout(sheetGroups,rows.map(r=>r.id),tree,()=>true);
   const hypotheticalStyle=getHypotheticalStyle(book);
   const tableRightEdges=new Set<string>(),tableBottomEdges=new Set<string>();
-  for(const table of book.tables.filter(table=>table.sheet===s.id)){
+  for(const table of allTables(book).filter(table=>table.sheet===s.id)){
     const rowIds=new Set([table.header,...table.rows]),columnIds=new Set(table.columns.map(column=>column.column));
-    const tableRows=rows.filter(row=>rowIds.has(row.id)),tableColumns=columns.filter(column=>columnIds.has(column.id));
+    const tableRows=rows.filter(row=>rowIds.has(row.id)&&!scopedCollapsed.some(({group,members})=>group.table===table.id&&group.axis==='row'&&members.has(row.id))),tableColumns=columns.filter(column=>columnIds.has(column.id)&&!scopedCollapsed.some(({group,members})=>group.table===table.id&&group.axis==='column'&&members.has(column.id)));
     const lastRow=tableRows.at(-1),lastColumn=tableColumns.at(-1);
     if(!lastRow||!lastColumn)continue;
     for(const row of tableRows)tableRightEdges.add(key(row.id,lastColumn.id));
@@ -448,13 +604,14 @@ function render(): void {
   const pinOffsets=new Map<string,number>();let pinLeft=gutter;
   for(const c of columns)if(pins.includes(c.id)){pinOffsets.set(c.id,pinLeft);pinLeft+=c.width??145;}
   const pinnedStyle=(id:string,header=false)=>pinOffsets.has(id)?`position:sticky;left:${pinOffsets.get(id)}px;z-index:${header?6:3};`:'';
-  const headers=new Set(book.tables.filter(t=>t.sheet===s.id).map(t=>t.header));
+  const headers=new Set(allTables(book).filter(t=>t.sheet===s.id).map(t=>t.header));
   const layout=new RowViewport(rows.map(r=>measuredRowHeights.get(r.id)??Math.max(r.height?r.height*4/3:33,headers.has(r.id)?38:0)));
   let vertical=sameSheet?previousGrid?.scrollTop??0:0;
-  const target=scrollTarget??(renderedTarget!==`${s.id}:${selected.r}`?selected.r:undefined);
+  const target=typeof scrollTarget==='object'?scrollTarget.row:scrollTarget??(renderedTarget!==`${s.id}:${selected.r}`?selected.r:undefined);
   if(target!==undefined){
-    const position=rows.findIndex(r=>r.i>=target),at=position<0?rows.length-1:position,top=layout.offsets[Math.max(0,at)],height=previousGrid?.clientHeight??innerHeight-180;
-    if(!sameSheet||scrollTarget!==undefined||top<vertical||top+(layout.heights[at]??33)>vertical+height-estimatedHeaderHeight)vertical=top;
+    const display=groupProjection.display(s.rows[target]?.id,s.columns[selected.c].id),displayIndex=display?s.rows.findIndex(row=>row.id===display.row):target;
+    const position=rows.findIndex(r=>r.i>=displayIndex),at=position<0?rows.length-1:position,top=layout.offsets[Math.max(0,at)],height=previousGrid?.clientHeight??innerHeight-180;
+    if(!sameSheet||scrollTarget!==undefined||top<vertical||top+(layout.heights[at]??33)>vertical+height-estimatedHeaderHeight)vertical=layout.offsets[Math.max(0,at-(typeof scrollTarget==='object'?scrollTarget.contextRows:0))];
   }
   scrollTarget=undefined;renderedSheet=viewKey;renderedTarget=`${s.id}:${selected.r}`;
   const t = view?.table??tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id);
@@ -470,26 +627,41 @@ function render(): void {
       <div class="tool-set">${(['undo','redo'] as const).map(name=>`<button class="icon-button" data-action="${name}" aria-label="${name==='undo'?'Undo':'Redo'}" title="${name==='undo'?'Undo (Ctrl+Z)':'Redo (Ctrl+Y)'}" ${(name==='undo'?undo:redo).length?'':'disabled'}>${toolbarIcon(name)}</button>`).join('')}</div>
       <div class="tool-set">${(['bold','italic','underline','strikethrough','wrap'] as const).map(name=>{const label={bold:'Bold',italic:'Italic',underline:'Underline',strikethrough:'Strikethrough',wrap:'Wrap text'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}<button class="icon-button palette-button" data-action="text-color" title="Text color" aria-label="Text color">${toolbarIcon('text-color',current().format?.color??'#cc1122')}<span class="format-caret"></span></button><button class="icon-button palette-button" data-action="background-color" title="Cell background color" aria-label="Cell background color">${toolbarIcon('background-color',current().format?.background??'#ffdf00')}<span class="format-caret"></span></button><button data-action="format">123</button></div>
       <div class="tool-set">${referenceId?'<button data-action="reference-settings">DD settings</button>':''}<button class="icon-button" data-action="dropdown-source" aria-label="Assign DD" aria-pressed="false" title="Assign a dropdown without changing cell contents">${toolbarIcon('dropdown-source')}</button></div>
-      <div class="tool-set"><button data-action="table-selection" aria-label="Table-constrained header selection" aria-pressed="${tableSelectionMode}" title="Constrain existing row-number and column-letter header selections to a table">Table selection</button><select id="table-selection-target" data-toolbar-control="table-selection-target" aria-label="Table selection target" ${tableSelectionMode?'':'hidden'}><option value="">Auto: active cell</option>${book.tables.filter(table=>table.sheet===s.id&&(!view||table.id===view.table?.id)).map(table=>`<option value="${esc(table.id)}">${esc(table.name)}</option>`).join('')}</select><button class="icon-button" data-action="structure" title="Rows & columns" aria-label="Rows & columns">${toolbarIcon('structure')}</button>${referenceId?'<button data-action="archive-options">Hide / show selected options</button>':''}</div>
+      <div class="tool-set"><button type="button" class="icon-button group-menu-button" data-toolbar-id="action:table-selection" aria-label="Group controls" title="Group controls"></button><button type="button" class="icon-button group-toggle" data-action="summary-group" aria-label="Create/remove summary group" aria-pressed="false" title="Create summary group">${toolbarIcon('summary-group')}</button><button type="button" class="icon-button group-toggle" data-action="plain-group" aria-label="Create/remove plain group" aria-pressed="false" title="Create plain group">${toolbarIcon('plain-group')}</button><button class="icon-button" data-action="structure" title="Rows & columns" aria-label="Rows & columns">${toolbarIcon('structure')}</button>${referenceId?'<button data-action="archive-options">Hide / show selected options</button>':''}</div>
       <div class="tool-set">${(['find','copy','cut','paste','fill'] as const).map(name=>{const label={find:'Find / replace',copy:'Copy',cut:'Cut',paste:'Paste',fill:'Fill down'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}</div>
       <div class="tool-set"><button class="icon-button" data-action="pin" aria-pressed="${pins.length>0}" title="${pins.length?'Unpin columns':'Pin selected columns'}" aria-label="${pins.length?'Unpin columns':'Pin selected columns'}">${toolbarIcon('pin')}</button><button class="icon-button" data-action="browse" title="Browse values" aria-label="Browse values">${toolbarIcon('browse')}</button><button class="icon-button" data-action="hypothetical" aria-label="Add/remove ${esc(hypotheticalStyle.label)} tag" aria-pressed="false" data-shortcut-label="Add/remove ${esc(hypotheticalStyle.label)} tag" data-shortcut-keys="Ctrl|H" aria-keyshortcuts="Control+H">${toolbarIcon('hypothetical')}</button><button class="icon-button" data-action="hypothetical-settings" aria-label="Hypo tag styling" title="Customize ${esc(hypotheticalStyle.label)} row and column treatments">${toolbarIcon('hypothetical-settings')}</button><button id="status-filter" class="icon-button" data-action="hypothetical-visibility" data-toolbar-control="status-filter" aria-label="View/hide hypo rows/columns" aria-pressed="${!showHypothetical}" title="${showHypothetical?'Hide':'Show'} ${esc(hypotheticalStyle.label)} rows and columns">${toolbarIcon('hypothetical-visibility')}</button></div>
       ${referenceId?'':'<div class="tool-set"><button data-action="quick-add">+ Add entry</button></div>'}
-      ${referenceId?'':`<div class="tool-set"><button class="icon-button" data-action="convert-table" aria-label="Convert to table" title="Join selected rows/columns to their surrounding table, including summary descendants">${toolbarIcon('convert-table')}</button><button data-action="tables">Tables</button><button data-action="block">Meal / day</button></div>`}
+      ${referenceId?'':`<div class="tool-set"><button class="icon-button" data-action="convert-table" aria-label="Convert to table" title="Create a table, or join selected rows/columns to their surrounding table">${toolbarIcon('convert-table')}</button><button class="icon-button" data-action="tables" aria-label="Table manager" title="Table manager; rename the table containing the selected cell">${toolbarIcon('tables')}</button><button data-action="block">Meal / day</button></div>`}
       <div class="tool-set toolbar-layout-controls"><button class="icon-button" data-action="toolbar-layout" aria-label="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar'}" aria-pressed="${arrangingToolbar}" title="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar: drag tools or use Alt+Left/Right'}">${toolbarIcon('toolbar-layout')}</button></div>
     </nav>
     <form class="formula-bar" id="formula-form"><span class="address">${letters(selected.c)}${selected.r+1}</span><span class="fx">fx</span><input id="formula" aria-label="Cell value or formula" autocomplete="off" spellcheck="false" value="${esc(draft??inputText(current()))}"><span id="calculation-state"></span></form>
     ${view&&(view.error||referenceNotice)?`<div class="reference-notice" id="reference-notice" role="${view.error?'alert':'status'}">${esc(view.error||referenceNotice)}</div>`:''}
     <div class="grid-shell"><div id="grid-scroll" class="grid-scroll" tabindex="0" aria-label="Spreadsheet, use arrow keys to navigate">
-    <table class="grid option-a-outline ${tree?'tree-outline ':''}selection-${selectionKind} ${touchSelection?'touch-select':''}" role="grid" aria-label="${esc(activeReference()?.name??s.name)}" aria-rowcount="${s.rows.length}" aria-colcount="${s.columns.length}" style="--outline-gutter:${gutter}px;--column-header-height:${columnHeaderHeight}px;--grid-insert-width:${columns.reduce((w,c)=>w+(c.width??145),gutter)}px;--grid-insert-height:${layout.offsets.at(-1)!+estimatedHeaderHeight}px"><colgroup><col style="width:${gutter}px">${columns.map(c=>`<col style="width:${c.width??145}px">`).join('')}</colgroup>
-    <thead><tr><th class="corner"><button data-action="select-all" aria-label="Select all cells">+</button><button class="boundary-control first-column" data-insert-column="0" aria-label="Insert column before A">+</button></th>${columns.map(c=>`<th data-col="${c.i}" style="${pinnedStyle(c.id,true)}" class="${c.i>=b.c1&&c.i<=b.c2?'column-selected ':''}${movingColumns?'move-target':''}" title="Double-click to rename column"><span class="column-index">${letters(c.i)}</span><span>${esc(t?.columns.find(x=>x.column===c.id)?.name??c.label)}</span><button class="move-control" data-move-column="${c.i}" draggable="true" aria-label="Move selected columns" title="Drag, or tap then tap a destination boundary">${grip(true)}</button><button class="boundary-control" data-insert-column="${c.i+1}" aria-label="${movingColumns?'Move columns':'Insert column'} after ${letters(c.i)}">+</button><button class="resize-edge resize-column" data-resize-column="${c.i}" aria-label="Resize column ${letters(c.i)}" title="Drag to resize; double-click to fit"></button></th>`).join('')}</tr></thead>
+    <table class="grid spreadsheet-grid option-a-outline ${tree?'tree-outline ':''}selection-${selectionKind} ${touchSelection?'touch-select':''}" role="grid" aria-label="${esc(activeReference()?.name??s.name)}" aria-rowcount="${s.rows.length}" aria-colcount="${s.columns.length}" style="--outline-gutter:${gutter}px;--column-header-height:${columnHeaderHeight}px;--grid-insert-width:${columns.reduce((w,c)=>w+(c.width??145),gutter)}px;--grid-insert-height:${layout.offsets.at(-1)!+estimatedHeaderHeight}px"><colgroup><col style="width:${gutter}px">${columns.map(c=>`<col style="width:${c.width??145}px">`).join('')}</colgroup>
+    <thead><tr><th class="corner"><div class="table-selection-control" role="group" aria-label="Table selection"><button type="button" data-action="table-selection" aria-label="Table-constrained header selection" aria-pressed="${tableSelectionMode}"></button><button type="button" id="table-selection-target" aria-label="Table selection target"></button></div><button class="boundary-control first-column" data-insert-column="0" aria-label="Insert column before A">+</button></th>${columns.map(c=>`<th data-col="${c.i}" style="${pinnedStyle(c.id,true)}" class="${c.i>=b.c1&&c.i<=b.c2?'column-selected ':''}${movingColumns?'move-target':''}" title="Double-click to rename column"><span class="column-index">${letters(c.i)}</span><span>${esc(t?.columns.find(x=>x.column===c.id)?.name??c.label)}</span><button class="move-control" data-move-column="${c.i}" draggable="true" aria-label="Move selected columns" title="Drag, or tap then tap a destination boundary">${grip(true)}</button><button class="boundary-control" data-insert-column="${c.i+1}" aria-label="${movingColumns?'Move columns':'Insert column'} after ${letters(c.i)}">+</button><button class="resize-edge resize-column" data-resize-column="${c.i}" aria-label="Resize column ${letters(c.i)}" title="Drag to resize; double-click to fit"></button></th>`).join('')}</tr></thead>
     <tbody></tbody></table></div></div>
-    <div class="grid-footer"><div><button class="selection-count" data-action="range" title="Select a cell range, including on mobile">${selectionCount(selectedRanges)} cells</button><span id="selection-scope-label"></span><span class="desktop"> ${t?esc(t.name)+' / stable references':'Freeform sheet'}</span></div><div class="navigator"><button data-action="top" aria-label="Jump to top">Top</button><button data-action="prev" aria-label="Previous rows">&larr;</button><input id="row-jump" type="number" min="1" max="${s.rows.length}" aria-label="Jump to row"><span>/ ${s.rows.length}</span><button data-action="next" aria-label="Next rows">&rarr;</button><button data-action="bottom">Bottom</button></div></div>
-    <footer class="sheet-bar" aria-label="${referenceId?'Dropdown sources':'Workbook sheets'}">${referenceId?referenceTabsHtml():`<div class="tabs">${book.sheets.filter(tab=>!tab.supporting||tab.id===s.id||(book.references??[]).some(source=>source.kind==='conversions'&&book.tables.some(table=>table.id===source.table&&table.sheet===tab.id))).map(tab=>`<button class="sheet-tab ${tab.id===s.id?'current':''}" data-sheet="${tab.id}" style="--tab-color:${esc(tab.color)}">${esc(tab.name)}</button>`).join('')}<button data-action="new-sheet" title="Add sheet" aria-label="Add sheet">+</button><span class="tab-drop-marker" hidden></span></div>`}<button class="reference-manager" data-action="references" title="Dropdown sources" aria-label="DD">DD</button></footer>`;
+    <div class="grid-footer"><div><button class="selection-count" data-action="range" title="Select a cell range, including on mobile">${selectionCount(selectedRanges)} cells</button><span id="selection-scope-label"></span></div><div class="navigator"><button data-action="top" aria-label="Jump to top">Top</button><button data-action="prev" aria-label="Previous rows">&larr;</button><input id="row-jump" type="number" min="1" max="${s.rows.length}" aria-label="Jump to row"><span>/ ${s.rows.length}</span><button data-action="next" aria-label="Next rows">&rarr;</button><button data-action="bottom">Bottom</button></div></div>
+    <footer class="sheet-bar" aria-label="${referenceId?'Dropdown sources':'Workbook sheets'}">${referenceId?referenceTabsHtml():workbookTabsHtml()}<div class="tab-actions"><button type="button" data-action="${referenceId?'new-reference':'new-sheet'}" title="${referenceId?'Add dropdown source':'Add sheet'}" aria-label="${referenceId?'Add dropdown source':'Add sheet'}">${toolbarIcon('add')}</button><button type="button" data-action="${referenceId?'reference-settings':'sheet-settings'}" title="${referenceId?'Dropdown settings':'Sheet settings'}" aria-label="${referenceId?'Dropdown settings':'Sheet settings'}">${toolbarIcon('settings')}</button></div><button class="reference-manager" data-action="references" title="Dropdown sources" aria-label="DD">DD</button></footer>`;
   const grid=root.querySelector<HTMLElement>('#grid-scroll')!,body=grid.querySelector('tbody')!;
   grid.dataset.firstRow=String(rows[0]?.i??0);grid.dataset.firstColumn=String(columns[0]?.i??0);
-  groupControls=mountGroupControls({sheet:s,groups,tables:book.tables,grid,rows:rows.map(r=>r.id),columns:columns.map(c=>c.id),rowLayouts,tree,hints,menuOpen:groupMenuOpen,setMenuOpen:open=>{groupMenuOpen=open;},
-    change:(label,fn)=>commitDraft()&&mutate(label,fn),selectAll:()=>{void action('select-all');},manage:openGroups});
+  groupControls=mountGroupControls({sheet:s,groups,tables:allTables(book),grid,rows:rows.map(r=>r.id),columns:columns.map(c=>c.id),projection:groupProjection,rowLayouts,tree,hints,menuOpen:groupMenuOpen,setMenuOpen:open=>{groupMenuOpen=open;},
+    change:(label,fn)=>commitDraft()&&mutate(label,fn),refuse:flash,selectAll:()=>{void action('select-all');},manage:openGroups,scope:()=>({enabled:tableSelectionMode,table:selectionScope??tableSelectionTarget}),menuButton:root.querySelector<HTMLButtonElement>('.toolbar .group-menu-button')!});
   const headerHeight=grid.querySelector('thead')!.getBoundingClientRect().height;
+  stickyTableHeaders=mountStickyTableHeaders({grid,sheet:s,tables:view?.table?[view.table]:allTables(book),rows:rows.map((row,i)=>({id:row.id,get start(){return layout.offsets[i];},get end(){return layout.offsets[i+1];}})),display:groupProjection.display,masked:maskedCell,select:(row,column,edit)=>{
+    if(!commitDraft())return;extraSelections=[];selected={r:s.rows.findIndex(item=>item.id===row),c:s.columns.findIndex(item=>item.id===column)};anchor={...selected};selectionKind='cells';refreshSelection();if(edit)renameSelectedColumn();
+  }});
+  viewportSelectionTables=(tables,axis)=>{
+    const positions=axis==='column'?new Map(rows.map((row,i)=>[row.id,{start:layout.offsets[i],end:layout.offsets[i+1]}])):
+      new Map(columns.flatMap(column=>{
+        const header=grid.querySelector<HTMLElement>(`thead [data-col="${column.i}"]`);
+        if(!header)return[];
+        const rect=header.getBoundingClientRect();return[[column.id,{start:rect.left,end:rect.right}] as const];
+      }));
+    const viewport=axis==='column'?{start:grid.scrollTop,end:grid.scrollTop+grid.clientHeight-headerHeight}:
+      {start:grid.querySelector('.corner')!.getBoundingClientRect().right,end:grid.getBoundingClientRect().left+grid.clientWidth};
+    const nearest=nearestHeaderTables(tables,axis,positions,viewport);
+    return nearest.length?nearest:tables;
+  };
   let lastStart=-1,lastEnd=-1;
   const spacer=(height:number,position:string)=>`<tr class="virtual-spacer" aria-hidden="true" data-spacer="${position}"><td colspan="${columns.length+1}" style="height:${height}px;padding:0;border:0;line-height:0;font-size:0"></td></tr>`;
   const draw=(initialTop?:number)=>{
@@ -502,8 +674,11 @@ function render(): void {
     if(window.start===lastStart&&window.end===lastEnd&&initialTop===undefined)return;
     lastStart=window.start;lastEnd=window.end;engine.beginPass();
     const active=document.activeElement,wasInline=active instanceof HTMLTextAreaElement&&active.classList.contains('cell-inline-editor'),caret=wasInline?[active.selectionStart,active.selectionEnd]:undefined,b=bounds(),ranges=currentSelections();
-    body.innerHTML=spacer(window.before,'before')+rows.slice(window.start,window.end).map((r,index)=>{const rowNumber=view?window.start+index+1:r.i+1;return`<tr data-row="${r.i}"${r.height?` style="--row-height:${r.height*4/3}px"`:''} class="${activeReference()?.archivedRows.includes(r.id)?'archived ':''}${r.status&&r.status!=='real'?r.status:''}"><th data-row-select="${r.i}" class="${r.i>=b.r1&&r.i<=b.r2?'row-selected':''}"><span class="row-index">${rowNumber}</span>${editableReference()&&(!view||r.id!==view.table?.header)?`<button class="row-move-control" data-move-row="${r.i}" draggable="true" aria-label="Move row ${rowNumber}" title="Drag row, or tap then tap destination">${grip(false)}</button>`:''}<button class="boundary-control row-boundary" data-insert-row="${r.i+1}" aria-label="${movingRows?'Move rows':'Insert row'} after ${rowNumber}">+</button>${index===0||view&&r.id===view.table?.rows[0]?`<button class="boundary-control row-start" data-insert-row="${r.i}" aria-label="Insert row before ${rowNumber}">+</button>`:''}<button class="resize-edge resize-row" data-resize-row="${r.i}" aria-label="Resize row ${rowNumber}" title="Drag to resize; double-click to fit"></button></th>${columns.map(c=>{
-      const cell=getCell(s,r.id,c.id),val=cellText(cell,s,r.i,c.i),header=book.tables.some(t=>t.sheet===s.id&&t.header===r.id&&t.columns.some(x=>x.column===c.id)),inSelection=ranges.some(b=>r.i>=b.r1&&r.i<=b.r2&&c.i>=b.c1&&c.i<=b.c2),copying=copied?.sheet===s.id&&r.i>=copied.r&&r.i<copied.r+copied.cells.length&&c.i>=copied.c&&c.i<copied.c+copied.cells[0].length;
+    body.innerHTML=spacer(window.before,'before')+rows.slice(window.start,window.end).map((slotRow,index)=>{const r=slotRow,rowNumber=view?window.start+index+1:r.i+1;return`<tr data-row="${r.i}"${r.height?` style="--row-height:${r.height*4/3}px"`:''} class="${activeReference()?.archivedRows.includes(r.id)?'archived ':''}${r.status&&r.status!=='real'?r.status:''}"><th data-row-select="${r.i}" class="${r.i>=b.r1&&r.i<=b.r2?'row-selected':''}"><span class="row-index">${rowNumber}</span>${editableReference()&&(!view||r.id!==view.table?.header)?`<button class="row-move-control" data-move-row="${r.i}" draggable="true" aria-label="Move row ${rowNumber}" title="Drag row, or tap then tap destination">${grip(false)}</button>`:''}<button class="boundary-control row-boundary" data-insert-row="${r.i+1}" aria-label="${movingRows?'Move rows':'Insert row'} after ${rowNumber}">+</button>${index===0||view&&r.id===view.table?.rows[0]?`<button class="boundary-control row-start" data-insert-row="${r.i}" aria-label="Insert row before ${rowNumber}">+</button>`:''}<button class="resize-edge resize-row" data-resize-row="${r.i}" aria-label="Resize row ${rowNumber}" title="Drag to resize; double-click to fit"></button></th>${columns.map(slotColumn=>{
+      const source=groupProjection!.source(slotRow.id,slotColumn.id),display=`data-display-r="${slotRow.i}" data-display-c="${slotColumn.i}"`;
+      if(!source)return`<td ${display} class="compacted-empty" aria-hidden="true"></td>`;
+      const r=rows.find(row=>row.id===source.row)!,c=columns.find(column=>column.id===source.column)!;
+      const cell=getCell(s,r.id,c.id),val=cellText(cell,s,r.i,c.i),header=allTables(book).some(t=>t.sheet===s.id&&t.header===r.id&&t.columns.some(x=>x.column===c.id)),inSelection=ranges.some(b=>r.i>=b.r1&&r.i<=b.r2&&c.i>=b.c1&&c.i<=b.c2),copying=copied?.sheet===s.id&&r.i>=copied.r&&r.i<copied.r+copied.cells.length&&c.i>=copied.c&&c.i<copied.c+copied.cells[0].length;
       const inset=(c.id===firstColumn?.id?rowLayouts.get(r.id)?.inset??0:0)+(r.id===rows[0]?.id?(columnSummaries.get(c.id)??0)*24:0);
       const rowTagged=rowHypo(r.id,c.id),columnTagged=columnHypo(r.id,c.id),owner=tableAt(book,s.id,r.id,c.id);
       const firstOwnedColumn=owner?columns.find(column=>owner.columns.some(field=>field.column===column.id))?.id:firstColumn?.id;
@@ -511,7 +686,7 @@ function render(): void {
       const tagged=rowTagged&&c.id===(hypotheticalRows.has(r.id)?firstColumn?.id:firstOwnedColumn)||columnTagged&&r.id===(hypotheticalColumns.has(c.id)?rows[0]?.id:firstOwnedRow);
       const treatment=rowTagged?hypotheticalStyle.rows:columnTagged?hypotheticalStyle.columns:undefined;
       const badge=tagged&&treatment?.badge?`<span class="hypothetical-badge" style="${hypotheticalBadgeCss(treatment)}" role="img" aria-label="${esc(hypotheticalStyle.label)}" title="${esc(hypotheticalStyle.label)}">${toolbarIcon('hypothetical-badge')}</span>`:'';
-      return `<td tabindex="-1" data-r="${r.i}" data-c="${c.i}" class="${maskedCell(r.id,c.id)?'scoped-hidden ':''}${tableRightEdges.has(key(r.id,c.id))?'table-right-edge ':''}${tableBottomEdges.has(key(r.id,c.id))?'table-bottom-edge ':''}${treatment?`hypothetical-cell ${treatment.fillOpacity>0?'has-hyp-fill ':''}${treatment.textColor?'custom-hyp-text ':''}`:''}${inset?'summary-cell ':''}${header?'table-header ':''}${inSelection?'selected ':''}${selected.r===r.i&&selected.c===c.i?'active ':''}${copying?'copying ':''}${cell.formula?'calculated ':''}${val.startsWith('#')?'cell-error ':''}${cell.binding?'linked ':''}" style="${treatment?hypotheticalCss(treatment):''}${inset?`--summary-text-inset:${inset}px;`:''}${pinnedStyle(c.id)}${cell.format?.bold?'font-weight:700;':''}${cell.format?.italic?'font-style:italic;':''}${cell.format?.underline||cell.format?.strikethrough?`text-decoration:${[cell.format?.underline?'underline':'',cell.format?.strikethrough?'line-through':''].filter(Boolean).join(' ')};`:''}${cell.format?.wrap?'white-space:pre-wrap;overflow-wrap:anywhere;':''}${cell.format?.background?`background-color:${esc(cell.format.background)};`:''}${cell.format?.color?`color:${esc(cell.format.color)};`:''}" title="${esc(cell.formula?displayFormula(cell.formula,book):val)}"><span class="cell-display">${badge}<span class="cell-value"${treatment?` style="${hypotheticalTextCss(treatment)}"`:''}>${safeLink(cell.link??val)?`<a href="${esc(cell.link??val)}" target="_blank" rel="noopener noreferrer">${esc(val)}</a>`:esc(val)}</span></span>${cell.note?'<span class="note-dot" title="Cell has a note"></span>':''}${r.i===b.r2&&c.i===b.c2?'<button type="button" class="fill-handle" data-fill-handle aria-label="Drag to fill"></button>':''}</td>`;
+      return `<td tabindex="-1" data-r="${r.i}" data-c="${c.i}" ${display} class="${maskedCell(r.id,c.id)?'scoped-hidden ':''}${tableRightEdges.has(key(r.id,c.id))?'table-right-edge ':''}${tableBottomEdges.has(key(r.id,c.id))?'table-bottom-edge ':''}${treatment?`hypothetical-cell ${treatment.fillOpacity>0?'has-hyp-fill ':''}${treatment.textColor?'custom-hyp-text ':''}`:''}${inset?'summary-cell ':''}${header?'table-header ':''}${inSelection?'selected ':''}${selected.r===r.i&&selected.c===c.i?'active ':''}${copying?'copying ':''}${cell.formula?'calculated ':''}${val.startsWith('#')?'cell-error ':''}${cell.binding?'linked ':''}" style="${treatment?hypotheticalCss(treatment):''}${inset?`--summary-text-inset:${inset}px;`:''}${pinnedStyle(slotColumn.id)}${cell.format?.bold?'font-weight:700;':''}${cell.format?.italic?'font-style:italic;':''}${cell.format?.underline||cell.format?.strikethrough?`text-decoration:${[cell.format?.underline?'underline':'',cell.format?.strikethrough?'line-through':''].filter(Boolean).join(' ')};`:''}${cell.format?.wrap?'white-space:pre-wrap;overflow-wrap:anywhere;':''}${cell.format?.background?`background-color:${esc(cell.format.background)};`:''}${cell.format?.color?`color:${esc(cell.format.color)};`:''}" title="${esc(cell.formula?displayFormula(cell.formula,book):val)}"><span class="cell-display">${badge}<span class="cell-value"${treatment?` style="${hypotheticalTextCss(treatment)}"`:''}>${safeLink(cell.link??val)?`<a href="${esc(cell.link??val)}" target="_blank" rel="noopener noreferrer">${esc(val)}</a>`:esc(val)}</span></span>${cell.note?'<span class="note-dot" title="Cell has a note"></span>':''}${r.i===b.r2&&c.i===b.c2?'<button type="button" class="fill-handle" data-fill-handle aria-label="Drag to fill"></button>':''}</td>`;
     }).join('')}</tr>`;}).join('')+spacer(window.after,'after');
     const source=activeReference();
     if(view?.table&&!view.error&&source&&!source.archived&&source.kind!=='derived'&&window.end===rows.length){
@@ -552,7 +727,7 @@ function safeLink(value: string): boolean {
   try { return ['https:','http:','mailto:'].includes(new URL(value).protocol); } catch { return false; }
 }
 function cellValidation(s:Sheet,row:string,column:string){
-  if(book.tables.some(t=>t.sheet===s.id&&t.header===row&&t.columns.some(c=>c.column===column)))return;
+  if(allTables(book).some(t=>t.sheet===s.id&&t.header===row&&t.columns.some(c=>c.column===column)))return;
   const assigned=s.validations.find(v=>v.rows.includes(row)&&v.columns.includes(column));if(!assigned)return;
   const units=book.references?.filter(r=>r.kind==='units')??[];
   if(!units.some(u=>u.table&&assigned.source.includes(u.table)||u.nameId&&assigned.source.includes(u.nameId)))return assigned;
@@ -682,21 +857,24 @@ function bindRowControls():void {
     e.stopPropagation();if(!commitDraft())return;const at=Number(el.dataset.insertRow),s=sheet();
     if(!editableReference()){flash('This is a read-only live list. Edit its source table.');return;}
     if(movingRows){dropRows(movingRows,at);return;}
-    mutate('Insert rows',()=>insertDimensions('row',at));
+    requestInsert('row',at,Number(el.closest<HTMLElement>('[data-row-select]')!.dataset.rowSelect));
   });
   root.querySelectorAll<HTMLButtonElement>('[data-insert-row]').forEach(el=>{
     const index=Number(el.closest<HTMLElement>('[data-row-select]')!.dataset.rowSelect),boundary=Number(el.dataset.insertRow);
     bindMoveBoundaryPreview(el,'row',boundary,index,boundary>index);
   });
-  root.querySelectorAll<HTMLElement>('[data-row-select]').forEach(el=>el.onclick=e=>{
-    if((e.target as HTMLElement).closest('button'))return;
-    if(!commitDraft())return;
-    headerSelection(e,'row',Number(el.dataset.rowSelect));
+  root.querySelectorAll<HTMLElement>('[data-row-select]').forEach(el=>{
+    const select=(e:MouseEvent)=>{
+      if((e.target as HTMLElement).closest('button')||!commitDraft())return;
+      headerSelection(e,'row',Number(el.dataset.rowSelect));
+    };
+    el.onclick=select;
+    el.querySelector<HTMLElement>('.row-index')!.onclick=e=>{e.stopPropagation();select(e);};
   });
   root.querySelectorAll<HTMLButtonElement>('[data-move-row]').forEach(el=>{
-    const ids=()=>{const at=Number(el.dataset.moveRow),indices=selectedAxisIndices('row'),block=selectionMode()==='rows'&&indices.includes(at);return summaryMoveMembers(sheet(),'row',sheet().rows.filter((r,i)=>(block?indices.includes(i):i===at)&&(!gridReference()||gridReference()!.rows.includes(r.id))).map(r=>r.id));};
-    el.onclick=e=>{e.stopPropagation();if(!commitDraft()||!sheetAxisSelectionAllowed('Moving rows'))return;clearMovePreview();movingRows=movingRows?undefined:ids();movingColumns=undefined;render();};
-    el.ondragstart=e=>{e.stopPropagation();if(!commitDraft()||!sheetAxisSelectionAllowed('Moving rows')){e.preventDefault();return;}clearMovePreview();movingRows=ids();movingColumns=undefined;paintMoving();e.dataTransfer?.setData('application/x-fnt-rows',JSON.stringify(movingRows));if(e.dataTransfer)e.dataTransfer.effectAllowed='move';};
+    const ids=()=>{const at=prepareAxisOperation('row',Number(el.dataset.moveRow));const indices=selectedAxisIndices('row'),block=selectionMode()==='rows'&&indices.includes(at),s=sheet();return summaryMoveMembers(selectionScope?{...s,groups:s.groups.filter(g=>g.table===selectionScope)}:s,'row',s.rows.filter((r,i)=>(block?indices.includes(i):i===at)&&(!gridReference()||gridReference()!.rows.includes(r.id))).map(r=>r.id),selectionScope);};
+    el.onclick=e=>{e.stopPropagation();if(!commitDraft()||!sheetAxisSelectionAllowed('Moving rows'))return;try{clearMovePreview();movingRows=movingRows?undefined:ids();movingColumns=undefined;render();}catch(error){flash(error);}};
+    el.ondragstart=e=>{e.stopPropagation();if(!commitDraft()||!sheetAxisSelectionAllowed('Moving rows')){e.preventDefault();return;}try{clearMovePreview();movingRows=ids();movingColumns=undefined;paintMoving();e.dataTransfer?.setData('application/x-fnt-rows',JSON.stringify(movingRows));if(e.dataTransfer)e.dataTransfer.effectAllowed='move';}catch(error){e.preventDefault();flash(error);}};
     el.ondragend=()=>{movingRows=undefined;paintMoving();root.querySelectorAll('.row-drop-before,.row-drop-after').forEach(n=>n.classList.remove('row-drop-before','row-drop-after'));};
   });
   root.querySelectorAll<HTMLElement>('[data-row-select]').forEach(el=>{
@@ -707,8 +885,9 @@ function bindRowControls():void {
 }
 function bind(): void {
   root.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(el => el.onclick = () => { void action(el.dataset.action!); });
-  const tableTarget=root.querySelector<HTMLSelectElement>('#table-selection-target');
-  if(tableTarget)tableTarget.onchange=()=>{tableSelectionTarget=tableTarget.value||undefined;refreshTableSelectionControl();rememberView();};
+  tableSelectionControl=mountTableSelection(root.querySelector('.table-selection-control')!,{enabled:()=>tableSelectionMode,target:()=>tableSelectionTarget,choices:[{id:'',name:'Auto'},...allTables(book).filter(table=>table.sheet===sheetId&&(!gridReference()||table.id===gridReference()?.table?.id)).map(table=>({id:table.id,name:table.name}))],choose:id=>{
+    tableSelectionTarget=id||undefined;tableSelectionMode=true;refreshTableSelectionControl();rememberView();
+  }});
   refreshTableSelectionControl();
   bindTabs();
   const dd=root.querySelector<HTMLButtonElement>('.reference-manager')!;
@@ -723,7 +902,7 @@ function bind(): void {
     setShortcutHint(root.querySelector<HTMLButtonElement>(`button[data-action="${action}"]`),label,[modifier,key.toUpperCase()],`Control+${key} Meta+${key}`);
   }
   const scrolling=root.querySelector<HTMLElement>('#grid-scroll')!;let frame=0;
-  scrolling.addEventListener('scroll',()=>{if(!frame)frame=requestAnimationFrame(()=>{frame=0;drawRowWindow?.();paintMovePreview();});},{passive:true});
+  scrolling.addEventListener('scroll',()=>{if(!frame)frame=requestAnimationFrame(()=>{frame=0;drawRowWindow?.();stickyTableHeaders?.draw();paintMovePreview();});},{passive:true});
   scrolling.addEventListener('pointerleave',clearMovePreview);
   scrolling.addEventListener('dragover',e=>{
     const axis=e.dataTransfer?.types.includes('application/x-fnt-rows')?'row':e.dataTransfer?.types.includes('application/x-fnt-columns')?'column':undefined;
@@ -761,15 +940,17 @@ function bind(): void {
   });
   const endTouch=()=>{touchPointer=undefined;touchSelection=false;root.querySelector('.grid')?.classList.remove('touch-select');};
   root.querySelector('#grid-scroll')!.addEventListener('pointerup',()=>{
-    endTouch();if(fillSource){const source=fillSource,target=bounds();fillSource=undefined;fillPointer=undefined;if(JSON.stringify(source)!==JSON.stringify(target))mutate('Drag fill',()=>fillCells(book,sheet(),source,target));}
+    endTouch();if(fillSource){const source=fillSource,target=bounds();fillSource=undefined;fillPointer=undefined;if(JSON.stringify(source)!==JSON.stringify(target))mutate('Drag fill',()=>fillCells(book,sheet(),source,confineRange(target)));}
   });
   root.querySelector('#grid-scroll')!.addEventListener('pointercancel',()=>{endTouch();fillSource=undefined;fillPointer=undefined;});
   root.querySelectorAll<HTMLElement>('[data-col]').forEach(el=>{
-    el.onclick=e=>{
+    const select=(e:MouseEvent)=>{
       if((e.target as HTMLElement).closest('button')||!commitDraft())return;
       headerSelection(e,'column',Number(el.dataset.col));
     };
-    el.ondblclick=()=>{ selected={r:Math.min(sheet().rows.length-1,Math.max(1,Number(root.querySelector<HTMLInputElement>('#row-jump')!.value)-1)),c:Number(el.dataset.col)};anchor={...selected};selectionKind='cells';renameSelectedColumn(); };
+    el.onclick=select;
+    el.querySelector<HTMLElement>('.column-index')!.onclick=e=>{e.stopPropagation();select(e);};
+    el.ondblclick=e=>{if((e.target as HTMLElement).closest('button')||tableSelectionMode&&(e.target as HTMLElement).closest('.column-index'))return;selected={r:Math.min(sheet().rows.length-1,Math.max(1,Number(root.querySelector<HTMLInputElement>('#row-jump')!.value)-1)),c:Number(el.dataset.col)};anchor={...selected};selectionKind='cells';renameSelectedColumn();};
     el.ondragover=e=>{if(!e.dataTransfer?.types.includes('application/x-fnt-columns'))return;e.preventDefault();root.querySelectorAll('.drop-before,.drop-after').forEach(n=>n.classList.remove('drop-before','drop-after'));const after=e.clientX>=el.getBoundingClientRect().left+el.getBoundingClientRect().width/2;el.classList.add(after?'drop-after':'drop-before');const index=Number(el.dataset.col);showMovePreview('column',index+Number(after),index,after);};
     el.ondrop=e=>{
       e.preventDefault();const data=e.dataTransfer?.getData('application/x-fnt-columns');if(!data)return;
@@ -778,16 +959,16 @@ function bind(): void {
   });
   root.querySelectorAll<HTMLButtonElement>('[data-move-column]').forEach(el=>{
     el.onpointerdown=()=>el.focus({preventScroll:true});
-    const ids=()=>{const c=Number(el.dataset.moveColumn),indices=selectedAxisIndices('column'),block=selectionMode()==='columns'&&indices.includes(c);return summaryMoveMembers(sheet(),'column',sheet().columns.filter((column,i)=>(block?indices.includes(i):i===c)&&(!gridReference()||gridReference()!.columns.includes(column.id))).map(column=>column.id));};
-    el.onclick=e=>{e.stopPropagation();if(!commitDraft()||!editableReference()||!sheetAxisSelectionAllowed('Moving columns'))return;clearMovePreview();movingRows=undefined;movingColumns=movingColumns?undefined:ids();if(movingColumns){if(selectionMode()!=='columns'){extraSelections=[];const at=sheet().columns.findIndex(c=>c.id===movingColumns![0]);anchor={r:0,c:at};selected={r:sheet().rows.length-1,c:at};selectionKind='columns';}renderedTarget=`${sheetId}:${selected.r}`;}render();};
-    el.ondragstart=e=>{e.stopPropagation();if(!commitDraft()||!editableReference()||!sheetAxisSelectionAllowed('Moving columns')){e.preventDefault();return;}clearMovePreview();movingColumns=ids();movingRows=undefined;paintMoving();e.dataTransfer?.setData('application/x-fnt-columns',JSON.stringify(movingColumns));if(e.dataTransfer)e.dataTransfer.effectAllowed='move';};
+    const ids=()=>{const c=prepareAxisOperation('column',Number(el.dataset.moveColumn));const indices=selectedAxisIndices('column'),block=selectionMode()==='columns'&&indices.includes(c),s=sheet();return summaryMoveMembers(selectionScope?{...s,groups:s.groups.filter(g=>g.table===selectionScope)}:s,'column',s.columns.filter((column,i)=>(block?indices.includes(i):i===c)&&(!gridReference()||gridReference()!.columns.includes(column.id))).map(column=>column.id),selectionScope);};
+    el.onclick=e=>{e.stopPropagation();if(!commitDraft()||!editableReference()||!sheetAxisSelectionAllowed('Moving columns'))return;try{clearMovePreview();movingRows=undefined;movingColumns=movingColumns?undefined:ids();if(movingColumns){if(selectionMode()!=='columns'){extraSelections=[];const at=sheet().columns.findIndex(c=>c.id===movingColumns![0]);anchor={r:0,c:at};selected={r:sheet().rows.length-1,c:at};selectionKind='columns';}renderedTarget=`${sheetId}:${selected.r}`;}render();}catch(error){flash(error);}};
+    el.ondragstart=e=>{e.stopPropagation();if(!commitDraft()||!editableReference()||!sheetAxisSelectionAllowed('Moving columns')){e.preventDefault();return;}try{clearMovePreview();movingColumns=ids();movingRows=undefined;paintMoving();e.dataTransfer?.setData('application/x-fnt-columns',JSON.stringify(movingColumns));if(e.dataTransfer)e.dataTransfer.effectAllowed='move';}catch(error){e.preventDefault();flash(error);}};
     el.ondragend=()=>{movingColumns=undefined;paintMoving();root.querySelectorAll('.drop-before,.drop-after').forEach(n=>n.classList.remove('drop-before','drop-after'));};
   });
   root.querySelectorAll<HTMLButtonElement>('[data-insert-column]').forEach(el=>el.onclick=e=>{
     e.stopPropagation();if(!commitDraft())return;const at=Number(el.dataset.insertColumn);
     if(movingColumns){dropColumns(movingColumns,at);return;}
     if(!editableReference()){flash('Edit the live list source instead.');return;}
-    mutate('Insert columns',()=>insertDimensions('column',at));
+    const host=el.closest<HTMLElement>('[data-col]');requestInsert('column',at,host?Number(host.dataset.col):0);
   });
   root.querySelectorAll<HTMLButtonElement>('[data-insert-column]').forEach(el=>{
     const host=el.closest<HTMLElement>('[data-col]'),index=host?Number(host.dataset.col):-1,boundary=Number(el.dataset.insertColumn);
@@ -806,14 +987,15 @@ function bind(): void {
   document.querySelector('#title')!.addEventListener('click',()=>askText('Rename workbook',book.title,name=>mutate('Rename workbook',()=>{book.title=name;})));
 }
 function inlineSheetName(el:HTMLElement):void {
-  const s=book.sheets.find(s=>s.id===el.dataset.sheet)!;el.draggable=false;
+  const s=allSheets(book).find(s=>s.id===el.dataset.sheet)!;el.draggable=false;
   const input=document.createElement('input');input.value=s.name;input.setAttribute('aria-label','Rename sheet');input.style.width='130px';el.replaceChildren(input);input.focus();input.select();
   let committed=false;
-  const commit=()=>{if(committed)return;committed=true;const name=input.value.trim();if(name&&name!==s.name)mutate('Rename sheet',()=>{if(book.sheets.some(x=>x.id!==s.id&&x.name.toLowerCase()===name.toLowerCase()))throw Error('Sheet name is already in use.');s.name=name;});render();};
+  const commit=()=>{if(committed)return;committed=true;const name=input.value.trim();if(name&&name!==s.name)mutate('Rename sheet',()=>{if(allSheets(book).some(x=>x.id!==s.id&&x.name.toLowerCase()===name.toLowerCase()))throw Error('Sheet name is already in use.');s.name=name;});render();};
   input.onclick=e=>e.stopPropagation();input.onblur=commit;input.onkeydown=e=>{e.stopPropagation();if(e.key==='Enter'){e.preventDefault();commit();}if(e.key==='Escape'){committed=true;render();}};
 }
 function refreshSelection(closeDropdown=true):void {
   if(closeDropdown)closeCellDropdown?.();
+  if(selectionKind==='cells')selectionScope=tableSelectionMode?tableAt(book,sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id)?.id:undefined;
   const grid=root.querySelector('.grid');grid?.classList.remove('selection-cells','selection-rows','selection-columns');grid?.classList.add(`selection-${selectionKind}`);
   renderedTarget=`${sheetId}:${selected.r}`;
   const b=bounds(),ranges=currentSelections();
@@ -830,6 +1012,11 @@ function refreshSelection(closeDropdown=true):void {
   const address=root.querySelector('.address');if(address)address.textContent=`${letters(selected.c)}${selected.r+1}`;
   const count=root.querySelector('.selection-count');if(count)count.textContent=`${selectionCount(ranges)} cells`;
   refreshTableSelectionControl();
+  const visited=tableAt(book,sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id)?.id;
+  if(visited!==lastVisitedTable){
+    lastVisitedTable=visited;
+    if(visited){const quiet=!state.sync&&savedGeneration===generation;recordTableVisit(book,visited);changed('Visit table',false,quiet);}
+  }
   renderStatus();
   rememberView();
 }
@@ -861,6 +1048,7 @@ function updateCalculationState():void{
 function dropColumns(ids:string[],boundary:number):void {
   if(!sheetAxisSelectionAllowed('Moving columns'))return;
   if(!editableReference()){flash('Edit the live list source instead.');return;}
+  const owner=scopedSelectionTable();if(owner){runTableEdit(owner.id,'column',{kind:'move',ids,boundary:projectedBoundary(owner.id,'column',boundary)},'Move table columns');return;}
   movingColumns=undefined;
   extraSelections=[];
   mutate('Move columns',()=>{
@@ -901,18 +1089,21 @@ function editKey(e:KeyboardEvent):void {
   if(e.key==='Enter'&&!e.shiftKey||e.key==='Tab'){
     e.preventDefault();e.stopPropagation();
     if(!commitDraft())return;
-    if(e.key==='Tab'){selected.c=Math.max(0,Math.min(sheet().columns.length-1,selected.c+(e.shiftKey?-1:1)));anchor={...selected};refreshSelection();}
+    if(e.key==='Tab')navigateSelection(e.shiftKey?'ArrowLeft':'ArrowRight');
     (root.querySelector('#grid-scroll') as HTMLElement).focus();
   }
 }
 function navigateSelection(key:string,extend=false):void{
   if(!navigationRows.length||!navigationColumns.length)return;
-  const row=Math.max(0,navigationRows.indexOf(selected.r)),column=Math.max(0,navigationColumns.indexOf(selected.c));
+  const s=sheet(),display=groupProjection?.display(s.rows[selected.r].id,s.columns[selected.c].id),displayRow=display?s.rows.findIndex(row=>row.id===display.row):selected.r,displayColumn=display?s.columns.findIndex(column=>column.id===display.column):selected.c;
+  const row=Math.max(0,navigationRows.indexOf(displayRow)),column=Math.max(0,navigationColumns.indexOf(displayColumn));
   const vertical=key==='ArrowDown'||key==='ArrowUp',items=vertical?navigationRows:navigationColumns;
   const step=key==='ArrowUp'||key==='ArrowLeft'?-1:1,start=vertical?row:column;
   let next:typeof selected|undefined;
   for(let at=start+step;at>=0&&at<items.length;at+=step){
-    const candidate=vertical?{r:items[at],c:selected.c}:{r:selected.r,c:items[at]};
+    const slot=vertical?{r:items[at],c:displayColumn}:{r:displayRow,c:items[at]},source=groupProjection?.source(s.rows[slot.r].id,s.columns[slot.c].id);
+    if(!source)continue;
+    const candidate={r:s.rows.findIndex(row=>row.id===source.row),c:s.columns.findIndex(column=>column.id===source.column)};
     if(inGrid(candidate.r,candidate.c)){next=candidate;break;}
   }
   if(!next)return;
@@ -925,7 +1116,7 @@ function applyInput(text:string): boolean {
   const previousDraft=draft,literal=draft!==undefined&&draftLiteral;draft=undefined;draftLiteral=false;
   if(!literal&&text===inputText(current())){render();return true;}
   const ok=mutate('Edit cell',()=>{
-    const s=sheet(),t=book.tables.find(t=>t.sheet===s.id&&t.header===s.rows[selected.r].id&&t.columns.some(c=>c.column===s.columns[selected.c].id));
+    const s=sheet(),t=allTables(book).find(t=>t.sheet===s.id&&t.header===s.rows[selected.r].id&&t.columns.some(c=>c.column===s.columns[selected.c].id));
     if(t) renameColumn(book,t,t.columns.find(c=>c.column===s.columns[selected.c].id)!.id,text);
     else writeGridCell(book,s,s.rows[selected.r].id,s.columns[selected.c].id,text,literal);
   });
@@ -936,7 +1127,16 @@ function commitDraft():boolean{
   if(colorPicker?.pending&&!colorPicker.commit())return false;
   if(appendDraft){
     const pending=appendDraft;appendDraft=undefined;
-    if(!mutate('Add dropdown option',()=>{const source=book.references?.find(s=>s.id===pending.source);if(!source)throw Error('This list no longer exists.');const row=appendReferenceOption(book,source,pending.column,pending.value),s=book.sheets.find(s=>s.id===book.tables.find(t=>t.id===source.table)!.sheet)!;selected={r:s.rows.findIndex(r=>r.id===row),c:s.columns.findIndex(c=>c.id===pending.column)};anchor={...selected};selectionKind='cells';})){appendDraft=pending;renderStatus();return false;}
+    if(tableSelectionMode){
+      const source=book.references?.find(source=>source.id===pending.source),table=allTables(book).find(table=>table.id===source?.table),s=sheet();
+      if(!table){appendDraft=pending;flash('The dropdown table is unavailable.');return false;}
+      let completed=false;
+      runTableEdit(table.id,'row',{kind:'insert',boundary:Math.max(s.rows.findIndex(row=>row.id===table.header)+1,...table.rows.map(id=>s.rows.findIndex(row=>row.id===id)+1)),count:1},'Add dropdown option',{finish:ids=>{
+        writeGridCell(book,sheet(),ids[0],pending.column,pending.value);appendDraft=undefined;completed=true;
+      }});
+      if(!completed){appendDraft=pending;renderStatus();return false;}
+    }else
+    if(!mutate('Add dropdown option',()=>{const source=book.references?.find(s=>s.id===pending.source);if(!source)throw Error('This list no longer exists.');const row=appendReferenceOption(book,source,pending.column,pending.value),s=allSheets(book).find(s=>s.id===allTables(book).find(t=>t.id===source.table)!.sheet)!;selected={r:s.rows.findIndex(r=>r.id===row),c:s.columns.findIndex(c=>c.id===pending.column)};anchor={...selected};selectionKind='cells';})){appendDraft=pending;renderStatus();return false;}
   }
   const ok=draft===undefined||applyInput(draft);
   if(ok)closeExpandedEditor();else expandedEditor?.input.focus({preventScroll:true});
@@ -946,7 +1146,7 @@ function dialog(title:string,html:string,onMount?:(d:HTMLDialogElement)=>void): 
   hideShortcutHint();
   groupManager?.close();
   document.querySelector('dialog')?.remove();
-  const d=document.createElement('dialog');d.innerHTML=`<div class="dialog-heading"><h2>${esc(title)}</h2><button class="close" aria-label="Close dialog">x</button></div>${html}`;
+  const d=document.createElement('dialog');d.className='dialog-surface';d.setAttribute('aria-label',title);d.innerHTML=`<div class="dialog-heading"><h1 class="dialog-title">${esc(title)}</h1><button type="button" class="close" aria-label="Close dialog">${toolbarIcon('close')}</button></div>${html}`;
   document.body.append(d);const close=d.querySelector<HTMLButtonElement>('.close')!;setShortcutHint(close,'Close dialog',['Esc'],'Escape');close.onclick=()=>d.close();d.onclose=()=>{if(hintButton?.closest('dialog')===d)hideShortcutHint();d.remove();};d.showModal();onMount?.(d);return d;
 }
 function askText(title:string,value:string,fn:(value:string)=>void):void {
@@ -980,7 +1180,7 @@ function openEditor():void {
     if(e.key==='Escape'){e.preventDefault();e.stopPropagation();draft=undefined;draftLiteral=false;closeExpandedEditor();render();root.querySelector<HTMLElement>('#grid-scroll')!.focus({preventScroll:true});}
     else if(e.key==='Tab'||e.key==='Enter'&&(e.ctrlKey||e.metaKey)){
       e.preventDefault();e.stopPropagation();if(!commitDraft())return;
-      if(e.key==='Tab'){selected.c=Math.max(0,Math.min(sheet().columns.length-1,selected.c+(e.shiftKey?-1:1)));anchor={...selected};selectionKind='cells';refreshSelection();}
+      if(e.key==='Tab')navigateSelection(e.shiftKey?'ArrowLeft':'ArrowRight');
       root.querySelector<HTMLElement>('#grid-scroll')!.focus({preventScroll:true});
     }
   };
@@ -1000,15 +1200,21 @@ function copyCells(cut=false):boolean {
   if(referenceId&&cut){flash('Move complete option rows with their grab handle. Copy is available for cell contents.');return false;}
   const s=sheet(),b=requireRectangle(cut?'Cut':'Copy');if(!b){copied=undefined;return false;}
   const rows=s.rows.filter((r,i)=>i>=b.r1&&i<=b.r2&&(!gridReference()||gridReference()!.rows.includes(r.id))),columns=s.columns.filter((c,i)=>i>=b.c1&&i<=b.c2&&(!gridReference()||gridReference()!.columns.includes(c.id)));
-  copied={sheet:s.id,r:b.r1,c:b.c1,rows:rows.map(r=>r.id),columns:columns.map(c=>c.id),cells:rows.map(r=>columns.map(c=>clone(getCell(s,r.id,c.id)))),cut};
+  copied={sheet:s.id,r:b.r1,c:b.c1,rows:rows.map(r=>r.id),columns:columns.map(c=>c.id),cells:rows.map(r=>columns.map(c=>clone(getCell(s,r.id,c.id)))),cut,table:selectionScope,kind:selectionMode()};
   render();return true;
 }
 function pasteCells():void {
   if(!requireRectangle('Paste'))return;
   if(!copied){flash('Copy a cell range first, or paste tab-separated text with Ctrl+V.');return;}
-  const source=copied, s=sheet(),from=book.sheets.find(s=>s.id===source.sheet);
+  const source=copied, s=sheet(),from=allSheets(book).find(s=>s.id===source.sheet);
   if(!from){flash('The copied sheet was deleted.');return;}
   if(source.cut){
+    if(source.table){
+      const owner=scopedSelectionTable();
+      if(owner?.id!==source.table||source.kind==='cells'){flash('Move complete table records or fields within the same table. Partial cell cuts cannot split linked records.');return;}
+      const axis=source.kind==='rows'?'row':'column';
+      runTableEdit(owner.id,axis,{kind:'move',ids:axis==='row'?source.rows:source.columns,boundary:axis==='row'?bounds().r1:bounds().c1},'Cut and move table members');return;
+    }
     const rows=source.rows.map(id=>from.rows.findIndex(r=>r.id===id)),columns=source.columns.map(id=>from.columns.findIndex(c=>c.id===id));
     if(rows.some((r,i)=>r<0||r!==rows[0]+i)||columns.some((c,i)=>c<0||c!==columns[0]+i)){flash('The cut selection changed shape. Select and cut it again.');return;}
     if(mutate('Cut and move cells',()=>cutCells(book,from,{r1:rows[0],r2:rows.at(-1)!,c1:columns[0],c2:columns.at(-1)!},s,selected.r,selected.c))){copied=undefined;render();}
@@ -1024,21 +1230,21 @@ function pasteCells():void {
       if(target.formula||target.binding||target.value!=null&&target.value!=='')expandAdjacentTable(book,s,s.rows[row].id,s.columns[column].id);
       if(target.formula)target.formula=translate(target.formula,book,from.id,source.rows[i],source.columns[j],s.rows[row].id,s.columns[column].id,s.id);
       if(target.calculation)target.calculation=translate(target.calculation,book,from.id,source.rows[i],source.columns[j],s.rows[row].id,s.columns[column].id,s.id);
-      const targetTable=book.tables.find(t=>t.sheet===s.id&&t.header===s.rows[row].id&&t.columns.some(c=>c.column===s.columns[column].id));
+      const targetTable=allTables(book).find(t=>t.sheet===s.id&&t.header===s.rows[row].id&&t.columns.some(c=>c.column===s.columns[column].id));
       if(targetTable)throw Error('Paste into table headers is disabled. Rename headers explicitly to protect table integrity.');
       s.cells[key(s.rows[row].id,s.columns[column].id)]=target;
     }));
   });
 }
 function copiedText(source:NonNullable<typeof copied>):string{
-  const s=book.sheets.find(s=>s.id===source.sheet)!;
+  const s=allSheets(book).find(s=>s.id===source.sheet)!;
   return serializeTsv(source.rows.map(row=>{
     const r=s.rows.findIndex(r=>r.id===row);
     return source.columns.map(column=>cellText(getCell(s,row,column),s,r,s.columns.findIndex(c=>c.id===column)));
   }));
 }
 function pastePosition(i:number,j:number):typeof selected|undefined{
-  const s=sheet(),view=gridReference(),rows=s.rows.map((_,r)=>r).filter(r=>r>=selected.r&&(!view||view.rows.includes(s.rows[r].id))),cols=s.columns.map((_,c)=>c).filter(c=>c>=selected.c&&(!view||view.columns.includes(s.columns[c].id)));
+  const s=sheet(),view=gridReference(),owner=scopedSelectionTable(),start=selectionMode()==='cells'?selected:{r:bounds().r1,c:bounds().c1},rows=s.rows.map((_,r)=>r).filter(r=>r>=start.r&&(!view||view.rows.includes(s.rows[r].id))&&(!owner||owner.header===s.rows[r].id||owner.rows.includes(s.rows[r].id))),cols=s.columns.map((_,c)=>c).filter(c=>c>=start.c&&(!view||view.columns.includes(s.columns[c].id))&&(!owner||owner.columns.some(field=>field.column===s.columns[c].id)));
   return rows[i]!==undefined&&cols[j]!==undefined?{r:rows[i],c:cols[j]}:undefined;
 }
 async function action(name:string):Promise<void> {
@@ -1053,25 +1259,17 @@ async function action(name:string):Promise<void> {
   if(referenceId&&!editableReference()&&!['back-workbook','reference-settings','references','new-reference','copy','save','file','find','hypothetical-settings','undo','redo','range','top','bottom','next','prev','dropdown-source','table-selection'].includes(name)){flash('This is a read-only live list. Edit its source table or change its connection.');return;}
   switch(name) {
     case 'table-selection':
-      tableSelectionMode=!tableSelectionMode;tableSelectionTarget=undefined;
+      tableSelectionMode=!tableSelectionMode;
       selectionScope=undefined;extendHeaderSelection=false;extraSelections=[];selectionKind='cells';anchor={...selected};movingRows=movingColumns=undefined;clearMovePreview();
       render();break;
     case 'save': await manualSave();break;
     case 'undo':case 'redo': {
-      const from=name==='undo'?undo:redo,to=name==='undo'?redo:undo,previous=from.pop();
+      const from=name==='undo'?undo:redo,to=name==='undo'?redo:undo,previous=from.at(-1);
       if(previous){
-        const revision=book.revision;
-        if('book'in previous){to.push({book:clone(book)});book=previous.book;}
-        else{
-          const inverse:Extract<History,{cells:unknown}>={cells:[]};
-          for(const change of previous.cells){
-            const s=book.sheets.find(s=>s.id===change.sheet);if(!s){flash('Undo target no longer exists. Restore from recovery.');return;}
-            inverse.cells.push({sheet:s.id,key:change.key,value:s.cells[change.key]?clone(s.cells[change.key]):undefined});
-            if(change.value)s.cells[change.key]=clone(change.value);else delete s.cells[change.key];
-          }
-          to.push(inverse);
-        }
-        book.revision=revision;if(!book.sheets.some(s=>s.id===sheetId))sheetId=book.sheets[0].id;changed(name);render();
+        const revision=book.revision,before=clone(book);
+        try{const applied=applyUndo(book,previous);validateBook(applied.book);book=applied.book;from.pop();to.push(applied.inverse);}catch(error){flash(error);return;}
+        recordTableEdits(before,book,'cells'in previous?previous.cells:undefined);
+        book.revision=revision;if(!allSheets(book).some(s=>s.id===sheetId))sheetId=allSheets(book)[0].id;changed(name);render();
       }break;
     }
     case 'bold':case 'italic':case 'underline':case 'strikethrough':case 'wrap':{
@@ -1088,10 +1286,10 @@ async function action(name:string):Promise<void> {
     case 'cut':copyCells(true);break;
     case 'paste':pasteCells();break;
     case 'fill':mutate('Fill down',()=>{
-      const s=sheet(),b=bounds();
+      const s=sheet(),b=currentSelections()[0];if(!b)throw Error('Select cells inside this table first.');
       const rows=s.rows.map((_,i)=>i).filter(r=>r>=b.r1&&r<=b.r2&&inGrid(r,selected.c)),columns=s.columns.map((_,i)=>i).filter(c=>c>=b.c1&&c<=b.c2&&(!gridReference()||gridReference()!.columns.includes(s.columns[c].id)));
       for(const c of columns)for(const r of rows.slice(1)){
-        if(book.tables.some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(x=>x.column===s.columns[c].id)))throw Error('Fill cannot overwrite table headers. Rename headers explicitly.');
+        if(allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(x=>x.column===s.columns[c].id)))throw Error('Fill cannot overwrite table headers. Rename headers explicitly.');
         const cell=clone(getCell(s,s.rows[rows[0]].id,s.columns[c].id));
         if(cell.formula)cell.formula=translate(cell.formula,book,s.id,s.rows[rows[0]].id,s.columns[c].id,s.rows[r].id,s.columns[c].id);
         else if(typeof cell.value==='string'&&/\d+$/.test(cell.value))cell.value=cell.value.replace(/\d+$/,n=>String(Number(n)+rows.indexOf(r)));
@@ -1102,7 +1300,11 @@ async function action(name:string):Promise<void> {
     case 'pin':{const indices=selectedAxisIndices('column');pinnedColumns.set(sheetId,(pinnedColumns.get(sheetId)?.length??0)>0?[]:indices.map(i=>sheet().columns[i].id));render();break;}
     case 'browse':openBrowse();break;
     case 'toolbar-layout':arrangingToolbar=!arrangingToolbar;if(!arrangingToolbar){toolbarSelection.ids.clear();toolbarSelection.anchor=undefined;}render();root.querySelector<HTMLElement>('[data-action="toolbar-layout"]')?.focus({preventScroll:true});break;
-    case 'select-all':anchor={r:0,c:0};selected={r:sheet().rows.length-1,c:sheet().columns.length-1};selectionKind='cells';scrollTarget=0;render();break;
+    case 'select-all':{
+      const owner=tableSelectionMode?tableAt(book,sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id):undefined;
+      const range=owner?tableHeaderBounds(sheet(),owner,'column',sheet().columns.findIndex(c=>c.id===owner.columns.at(-1)!.column),sheet().columns.findIndex(c=>c.id===owner.columns[0].column)):{r1:0,c1:0,r2:sheet().rows.length-1,c2:sheet().columns.length-1};
+      anchor={r:range.r1,c:range.c1};selected={r:range.r2,c:range.c2};selectionKind='cells';scrollTarget=range.r1;render();break;
+    }
     case 'range':{const b=bounds();askText('Select a range (for example A2:C6)',`${letters(b.c1)}${b.r1+1}:${letters(b.c2)}${b.r2+1}`,text=>{
       const m=text.toUpperCase().match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/);if(!m){flash('Use a range such as A2:C6.');return;}
       const a={r:Number(m[2])-1,c:columnIndex(m[1])},z={r:Number(m[4]??m[2])-1,c:columnIndex(m[3]??m[1])};
@@ -1118,7 +1320,7 @@ async function action(name:string):Promise<void> {
     }
     case 'prev':scrollTarget=Math.max(0,page*60-60);render();break;
     case 'next':scrollTarget=Math.min(sheet().rows.length-1,(page+1)*60);render();break;
-    case 'new-sheet':askText('New sheet','Untitled',name=>mutate('Add sheet',()=>{const s=blankSheet(uniqueName(book.sheets.map(s=>s.name),name));book.sheets.push(s);sheetId=s.id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';page=0;}));break;
+    case 'new-sheet':askText('New sheet','Untitled',name=>mutate('Add sheet',()=>{const s=blankSheet(uniqueName(allSheets(book).map(s=>s.name),name));book.sheets.push(s);sheetId=s.id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';page=0;}));break;
     case 'sheet-options':openSheetOptions();break;
     case 'structure':openStructure();break;
     case 'tables':openTables();break;
@@ -1127,12 +1329,15 @@ async function action(name:string):Promise<void> {
     case 'back-workbook':backToWorkbook();break;
     case 'new-reference':newReference(referenceHost());break;
     case 'reference-settings':if(activeReference()){const targets=selectedReferenceTabs();referenceSettings(referenceHost(),activeReference()!,targets.length?targets:undefined);}break;
+    case 'sheet-settings':openSheetTabSettings();break;
     case 'dropdown-source':openDropdownAssignment();break;
     case 'archive-options':{
       const source=activeReference();if(!source)break;
       mutate('Archive options',()=>{const ids=selectedReferenceRows(),show=ids.every(id=>source.archivedRows.includes(id));source.archivedRows=show?source.archivedRows.filter(id=>!ids.includes(id)):[...new Set([...source.archivedRows,...ids])];});break;
     }
     case 'groups':openGroups();break;
+    case 'summary-group':toggleSelectedGroup('summary');break;
+    case 'plain-group':toggleSelectedGroup('range');break;
     case 'hypothetical-settings':{
       openHypotheticalSettings({style:getHypotheticalStyle(book),dialog,save:async style=>{
         if(!mutate('Save hypothetical treatments',()=>{book.hypotheticalStyle=style;}))throw Error(error||'Treatment settings could not be applied.');
@@ -1148,17 +1353,19 @@ async function action(name:string):Promise<void> {
     }
     case 'hypothetical-visibility':showHypothetical=!showHypothetical;render();break;
     case 'ungroup-plain':{
-      if(!book.sheets.some(s=>s.groups.some(g=>g.kind!=='summary'))){flash('There are no plain groups in this workbook.');break;}
+      const owner=scopedSelectionTable(),local=tableSelectionMode||!!owner;
+      if(!(local?sheet().groups.some(g=>g.table===owner?.id&&g.kind!=='summary'):allSheets(book).some(s=>s.groups.some(g=>g.kind!=='summary')))){flash('There are no plain groups in this scope.');break;}
       try{
         await flush();await store.checkpoint('Before ungrouping all plain groups',book);
-        if(mutate('Ungroup all plain groups',()=>ungroupPlainGroups(book)))await flush('Ungroup all plain groups');
+        if(mutate('Ungroup all plain groups',()=>{if(local)sheet().groups=sheet().groups.filter(g=>g.table!==owner?.id||g.kind==='summary');else ungroupPlainGroups(book);}))await flush('Ungroup all plain groups');
       }catch(e){flash(e);}
       break;
     }
     case 'block':openBlock();break;
     case 'find':openFind();break;
     case 'quick-add':{
-      const s=sheet(),t=gridReference()?.table??tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??book.tables.find(t=>t.sheet===s.id);
+      const s=sheet(),t=gridReference()?.table??tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??allTables(book).find(t=>t.sheet===s.id);
+      if(tableSelectionMode&&t){runTableEdit(t.id,'row',{kind:'insert',boundary:Math.max(s.rows.findIndex(row=>row.id===t.header)+1,...t.rows.map(id=>s.rows.findIndex(row=>row.id===id)+1)),count:1},'Add table entry');break;}
       mutate('Add entry',()=>{const at=t?Math.max(s.rows.findIndex(r=>r.id===t.header)+1,...t.rows.map(id=>s.rows.findIndex(r=>r.id===id)+1)):selected.r+1;addRow(book,s,at,t);selected={r:at,c:t?s.columns.findIndex(c=>c.id===t.columns[0].column):0};anchor={...selected};selectionKind='cells';page=Math.floor(at/60);});document.querySelector<HTMLInputElement>('#formula')?.focus();break;
     }
     case 'file':openFile();break;
@@ -1176,7 +1383,7 @@ function paintHypotheticalOverrides():void{
   });
 }
 function changeHypotheticalTags(axis:Group['axis'],ids:string[],enabled:boolean,tableId?:string):void{
-  const s=sheet(),table=book.tables.find(t=>t.id===tableId&&t.sheet===s.id),items=axis==='row'?s.rows:s.columns,descendants=hypotheticalTagDescendants(s,axis,ids,tableId);
+  const s=sheet(),table=allTables(book).find(t=>t.id===tableId&&t.sheet===s.id),items=axis==='row'?s.rows:s.columns,descendants=hypotheticalTagDescendants(s,axis,ids,tableId);
   const flag=(item:typeof items[number])=>tableId?item.hypotheticalTables?.[tableId]:item.hypothetical;
   const overrides=items.filter(item=>descendants.has(item.id)&&flag(item)!==undefined);
   const expectedGeneration=generation,label=enabled?'Mark hypo':'Remove hypo tag';
@@ -1202,12 +1409,12 @@ function changeHypotheticalTags(axis:Group['axis'],ids:string[],enabled:boolean,
     const treatment=flag(axis==='row'?s.rows[r]:s.columns[c])?style[axis==='row'?'rows':'columns']:undefined;
     const tagged=treatment&&(axis==='row'?c===columns[0]:r===rows[0]);
     const badge=tagged&&treatment.badge?`<span class="hypothetical-badge" style="${hypotheticalBadgeCss(treatment)}" role="img" aria-label="${esc(style.label)}">${toolbarIcon('hypothetical-badge')}</span>`:'';
-    const header=book.tables.some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(field=>field.column===s.columns[c].id));
+    const header=allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(field=>field.column===s.columns[c].id));
     const classes=`${treatment?`hypothetical-cell ${treatment.fillOpacity>0?'has-hyp-fill ':''}${treatment.textColor?'custom-hyp-text ':''}`:''}${header?'table-header ':''}${cell.formula?'calculated ':''}${value.startsWith('#')?'cell-error ':''}`;
     const format=`${cell.format?.background?`background-color:${esc(cell.format.background)};`:''}${cell.format?.color?`color:${esc(cell.format.color)};`:''}${cell.format?.bold?'font-weight:700;':''}${cell.format?.italic?'font-style:italic;':''}${cell.format?.underline||cell.format?.strikethrough?`text-decoration:${[cell.format?.underline?'underline':'',cell.format?.strikethrough?'line-through':''].filter(Boolean).join(' ')};`:''}`;
     return `<td class="${classes}" style="${treatment?hypotheticalCss(treatment):''}${format}">${badge}<span class="cell-value"${treatment?` style="${hypotheticalTextCss(treatment)}"`:''}>${esc(value)}</span></td>`;
   }).join('')}</tr>`).join('');
-  const details=`<div class="hypothetical-override-contents"><table class="grid hypothetical-override-grid" aria-label="Manual tag overrides"><colgroup><col style="width:48px">${columns.map(c=>`<col style="width:${s.columns[c].width??145}px">`).join('')}</colgroup><thead><tr><th scope="col">Row</th>${headers}</tr></thead><tbody>${contents}</tbody></table></div>`;
+  const details=`<div class="hypothetical-override-contents"><table class="grid spreadsheet-grid hypothetical-override-grid" aria-label="Manual tag overrides"><colgroup><col style="width:48px">${columns.map(c=>`<col style="width:${s.columns[c].width??145}px">`).join('')}</colgroup><thead><tr><th scope="col">Row</th>${headers}</tr></thead><tbody>${contents}</tbody></table></div>`;
   const d=dialog('Overwrite manual tagging?',`${details}<div class="hypothetical-override-skip"><label class="inline" title="Overwrite without asking for the next selected number of confirmations in this session."><input type="checkbox" id="skip-hypothetical">Don't show again for</label><input type="number" id="skip-hypothetical-count" aria-label="Number of times to skip" min="1" step="1" max="${Number.MAX_SAFE_INTEGER}" value="1" inputmode="numeric" disabled><span>times</span></div><div class="button-row"><button class="primary" id="inherit-hypothetical">Overwrite</button><button id="cancel-hypothetical">Cancel</button></div>`);
   d.classList.add('hypothetical-override-dialog');
   const clear=()=>{if(hypotheticalOverridePreview===preview){hypotheticalOverridePreview=undefined;paintHypotheticalOverrides();}};
@@ -1235,13 +1442,13 @@ function openColorPalette(property:'color'|'background'):void{
   if(!commitDraft()||colorPicker&&!colorPicker.close())return;
   const colors=['#ffffff','#000000','#e7e6e6','#44546a','#4472c4','#ed7d31','#a5a5a5','#ffc000','#5b9bd5','#70ad47','#f2f2f2','#7f7f7f','#d0cece','#d6dce4','#d9e2f3','#fbe5d6','#ededed','#fff2cc','#ddebf7','#e2efda','#c00000','#ff0000','#ffc000','#ffff00','#92d050','#00b050','#00b0f0','#0070c0','#002060','#7030a0'];
   const targets:{sheet:string;row:string;column:string}[]=[];eachSelected((s,r,c)=>targets.push({sheet:s.id,row:s.rows[r].id,column:s.columns[c].id}));
-  const d=document.createElement('dialog'),controller=new AbortController();d.className='color-picker';
-  d.innerHTML=`<div class="dialog-heading"><h2></h2><button class="close" aria-label="Close color picker" data-shortcut-label="Close color picker" data-shortcut-keys="Esc" aria-keyshortcuts="Escape"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div><div class="color-mode"><button data-color-mode="background">Fill</button><button data-color-mode="color">Text</button></div><div class="color-palette" role="group" aria-label="Color palette">${colors.map((color,i)=>`<button class="color-swatch" data-color="${color}" style="background:${color}" aria-label="Color ${color}, swatch ${i+1}" title="${color}"></button>`).join('')}</div><div class="color-shade" tabindex="0" role="slider" aria-label="Custom saturation and brightness" aria-valuemin="0" aria-valuemax="100"><span class="color-shade-marker"></span></div><input class="color-hue" type="range" min="0" max="360" aria-label="Hue"><button id="clear-color"></button><label class="custom-color-row">Custom<span class="custom-color-chip" aria-hidden="true"></span><input id="custom-color" aria-label="Custom hex color" maxlength="7" autocomplete="off" spellcheck="false"></label><div class="color-picker-error" role="alert"></div>`;
+  const d=document.createElement('dialog'),controller=new AbortController();d.className='dialog-surface popover color-picker';
+  d.innerHTML=`<div class="dialog-heading"><h2></h2><button type="button" class="close" aria-label="Close color picker" data-shortcut-label="Close color picker" data-shortcut-keys="Esc" aria-keyshortcuts="Escape">${toolbarIcon('close')}</button></div><div class="color-mode"><button data-color-mode="background">Fill</button><button data-color-mode="color">Text</button></div><div class="color-palette" role="group" aria-label="Color palette">${colors.map((color,i)=>`<button class="color-swatch" data-color="${color}" style="background:${color}" aria-label="Color ${color}, swatch ${i+1}" title="${color}"></button>`).join('')}</div><div class="color-shade" tabindex="0" role="slider" aria-label="Custom saturation and brightness" aria-valuemin="0" aria-valuemax="100"><span class="color-shade-marker"></span></div><input class="color-hue" type="range" min="0" max="360" aria-label="Hue"><button id="clear-color"></button><label class="custom-color-row">Custom<span class="custom-color-chip" aria-hidden="true"></span><input id="custom-color" aria-label="Custom hex color" maxlength="7" autocomplete="off" spellcheck="false"></label><div class="color-picker-error" role="alert"></div>`;
   const hex=d.querySelector<HTMLInputElement>('#custom-color')!,hue=d.querySelector<HTMLInputElement>('.color-hue')!,shade=d.querySelector<HTMLElement>('.color-shade')!,marker=d.querySelector<HTMLElement>('.color-shade-marker')!,message=d.querySelector<HTMLElement>('.color-picker-error')!;
   let chosen:string|undefined,currentHex='#233c34',hsv=hexToHsv(currentHex);
-  const cells=()=>targets.map(target=>{const s=book.sheets.find(s=>s.id===target.sheet);if(!s||!s.rows.some(r=>r.id===target.row)||!s.columns.some(c=>c.id===target.column))throw Error('The selected cells changed. Reopen the color picker.');return{s,...target};});
+  const cells=()=>targets.map(target=>{const s=allSheets(book).find(s=>s.id===target.sheet);if(!s||!s.rows.some(r=>r.id===target.row)||!s.columns.some(c=>c.id===target.column))throw Error('The selected cells changed. Reopen the color picker.');return{s,...target};});
   const restore=()=>{for(const target of cells()){const r=target.s.rows.findIndex(r=>r.id===target.row),c=target.s.columns.findIndex(c=>c.id===target.column),td=root.querySelector<HTMLElement>(`td[data-r="${r}"][data-c="${c}"]`);if(td)td.style[property]=getCell(target.s,target.row,target.column).format?.[property]??'';}};
-  const position=()=>{const viewport=window.visualViewport,left=viewport?.offsetLeft??0,top=viewport?.offsetTop??0,width=viewport?.width??innerWidth,height=viewport?.height??innerHeight;d.style.maxHeight=`min(var(--dialog-max-height),${Math.max(80,height-16)}px)`;d.style.width=Math.min(336,width-16)+'px';const button=root.querySelector<HTMLElement>(`[data-action="${property==='color'?'text-color':'background-color'}"]`),rect=button?.getBoundingClientRect(),size=d.getBoundingClientRect();d.style.left=Math.max(left+8,Math.min(rect?.left??left+8,left+width-size.width-8))+'px';d.style.top=Math.max(top+8,Math.min((rect?.bottom??top)+6,top+height-size.height-8))+'px';};
+  const position=()=>{const viewport=window.visualViewport,left=viewport?.offsetLeft??0,top=viewport?.offsetTop??0,width=viewport?.width??innerWidth,height=viewport?.height??innerHeight,edge=parseFloat(getComputedStyle(d).getPropertyValue('--dialog-edge'));d.style.setProperty('--dialog-available-height',Math.max(0,height-edge*2)+'px');d.style.setProperty('--dialog-available-width',Math.max(0,width-edge*2)+'px');const button=root.querySelector<HTMLElement>(`[data-action="${property==='color'?'text-color':'background-color'}"]`),rect=button?.getBoundingClientRect(),size=d.getBoundingClientRect();d.style.left=Math.max(left+edge,Math.min(rect?.left??left+edge,left+width-size.width-edge))+'px';d.style.top=Math.max(top+edge,Math.min((rect?.bottom??top)+6,top+height-size.height-edge))+'px';};
   const controls=()=>{hex.value=currentHex.toUpperCase();hue.value=String(hsv.h);shade.style.setProperty('--color-hue',String(hsv.h));marker.style.left=hsv.s*100+'%';marker.style.top=(1-hsv.v)*100+'%';shade.setAttribute('aria-valuenow',String(Math.round(hsv.s*100)));shade.setAttribute('aria-valuetext',`Saturation ${Math.round(hsv.s*100)}%, brightness ${Math.round(hsv.v*100)}%`);d.querySelector<HTMLElement>('.custom-color-chip')!.style.background=currentHex;d.querySelectorAll<HTMLButtonElement>('[data-color]').forEach(b=>b.setAttribute('aria-pressed',String(chosen===b.dataset.color)));d.querySelector('#clear-color')!.setAttribute('aria-pressed',String(chosen===undefined));message.textContent='';};
   const preview=(value:string|undefined)=>{chosen=value;if(value)currentHex=normalizeHex(value);for(const target of cells()){const r=target.s.rows.findIndex(r=>r.id===target.row),c=target.s.columns.findIndex(c=>c.id===target.column),td=root.querySelector<HTMLElement>(`td[data-r="${r}"][data-c="${c}"]`);if(td)td.style[property]=value??'';}owner.pending=true;controls();renderStatus();};
   const commit=()=>{try{if(hex.value.toLowerCase()!==currentHex)preview(normalizeHex(hex.value));}catch(e){message.textContent=e instanceof Error?e.message:String(e);hex.focus();return false;}if(!owner.pending)return true;owner.pending=false;const ok=mutate('Set '+property,()=>{for(const target of cells()){const cell=clone(getCell(target.s,target.row,target.column));cell.format={...cell.format,[property]:chosen};target.s.cells[key(target.row,target.column)]=cell;}});if(!ok)owner.pending=true;renderStatus();position();return ok;};
@@ -1263,21 +1470,21 @@ function openColorPalette(property:'color'|'background'):void{
   window.addEventListener('resize',position,{signal:controller.signal});window.visualViewport?.addEventListener('resize',position,{signal:controller.signal});
   document.body.append(d);d.show();mode(property);
 }
-function renameSheet():void {askText('Rename sheet',sheet().name,name=>mutate('Rename sheet',()=>{if(book.sheets.some(s=>s.id!==sheetId&&s.name.toLowerCase()===name.toLowerCase()))throw Error('Sheet name is already in use.');sheet().name=name;}));}
+function renameSheet():void {askText('Rename sheet',sheet().name,name=>mutate('Rename sheet',()=>{if(allSheets(book).some(s=>s.id!==sheetId&&s.name.toLowerCase()===name.toLowerCase()))throw Error('Sheet name is already in use.');sheet().name=name;}));}
 function openSheetOptions():void {
   dialog('Sheet settings',`<div class="menu"><button id="rename-sheet">Rename sheet</button><button id="duplicate-sheet">Duplicate sheet with independent identities</button><button id="sheet-left">Move tab left</button><button id="sheet-right">Move tab right</button><label>Tab color<input id="sheet-color" type="color" value="${esc(sheet().color)}"></label><button id="delete-sheet" class="danger">Delete sheet</button></div>`,d=>{
     const run=(id:string,fn:()=>void)=>d.querySelector<HTMLButtonElement>(id)!.onclick=()=>{d.close();fn();};
     run('#rename-sheet',renameSheet);
     run('#duplicate-sheet',()=>mutate('Duplicate sheet',()=>{sheetId=duplicateSheet(book,sheet()).id;}));
-    for(const [id,delta] of [['#sheet-left',-1],['#sheet-right',1]] as const)run(id,()=>mutate('Move sheet',()=>{const i=book.sheets.findIndex(s=>s.id===sheetId);move(book.sheets,i,i+delta);}));
+    for(const [id,delta] of [['#sheet-left',-1],['#sheet-right',1]] as const)run(id,()=>mutate('Move sheet',()=>{const i=allSheets(book).findIndex(s=>s.id===sheetId);move(allSheets(book),i,i+delta);}));
     d.querySelector<HTMLInputElement>('#sheet-color')!.onchange=e=>mutate('Tab color',()=>{sheet().color=(e.target as HTMLInputElement).value;});
     run('#delete-sheet',()=>confirmAction('Delete sheet?', 'References to deleted cells and tables will show #REF!, never relink to replacement names.',()=>mutate('Delete sheet',()=>{
-      if(book.sheets.length===1)throw Error('Keep at least one sheet.');book.sheets=book.sheets.filter(s=>s.id!==sheetId);book.tables=book.tables.filter(t=>t.sheet!==sheetId);book.names=book.names.filter(n=>n.sheet!==sheetId);sheetId=book.sheets[0].id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';page=0;
+      if(book.sheets.length===1)throw Error('Keep at least one sheet.');book.sheets=book.sheets.filter(s=>s.id!==sheetId);replaceTables(book,allTables(book).filter(t=>t.sheet!==sheetId));book.names=book.names.filter(n=>n.sheet!==sheetId);sheetId=book.sheets[0].id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';page=0;
     })));
   });
 }
 function renameSelectedColumn():void {
-  const s=sheet(),t=tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??book.tables.find(t=>t.sheet===s.id&&t.columns.some(c=>c.column===s.columns[selected.c].id));
+  const s=sheet(),t=tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??allTables(book).find(t=>t.sheet===s.id&&t.columns.some(c=>c.column===s.columns[selected.c].id));
   const col=t?.columns.find(c=>c.column===s.columns[selected.c].id);
   if(!t||!col){askText('Rename column',s.columns[selected.c].label,name=>mutate('Rename column',()=>{s.columns[selected.c].label=name;}));return;}
   const rules=s.validations.filter(v=>v.columns.includes(col.column)&&v.rows.some(row=>t.rows.includes(row))).length;
@@ -1291,14 +1498,14 @@ function renameSelectedColumn():void {
   });
 }
 function openTableColumnFormula(tableId:string,column:string):void{
-  const t=book.tables.find(t=>t.id===tableId),s=t&&book.sheets.find(s=>s.id===t.sheet);
+  const t=allTables(book).find(t=>t.id===tableId),s=t&&allSheets(book).find(s=>s.id===t.sheet);
   if(!t||!s||!t.rows.length){flash('Add a data row before editing this table column.');return;}
   const patterns=tableColumnFormulas(book,t,column);
   dialog('Column formulas',`<form id="column-formula-form"><label>Formula pattern<select id="column-formula-pattern">${patterns.map((p,i)=>`<option value="${i}">Pattern ${i+1} · row ${s.rows.findIndex(r=>r.id===p.row)+1}</option>`).join('')}<option value="-1" ${patterns.length?'':'selected'}>New formula</option></select></label><label>Formula<textarea id="column-formula" rows="4" required spellcheck="false">${esc(patterns.length?displayFormula(patterns[0].formula,book):'=')}</textarea></label><label>Apply to<select id="column-formula-scope"><option value="matching" ${patterns.length?'':'disabled'}>Matching formula pattern; preserve manual overrides</option><option value="calculated" ${patterns.length?'':'selected'}>Calculated and empty cells; preserve manual values</option><option value="all">All data rows; replace manual values</option></select></label><p>Table headers are never changed. Other formula patterns stay intact when editing a matching pattern. Rows with saved manual overrides keep their values and receive the updated restore formula.</p><button class="primary">Apply formula</button></form>`,d=>{
     const picker=d.querySelector<HTMLSelectElement>('#column-formula-pattern')!,input=d.querySelector<HTMLTextAreaElement>('#column-formula')!,scope=d.querySelector<HTMLSelectElement>('#column-formula-scope')!;
     picker.onchange=()=>{const pattern=patterns[Number(picker.value)];input.value=pattern?displayFormula(pattern.formula,book):'=';scope.options[0].disabled=!pattern;scope.value=pattern?'matching':'calculated';};
     d.querySelector('form')!.onsubmit=e=>{e.preventDefault();if(mutate('Edit table column formulas',()=>{
-      const current=book.tables.find(t=>t.id===tableId);if(!current)throw Error('This table was removed.');
+      const current=allTables(book).find(t=>t.id===tableId);if(!current)throw Error('This table was removed.');
       if(!input.value.trim().startsWith('='))throw Error('Enter a formula beginning with =.');
       const formula=compile(input.value,book,s.id,current.rows[0],column);
       applyTableColumnFormula(book,current,column,formula,scope.value as 'matching'|'calculated'|'all',patterns[Number(picker.value)]?.formula);
@@ -1307,7 +1514,7 @@ function openTableColumnFormula(tableId:string,column:string):void{
 }
 function openBrowse():void {
   const s=sheet();
-  dialog('Browse dates or values',`<label>Column<select id="browse-column">${s.columns.map((c,i)=>`<option value="${i}" ${i===selected.c?'selected':''}>${letters(i)} / ${esc(book.tables.find(t=>t.sheet===s.id&&t.columns.some(x=>x.column===c.id))?.columns.find(x=>x.column===c.id)?.name??c.label)}</option>`).join('')}</select></label><label>Search<input id="browse-search" type="search"></label><input id="browse-position" type="range" min="0" max="0" value="0" aria-label="Value position"><p id="browse-preview" aria-live="polite"></p><button id="browse-go" class="primary">Go to row</button>`,d=>{
+  dialog('Browse dates or values',`<label>Column<select id="browse-column">${s.columns.map((c,i)=>`<option value="${i}" ${i===selected.c?'selected':''}>${letters(i)} / ${esc(allTables(book).find(t=>t.sheet===s.id&&t.columns.some(x=>x.column===c.id))?.columns.find(x=>x.column===c.id)?.name??c.label)}</option>`).join('')}</select></label><label>Search<input id="browse-search" type="search"></label><input id="browse-position" type="range" min="0" max="0" value="0" aria-label="Value position"><p id="browse-preview" aria-live="polite"></p><button id="browse-go" class="primary">Go to row</button>`,d=>{
     const column=d.querySelector<HTMLSelectElement>('#browse-column')!,search=d.querySelector<HTMLInputElement>('#browse-search')!,slider=d.querySelector<HTMLInputElement>('#browse-position')!,preview=d.querySelector<HTMLElement>('#browse-preview')!,go=d.querySelector<HTMLButtonElement>('#browse-go')!;
     let entries:{row:string;text:string;index:number}[]=[],matches:typeof entries=[],browseError='';
     const update=()=>{const entry=matches[Number(slider.value)];preview.textContent=entry?`${entry.text} / row ${entry.index+1} / ${Number(slider.value)+1} of ${matches.length}`:browseError||'No matching values';go.disabled=!entry;slider.disabled=!matches.length;};
@@ -1318,7 +1525,7 @@ function openBrowse():void {
         const c=Number(column.value),hypothetical=hypotheticalMembers(s,'row');
         for(let r=0;r<s.rows.length;r++){
           const row=s.rows[r];
-          if(row.hidden||!showHypothetical&&hypothetical.has(row.id)||book.tables.some(t=>t.sheet===s.id&&t.header===row.id))continue;
+          if(row.hidden||!showHypothetical&&hypothetical.has(row.id)||allTables(book).some(t=>t.sheet===s.id&&t.header===row.id))continue;
           const value=scalar(engine.cell(s.id,row.id,s.columns[c].id));
           if(isFault(value)&&['#LIMIT!','#UNSUPPORTED!'].includes(value.error))throw Error('This column cannot be browsed safely until its calculation/compatibility error is resolved.');
           if(value!==null&&value!=='')entries.push({row:row.id,text:cellText(getCell(s,row.id,s.columns[c].id),s,r,c),index:r});
@@ -1332,18 +1539,36 @@ function openBrowse():void {
   });
 }
 function openStructure():void {
-  const items=['Insert row above','Insert column left','Rename column','Move column left','Move column right','Move rows up','Move rows down','Move rows to top','Hide selected rows','Hide selected columns','Unhide all','Set column width','Delete selected rows','Delete selected columns','Clear selected cells','Insert cells, shift right','Insert cells, shift down','Delete cells, shift left','Delete cells, shift up'];
-  const allowed=(i:number)=>!referenceId||[0,1,2,5,6,7,11,12,13,14].includes(i),b=bounds();
-  const sections=[{name:'Rows',ops:[0,5,6,7,8,12]},{name:'Columns',ops:[1,2,3,4,9,11,13]},{name:'Cells',ops:[14,15,16,17,18]}];
+  const items=['Insert row above','Insert column left','Rename column','Move column left','Move column right','Move rows up','Move rows down','Move rows to top','Hide selected rows','Hide selected columns','Unhide all','Set column width','Delete selected rows','Delete selected columns','Clear selected cells','Insert cells, shift right','Insert cells, shift down','Delete cells, shift left','Delete cells, shift up','Duplicate selected rows','Duplicate selected columns'];
+  const allowed=(i:number)=>(!referenceId||[0,1,2,5,6,7,11,12,13,14].includes(i)||tableSelectionMode&&[3,4,19,20].includes(i))&&(i<19||!!scopedSelectionTable()),b=bounds();
+  const sections=[{name:'Rows',ops:[0,19,5,6,7,8,12]},{name:'Columns',ops:[1,20,2,3,4,9,11,13]},{name:'Cells',ops:[14,15,16,17,18]}];
   dialog('Rows & columns',`<p class="structure-selection">Selected: rows ${b.r1+1}${b.r2>b.r1?'–'+(b.r2+1):''} · columns ${letters(b.c1)}${b.c2>b.c1?'–'+letters(b.c2):''}</p><div class="structure-sections">${sections.map(section=>`<section><h3>${section.name}</h3>${section.ops.filter(allowed).map(i=>`<button data-op="${i}" ${[12,13,17,18].includes(i)?'class="structure-delete"':''}>${items[i]}</button>`).join('')}</section>`).join('')}</div>${allowed(10)?'<div class="structure-footer"><button data-op="10">Unhide all</button></div>':''}`,d=>{
     d.classList.add('structure-dialog');
     d.querySelectorAll<HTMLButtonElement>('[data-op]').forEach(el=>el.onclick=()=>{
       d.close();const op=Number(el.dataset.op),s=sheet();let b=bounds();
       if(![2,10,11,14].includes(op)&&!sheetAxisSelectionAllowed(items[op]))return;
+      const owner=scopedSelectionTable();
+      if(referenceId&&(op===12||op===13)){selectionKind=op===12?'rows':'columns';deleteSelection(true);return;}
+      if(owner){
+        if(op===0||op===1){requestInsert(op===0?'row':'column',op===0?b.r1:b.c1);return;}
+        if(op===11){flash('Column width is shared sheet geometry. Turn off Table selection to resize sheet columns.');return;}
+        if([3,4,5,6,7,12,13,19,20].includes(op)){
+          const axis:'row'|'column'=[3,4,13,20].includes(op)?'column':'row';
+          const axes=axis==='row'?s.rows:s.columns,ids=selectedAxisIndices(axis).map(i=>axes[i].id),owned=axis==='row'?owner.rows:owner.columns.map(field=>field.column);
+          const indices=owned.map((id,i)=>ids.includes(id)?i:-1).filter(i=>i>=0),first=Math.min(...indices),last=Math.max(...indices);
+          if(!indices.length){flash('Select records or fields inside this table.');return;}
+          let edit:TableAxisEdit;
+          if(op===12||op===13)edit={kind:'delete',ids};else if(op===19||op===20)edit={kind:'duplicate',ids};
+          else{const before=op===7?0:op===3||op===5?Math.max(0,first-1):Math.min(owned.length,last+2);edit={kind:'move',ids,boundary:before===owned.length?axes.findIndex(item=>item.id===owned.at(-1))+1:axes.findIndex(item=>item.id===owned[before])};}
+          const run=()=>runTableEdit(owner.id,axis,edit,items[op]);
+          if(op===12||op===13)confirmAction(items[op]+'?','Only this table is changed. Deleted references become explicit errors.',run);else run();return;
+        }
+        if(op===8||op===9){const axis=op===8?'row':'column',items=axis==='row'?s.rows:s.columns;mutate('Hide table members',()=>{s.groups.push({id:uid(),kind:'range',axis,table:owner.id,members:selectedAxisIndices(axis).map(i=>items[i].id),collapsed:true,label:'Hidden members'});});return;}
+        if(op===10){mutate('Unhide table members',()=>s.groups.filter(group=>group.table===owner.id).forEach(group=>group.collapsed=false));return;}
+      }
       if(op===2){renameSelectedColumn();return;}
       if(op===11){const columns=selectedAxisIndices('column').map(c=>s.columns[c]);askText('Column width (pixels)',String(s.columns[selected.c].width??145),v=>mutate('Resize columns',()=>{const width=Number(v);if(!Number.isFinite(width)||width<60||width>800)throw Error('Width must be between 60 and 800 pixels.');columns.forEach(c=>c.width=width);}));return;}
       if(op>=15){const range=requireRectangle('Shifting cells');if(!range)return;b=range;}
-      if(referenceId&&(op===12||op===13)){selectionKind=op===12?'rows':'columns';deleteSelection(true);return;}
       const run=()=>mutate(items[op],()=>{
         switch(op){
           case 0:insertDimensions('row',b.r1);break;
@@ -1365,7 +1590,7 @@ function openStructure():void {
           case 10:s.rows.forEach(r=>r.hidden=false);s.columns.forEach(c=>c.hidden=false);s.groups.forEach(g=>g.collapsed=false);break;
           case 12:{const rows=selectedAxisIndices('row');if(rows.length===s.rows.length)throw Error('Keep at least one row.');deleteRows(book,s,rows.map(r=>s.rows[r].id));extraSelections=[];break;}
           case 13:{const columns=selectedAxisIndices('column').map(c=>s.columns[c]);if(columns.length===s.columns.length)throw Error('Keep at least one column.');for(const c of columns)deleteColumn(book,s,c.id);extraSelections=[];break;}
-          case 14:eachSelected((s,r,c)=>{if(book.tables.some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(x=>x.column===s.columns[c].id)))throw Error('Rename table headers explicitly.');setInput(book,s,s.rows[r].id,s.columns[c].id,'');});break;
+          case 14:eachSelected((s,r,c)=>{if(allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(x=>x.column===s.columns[c].id)))throw Error('Rename table headers explicitly.');setInput(book,s,s.rows[r].id,s.columns[c].id,'');});break;
           case 15:case 16:case 17:case 18:shiftCells(book,s,b,(['right','down','left','up'] as const)[op-15]);break;
         }
       });
@@ -1377,17 +1602,17 @@ function convertSelectionToTable():void{
   const s=sheet(),axis:Group['axis']=selectionMode()==='columns'?'column':'row',items=axis==='row'?s.rows:s.columns;
   const roots=selectedAxisIndices(axis).map(index=>items[index].id),ids=summaryMoveMembers(s,axis,roots);
   const gaps=tableMembershipGaps(book).filter(gap=>gap.sheet===s.id&&gap.axis===axis),expectedGeneration=generation;
-  const candidates=book.tables.filter(table=>{
+  const candidates=allTables(book).filter(table=>{
     if(table.sheet!==s.id)return false;
     const members=new Set(axis==='row'?[table.header,...table.rows]:table.columns.map(c=>c.column)),inside=new Set(gaps.filter(gap=>gap.table===table.id).map(gap=>gap.member));
     const ownedRoots=s.groups.filter(group=>group.axis===axis&&group.kind==='summary'&&roots.includes(group.members[0])&&(members.has(group.members[0])||inside.has(group.members[0]))).map(group=>group.members[0]);
     const descendants=new Set(summaryMoveMembers(s,axis,ownedRoots));
     return ids.some(id=>!members.has(id))&&ids.every(id=>members.has(id)||inside.has(id)||descendants.has(id));
   });
-  if(!candidates.length){flash('Select sheet rows/columns inside an existing table, or a summary containing them. Already joined members need no conversion.');return;}
+  if(!candidates.length){openCreateTable();return;}
   const join=(tableId:string)=>mutate('Join selected rows/columns to table',()=>{
     if(generation!==expectedGeneration)throw Error('The workbook changed. Select the rows/columns again.');
-    const table=book.tables.find(t=>t.id===tableId)!;
+    const table=allTables(book).find(t=>t.id===tableId)!;
     if(axis==='row')addTableRows(book,s,table,ids.filter(id=>id!==table.header&&!table.rows.includes(id)));
     else addTableColumns(book,s,table,ids.filter(id=>!table.columns.some(c=>c.column===id)));
   });
@@ -1396,25 +1621,97 @@ function convertSelectionToTable():void{
     d.querySelector<HTMLFormElement>('#join-table-form')!.onsubmit=e=>{e.preventDefault();if(join(d.querySelector<HTMLSelectElement>('#join-table')!.value))d.close();else d.querySelector('#join-table-error')!.textContent=error;};
   });
 }
-function openTables():void {
-  const s=sheet(),tables=book.tables.filter(t=>t.sheet===s.id);
-  dialog('Tables & dropdown sources',`<p>Multiple independent tables can share a sheet. Select a rectangle: the first row becomes headers, the rest records.</p><button id="create-table" class="primary">Create table from selection</button>${tables.map(t=>`<div class="table-setting"><strong>${esc(t.name)}</strong><small>${t.rows.length} records / ${t.columns.length} columns</small><button data-rename="${t.id}">Rename</button><button data-remove="${t.id}">Remove table</button></div>`).join('')}<hr><div class="button-row"><button id="validation">Set dropdown source for selection</button><button id="clear-validation">Remove selected dropdowns</button><button id="named">Named ranges & formulas</button></div>`,d=>{
-    d.querySelector<HTMLButtonElement>('#create-table')!.onclick=()=>{d.close();askText('Table name','Table',name=>mutate('Create table',()=>{
-      const b=bounds();if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)||/^[A-Za-z]+\d+$/.test(name))throw Error('Use a name such as Pantry or Meal_Prep, not a cell address.');
-      if(book.tables.some(t=>t.name.toLowerCase()===name.toLowerCase()))throw Error('Table name is already in use.');
-      if(b.r1===b.r2)throw Error('Select a header and at least one data row.');
-      if(book.tables.some(t=>t.sheet===s.id&&[t.header,...t.rows].some(id=>s.rows.slice(b.r1,b.r2+1).some(r=>r.id===id))&&t.columns.some(c=>s.columns.slice(b.c1,b.c2+1).some(x=>x.id===c.column))))throw Error('Tables cannot overlap.');
-      const names:string[]=[];const columns=s.columns.slice(b.c1,b.c2+1).map(c=>{const title=uniqueName(names,String(getCell(s,s.rows[b.r1].id,c.id).value??c.label));names.push(title);s.cells[key(s.rows[b.r1].id,c.id)]={value:title};return{id:uid(),column:c.id,name:title};});
-      book.tables.push({id:uid(),name,sheet:s.id,header:s.rows[b.r1].id,rows:s.rows.slice(b.r1+1,b.r2+1).map(r=>r.id),columns});
-    }));};
-    d.querySelectorAll<HTMLButtonElement>('[data-rename]').forEach(el=>el.onclick=()=>{const t=book.tables.find(t=>t.id===el.dataset.rename)!;d.close();askText('Rename table',t.name,name=>mutate('Rename table',()=>{if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)||book.tables.some(x=>x.id!==t.id&&x.name.toLowerCase()===name.toLowerCase()))throw Error('Choose a valid unique table name.');t.name=name;}));});
-    d.querySelectorAll<HTMLButtonElement>('[data-remove]').forEach(el=>el.onclick=()=>{d.close();confirmAction('Remove table?', 'Cell contents remain. References to this table become #REF!.',()=>mutate('Remove table',()=>{book.tables=book.tables.filter(t=>t.id!==el.dataset.remove);}));});
-    d.querySelector<HTMLButtonElement>('#validation')!.onclick=()=>{d.close();askText('Dropdown formula (for example =Ingredients[Ingredient])','=Ingredients[Ingredient]',source=>mutate('Set dropdown',()=>{
-      const ast=compile(source,book,s.id,s.rows[selected.r].id,s.columns[selected.c].id);
-      const b=bounds();clearValidations();s.validations.push({id:uid(),rows:s.rows.slice(b.r1,b.r2+1).map(r=>r.id),columns:s.columns.slice(b.c1,b.c2+1).map(c=>c.id),source:JSON.stringify(ast),sheet:s.id,...(ast.kind==='literal'&&typeof ast.value==='string'?{values:ast.value.split(',')}:{})});
-    }));};
-    d.querySelector<HTMLButtonElement>('#clear-validation')!.onclick=()=>{mutate('Remove selected dropdowns',clearValidations);d.close();};
-    d.querySelector<HTMLButtonElement>('#named')!.onclick=()=>{d.close();openNames();};
+function openCreateTable():void{
+  if(!commitDraft())return;
+  if(referenceId){flash('Open the worksheet to create a table. Existing DD sources are already connected to their tables.');return;}
+  const range=requireRectangle('Create table');if(!range)return;
+  const sourceSheet=sheetId,expectedGeneration=generation;
+  const name=uniqueName(allTables(book).map(table=>table.name),'Table');
+  dialog('Create table',`<form id="create-table-form"><label>Table name<input id="table-name" required value="${esc(name)}"></label><p>Selection: ${letters(range.c1)}${range.r1+1}:${letters(range.c2)}${range.r2+1}</p><label class="inline table-headers-option"><input id="table-has-headers" type="checkbox" checked>My table has headers</label><button class="primary">Create table</button><p class="error" id="table-create-error" role="alert" hidden></p></form>`,d=>{
+    const headers=d.querySelector<HTMLInputElement>('#table-has-headers')!,input=d.querySelector<HTMLInputElement>('#table-name')!;
+    d.querySelector('form')!.onsubmit=e=>{
+      e.preventDefault();
+      if(mutate('Create table',()=>{
+        if(generation!==expectedGeneration)throw Error('The workbook changed. Close this dialog and select the range again.');
+        const table=createTable(book,sourceSheet,range,input.value,headers.checked);
+        const s=sheet();anchor={r:s.rows.findIndex(row=>row.id===table.header),c:range.c1};
+        selected={r:anchor.r+table.rows.length,c:range.c2};selectionKind='cells';extraSelections=[];
+      }))d.close();
+      else{const message=d.querySelector<HTMLElement>('#table-create-error')!;message.textContent=error;message.hidden=false;}
+    };
+    input.focus();input.select();
+  });
+}
+function openTableRename(id:string):void{
+  const table=allTables(book).find(table=>table.id===id);if(!table){flash('This table no longer exists.');return;}
+  dialog('Rename table',`<form><label>Name<input id="answer" required value="${esc(table.name)}"></label><div class="button-row table-rename-actions"><button class="primary">Apply</button><button type="button" class="danger" id="delete-table">Delete table</button><button type="button" id="see-all-tables">See all tables</button></div><p id="table-rename-error" class="error" role="alert" hidden></p></form>`,d=>{
+    d.classList.add('table-rename-dialog');
+    const input=d.querySelector<HTMLInputElement>('#answer')!;input.focus();input.select();
+    d.querySelector('form')!.onsubmit=e=>{
+      e.preventDefault();if(mutate('Rename table',()=>renameTable(book,id,input.value)))d.close();
+      else{const message=d.querySelector<HTMLElement>('#table-rename-error')!;message.textContent=error;message.hidden=false;}
+    };
+    d.querySelector<HTMLButtonElement>('#delete-table')!.onclick=()=>confirmTableDeletion(id);
+    d.querySelector<HTMLButtonElement>('#see-all-tables')!.onclick=()=>{d.close();openTables(true);};
+  });
+}
+function confirmTableDeletion(id:string):void{
+  const table=allTables(book).find(table=>table.id===id);if(!table){flash('This table no longer exists.');return;}
+  dialog('Delete table?',`<p>Delete <strong>${esc(table.name)}</strong>?</p><p>Cell contents remain on the sheet. Formulas, dropdown sources and links referring to this table will show reference errors. Undo can restore the table.</p><div class="button-row"><button type="button" id="cancel-table-delete">Cancel</button><button type="button" class="danger" id="confirm-table-delete">Delete table</button></div>`,d=>{
+    d.querySelector<HTMLButtonElement>('#cancel-table-delete')!.onclick=()=>{d.close();openTables();};
+    d.querySelector<HTMLButtonElement>('#confirm-table-delete')!.onclick=()=>{if(mutate('Delete table',()=>{if(!allTables(book).some(table=>table.id===id))throw Error('This table no longer exists.');replaceTables(book,allTables(book).filter(table=>table.id!==id));}))d.close();};
+  });
+}
+function openTables(showAll=false):void {
+  const s=sheet(),active=selectionKind==='cells'&&!extraSelections.length&&anchor.r===selected.r&&anchor.c===selected.c?tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id):undefined;
+  if(active&&!showAll){openTableRename(active.id);return;}
+  dialog('Table manager',`<label class="table-manager-sort">Sort<select id="table-manager-sort" aria-label="Sort tables"><option value="activity">Last activity</option><option value="frequent">Frequently used</option><option value="az">A-Z</option><option value="za">Z-A</option></select></label><form>${sourcePickerBodyHtml}<div class="button-row"><button type="button" id="create-table" class="primary" aria-keyshortcuts="Control+t Meta+t">Create table from selection</button></div><p id="table-manager-error" class="error" role="alert" hidden></p></form>`,d=>{
+    d.classList.add('dropdown-assignment','table-manager');d.querySelector('form')!.onsubmit=e=>e.preventDefault();
+    const cards=d.querySelector<HTMLElement>('#dropdown-source-cards')!,message=d.querySelector<HTMLElement>('#table-manager-error')!;
+    const sort=d.querySelector<HTMLSelectElement>('#table-manager-sort')!;sort.value=book.tableManagerSort??'activity';mountSelectDropdown(sort);
+    const picker=mountSourcePicker(d,{grid:true,viewControls:false,searchLabel:'Search tables',placeholder:'Search tables or sheets…',render:(grid,query)=>{
+      cards.replaceChildren();
+      for(const table of sortedTables(book,book.tableManagerSort??'activity')){
+        const owner=allSheets(book).find(sheet=>sheet.id===table.sheet)!;
+        if(!`${table.name} ${owner.name}`.toLowerCase().includes(query))continue;
+        const card=document.createElement('div');card.className=`${grid?'dropdown-source-card':'dropdown-source-row'} table-manager-card`;card.dataset.tableId=table.id;
+        const title=document.createElement('button');title.type='button';title.className='table-manager-name';title.textContent=table.name;title.setAttribute('aria-label',`Table name: ${table.name}`);title.title='Double-click to rename; press Enter when focused';
+        const edit=()=>{
+          const current=allTables(book).find(candidate=>candidate.id===table.id)!;
+          const editor=document.createElement('div'),input=document.createElement('input'),save=document.createElement('button');
+          editor.className='table-manager-name-editor';input.value=current.name;input.setAttribute('aria-label','Table name');save.type='button';save.textContent='Save';
+          const commit=()=>{if(mutate('Rename table',()=>renameTable(book,current.id,input.value))){message.hidden=true;picker.refresh();}else{message.textContent=error;message.hidden=false;}};
+          save.onclick=commit;input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();commit();}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();picker.refresh();}};
+          editor.append(input,save);title.replaceWith(editor);input.focus();input.select();
+        };
+        title.ondblclick=edit;title.onkeydown=e=>{if(e.key==='Enter'||e.key==='F2'||e.key===' '){e.preventDefault();edit();}};
+        const remove=document.createElement('button');remove.type='button';remove.className='danger';remove.textContent='Delete table';remove.setAttribute('aria-label',`Delete ${table.name} table`);
+        remove.onclick=()=>confirmTableDeletion(table.id);
+        const detail=document.createElement('small'),sheetLink=document.createElement('button');detail.className='table-manager-sheet';
+        sheetLink.type='button';sheetLink.className='table-manager-sheet-link';sheetLink.textContent=owner.name;sheetLink.setAttribute('aria-label',`Go to ${table.name} on ${owner.name}`);
+        sheetLink.onclick=()=>{
+          const r=owner.rows.findIndex(row=>row.id===table.header),c=owner.columns.findIndex(column=>column.id===table.columns[0].column);
+          const hiddenGroups=owner.groups.filter(group=>group.collapsed&&(!group.table||group.table===table.id)&&outlineMembers(group,owner.groups).includes(group.axis==='row'?table.header:table.columns[0].column));
+          referenceId=undefined;workbookView=undefined;sheetId=owner.id;selected={r,c};anchor={...selected};selectionKind='cells';extraSelections=[];extendHeaderSelection=false;movingRows=movingColumns=undefined;
+          selectionScope=tableSelectionMode?table.id:undefined;tableSelectionTarget=tableSelectionMode?table.id:undefined;
+          selectedTabs.clear();selectedTabs.add(owner.id);tabSelectionAnchor=owner.id;scrollTarget=r;page=Math.floor(r/60);d.close();
+          if(owner.rows[r].hidden||owner.columns[c].hidden||hiddenGroups.length)mutate('Reveal table',()=>{owner.rows[r].hidden=false;owner.columns[c].hidden=false;hiddenGroups.forEach(group=>group.collapsed=false);});
+          else render();
+          root.querySelector<HTMLElement>(`td[data-r="${r}"][data-c="${c}"]`)?.scrollIntoView({block:'nearest',inline:'nearest'});
+          root.querySelector<HTMLElement>('#grid-scroll')!.focus({preventScroll:true});rememberView();
+        };
+        detail.append(sheetLink,document.createTextNode(` · ${table.rows.length} rows / ${table.columns.length} columns`));
+        const preview=document.createElement('div');preview.className='table-manager-preview';const fields=table.columns.slice(0,4);
+        preview.innerHTML=`<table aria-label="${esc(table.name)} preview"><thead><tr>${fields.map(field=>`<th>${esc(field.name)}</th>`).join('')}</tr></thead><tbody>${table.rows.slice(0,4).map(row=>`<tr>${fields.map(field=>`<td>${esc(cellText(getCell(owner,row,field.column),owner,owner.rows.findIndex(item=>item.id===row),owner.columns.findIndex(column=>column.id===field.column)))}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+        card.append(title,remove,detail,preview);cards.append(card);
+      }
+      if(!cards.children.length){const empty=document.createElement('p');empty.className='muted';empty.textContent='No matching tables';cards.append(empty);}
+    }});
+    sort.onchange=()=>{
+      const value=sort.value;if(value!=='activity'&&value!=='frequent'&&value!=='az'&&value!=='za'){flash('Unknown table sort.');return;}
+      book.tableManagerSort=value;changed('Sort tables',false);renderStatus();picker.refresh();
+    };
+    d.querySelector<HTMLButtonElement>('#create-table')!.onclick=()=>{d.close();openCreateTable();};
   });
 }
 function clearValidations(selectedRows?:Set<string>,selectedColumns?:Set<string>):void {
@@ -1428,16 +1725,16 @@ function clearValidations(selectedRows?:Set<string>,selectedColumns?:Set<string>
   });
 }
 function openNames():void {
-  dialog('Named ranges & formulas',`<p>Names have workbook or sheet scope. Renames keep formula bindings; deleting a name yields #REF!, never a new-name relink.</p><div class="menu">${book.names.map(n=>`<button data-name="${n.id}">${esc(n.name)}<small>${esc(n.sheet?book.sheets.find(s=>s.id===n.sheet)?.name:'Workbook')} / ${esc(displayFormula(n.formula,book))}</small></button>`).join('')}</div><hr><button id="new-name" class="primary">New name</button>`,d=>{
+  dialog('Named ranges & formulas',`<p>Names have workbook or sheet scope. Renames keep formula bindings; deleting a name yields #REF!, never a new-name relink.</p><div class="menu">${book.names.map(n=>`<button data-name="${n.id}">${esc(n.name)}<small>${esc(n.sheet?allSheets(book).find(s=>s.id===n.sheet)?.name:'Workbook')} / ${esc(displayFormula(n.formula,book))}</small></button>`).join('')}</div><hr><button id="new-name" class="primary">New name</button>`,d=>{
     const edit=(id?:string)=>{
       const named=book.names.find(n=>n.id===id);d.close();
-      dialog(named?'Edit name':'New name',`<form><label>Name<input id="name-label" required value="${esc(named?.name)}"></label><label>Scope<select id="name-scope"><option value="">Workbook</option>${book.sheets.map(s=>`<option value="${s.id}" ${named?.sheet===s.id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label><label>Formula<textarea rows="4" id="name-formula" required>${esc(named?displayFormula(named.formula,book):'=')}</textarea></label><button class="primary">Save name</button>${named?'<button type="button" class="danger" id="delete-name">Delete name</button>':''}</form>`,editor=>{
+      dialog(named?'Edit name':'New name',`<form><label>Name<input id="name-label" required value="${esc(named?.name)}"></label><label>Scope<select id="name-scope"><option value="">Workbook</option>${allSheets(book).map(s=>`<option value="${s.id}" ${named?.sheet===s.id?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label><label>Formula<textarea rows="4" id="name-formula" required>${esc(named?displayFormula(named.formula,book):'=')}</textarea></label><button class="primary">Save name</button>${named?'<button type="button" class="danger" id="delete-name">Delete name</button>':''}</form>`,editor=>{
         editor.querySelector('form')!.onsubmit=e=>{
           e.preventDefault();const label=editor.querySelector<HTMLInputElement>('#name-label')!.value.trim(),scope=editor.querySelector<HTMLSelectElement>('#name-scope')!.value||undefined,formula=editor.querySelector<HTMLTextAreaElement>('#name-formula')!.value;
           mutate('Save name',()=>{
             if(!/^[A-Za-z_][A-Za-z0-9_.]*$/.test(label)||/^[A-Za-z]+\d+$/.test(label))throw Error('Use a name like IngredientDD, not a cell address.');
             if(book.names.some(n=>n.id!==id&&n.name.toLowerCase()===label.toLowerCase()&&n.sheet===scope))throw Error('A name already exists in this scope.');
-            const s=book.sheets.find(s=>s.id===(scope??sheetId))!,entry=named??{id:uid(),name:label,sheet:scope,context:s.id,formula:{kind:'literal' as const,value:null},original:formula};
+            const s=allSheets(book).find(s=>s.id===(scope??sheetId))!,entry=named??{id:uid(),name:label,sheet:scope,context:s.id,formula:{kind:'literal' as const,value:null},original:formula};
             if(!named)book.names.push(entry);entry.name=label;entry.sheet=scope;entry.context=s.id;entry.original=formula;entry.formula=compile(formula,book,s.id,s.rows[0].id,s.columns[0].id);
           });editor.close();
         };
@@ -1451,7 +1748,7 @@ function openGroups():void {
   if(!commitDraft())return;
   groupManager?.close();document.querySelector('dialog')?.remove();
   const id=sheetId,panel=document.createElement('aside'),controller=new AbortController();let located:string|undefined;
-  panel.className='group-manager';panel.setAttribute('role','dialog');panel.setAttribute('aria-labelledby','group-manager-title');
+  panel.className='dialog-surface group-manager';panel.setAttribute('role','dialog');panel.setAttribute('aria-labelledby','group-manager-title');
   const affected=(g:Sheet['groups'][number],s:Sheet)=>new Set(g.kind==='summary'?g.members:outlineMembers(g,s.groups));
   const coordinates=(g:Sheet['groups'][number],s:Sheet,effective=true)=>{
     const ids=effective?affected(g,s):new Set(g.members),positions=(g.axis==='row'?s.rows:s.columns).map((item,i)=>ids.has(item.id)?i:-1).filter(i=>i>=0),chunks:string[]=[];
@@ -1459,7 +1756,7 @@ function openGroups():void {
     return `${g.axis==='row'?'Rows':'Columns'} ${chunks.join(', ')||'(removed)'}`;
   };
   const paint=()=>{
-    const s=book.sheets.find(s=>s.id===id),g=s?.groups.find(g=>g.id===located),members=g&&s?affected(g,s):new Set<string>();
+    const s=allSheets(book).find(s=>s.id===id),g=s?.groups.find(g=>g.id===located),members=g&&s?affected(g,s):new Set<string>();
     root.querySelectorAll<HTMLElement>('td[data-r],th[data-row-select],th[data-col]').forEach(el=>{
       const r=Number(el.dataset.r??el.dataset.rowSelect),c=Number(el.dataset.c??el.dataset.col);
       el.classList.toggle('group-located',!!g&&sheetId===id&&(g.axis==='row'?!!s?.rows[r]&&members.has(s.rows[r].id):!!s?.columns[c]&&members.has(s.columns[c].id))&&(!g.table||!!s?.rows[r]&&!!s?.columns[c]&&groupContainsCell(book,s,g,s.rows[r].id,s.columns[c].id)));
@@ -1468,23 +1765,24 @@ function openGroups():void {
   };
   const close=()=>{controller.abort();panel.remove();located=undefined;paint();groupManager=undefined;};
   const refresh=()=>{
-    const s=book.sheets.find(s=>s.id===id);if(!s||sheetId!==id){close();return;}
+    const s=allSheets(book).find(s=>s.id===id);if(!s||sheetId!==id){close();return;}
+    const owner=scopedSelectionTable(),local=tableSelectionMode||!!owner,visibleGroups=s.groups.filter(group=>!local||group.table===owner?.id);
     const focus=panel.contains(document.activeElement)?(document.activeElement as HTMLElement).dataset:undefined;
     const scroll=panel.querySelector('.group-card-list')?.scrollTop??0;
     const preview=(g:Sheet['groups'][number])=>{
-      const owner=book.tables.find(t=>t.id===g.table&&t.sheet===s.id);
+      const owner=allTables(book).find(t=>t.id===g.table&&t.sheet===s.id);
       const members=affected(g,s),allRows=s.rows.map((r,i)=>({...r,i})).filter(r=>!g.table||!!owner&&(r.id===owner.header||owner.rows.includes(r.id))),allColumns=s.columns.map((c,i)=>({...c,i})).filter(c=>!g.table||owner?.columns.some(field=>field.column===c.id));
       const sample=<T,>(items:T[]):T[]=>items.length>4?[...items.slice(0,3),items.at(-1)!]:items;
       const rows=g.axis==='row'?sample(allRows.filter(r=>members.has(r.id))):allRows.slice(0,3),columns=g.axis==='column'?sample(allColumns.filter(c=>members.has(c.id))):allColumns.slice(0,3);
       return `<div class="group-cell-preview"><table aria-label="${esc(coordinates(g,s))} cell preview"><thead><tr><th>Row</th>${columns.map(c=>`<th class="${g.kind==='summary'&&g.axis==='column'&&c.id===g.members[0]?'preview-summary':''}">${letters(c.i)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr class="${g.kind==='summary'&&g.axis==='row'&&r.id===g.members[0]?'preview-summary':''}"><th>${r.i+1}</th>${columns.map(c=>`<td class="${g.kind==='summary'&&g.axis==='column'&&c.id===g.members[0]?'preview-summary':''}" title="${esc(cellText(getCell(s,r.id,c.id),s,r.i,c.i))}">${esc(cellText(getCell(s,r.id,c.id),s,r.i,c.i))||'<span class="muted">(blank)</span>'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
     };
-    panel.innerHTML=`<div class="dialog-heading"><h2 id="group-manager-title">Groups on ${esc(s.name)}</h2><button class="close" aria-label="Close group manager">x</button></div>
+    panel.innerHTML=`<div class="dialog-heading"><h1 class="dialog-title" id="group-manager-title">Groups on ${esc(s.name)}</h1><button type="button" class="close" aria-label="Close group manager">${toolbarIcon('close')}</button></div>
       <div class="group-type-guide"><p><strong>Summary group</strong> keeps its summary row/column visible and hides the details.</p><p><strong>Plain group</strong> hides all its members. A selected summary also hides its entire group.</p></div>
       <div class="group-create-controls">${(['summary','range'] as const).map(kind=>`<div><strong>${kind==='summary'?'Summary':'Plain'}</strong>${(['row','column'] as const).map(axis=>`<button data-create-kind="${kind}" data-create-axis="${axis}">${axis==='row'?'Group selected rows':'Group selected columns'}</button>`).join('')}</div>`).join('')}</div>
-      <button id="ungroup-all-plain" ${book.sheets.some(s=>s.groups.some(g=>g.kind!=='summary'))?'':'disabled'}>Ungroup all plain groups (workbook)</button>
-      <div class="group-card-list">${s.groups.length?s.groups.map(g=>{
+      <button id="ungroup-all-plain" ${(local?visibleGroups.some(group=>group.kind!=='summary'):allSheets(book).some(s=>s.groups.some(g=>g.kind!=='summary')))?'':'disabled'}>Ungroup all plain groups (${local?owner?esc(owner.name):'this sheet':'workbook'})</button>
+      <div class="group-card-list">${visibleGroups.length?visibleGroups.map(g=>{
         const summary=g.kind==='summary',rootAt=(g.axis==='row'?s.rows:s.columns).findIndex(item=>item.id===g.members[0]),count=affected(g,s).size;
-        const owner=g.table?book.tables.find(t=>t.id===g.table):undefined;
+        const owner=g.table?allTables(book).find(t=>t.id===g.table):undefined;
         return `<section class="group-card ${located===g.id?'located':''}" data-group-card="${g.id}"><div class="group-card-heading"><strong>${summary?'Summary group':'Plain group'} · ${g.table?`Table: ${esc(owner?.name??'(removed)')}`:'Sheet'}</strong><span>${esc(coordinates(g,s))}</span></div>
           <p>${summary?`Summary ${g.axis} ${g.axis==='row'?rootAt+1:letters(rootAt)} stays visible; ${Math.max(0,count-1)} detail${count===2?'':'s'} ${g.collapsed?'hidden':'shown'}.`:`All ${count} ${g.axis}${count===1?'':'s'} ${g.collapsed?'hidden':'shown'}.${count>g.members.length?` Selected ${esc(coordinates(g,s,false).toLowerCase())} includes a summary and its details.`:''}`}</p>
           ${preview(g)}<div class="group-card-actions"><button data-locate="${g.id}">Locate on sheet</button><button data-toggle="${g.id}">${g.collapsed?'Show':'Hide'} ${summary?'details':'group'}</button><button data-ungroup="${g.id}">Ungroup</button></div></section>`;
@@ -1509,6 +1807,26 @@ function openGroups():void {
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&draft===undefined){e.preventDefault();e.stopPropagation();close();}},{capture:true,signal:controller.signal});
   groupManager={refresh,paint,close};document.body.append(panel);refresh();
 }
+function groupingSelection(kind:'summary'|'range',axis:'row'|'column'):{members:string[];targets:Group[]}{
+  const s=sheet(),view=gridReference(),members=axis==='row'
+    ?selectedAxisIndices('row').map(i=>s.rows[i]).filter(r=>!view||view.rows.includes(r.id)).map(r=>r.id)
+    :selectedAxisIndices('column').map(i=>s.columns[i]).filter(c=>!view||view.columns.includes(c.id)).map(c=>c.id);
+  const chosen=new Set(members),groups=s.groups.filter(g=>g.table===selectionScope&&g.axis===axis&&(g.kind??'range')===kind);
+  const exact=groups.find(g=>g.members.length===chosen.size&&g.members.every(id=>chosen.has(id)));
+  const containing=groups.filter(g=>members.length&&members.every(id=>g.members.includes(id))).sort((a,z)=>a.members.length-z.members.length);
+  const inside=groups.filter(g=>g.members.every(id=>chosen.has(id)));
+  return{members,targets:exact?[exact]:containing.length?[containing[0]]:inside.filter(g=>!inside.some(parent=>parent.id!==g.id&&parent.members.length>g.members.length&&g.members.every(id=>parent.members.includes(id))))};
+}
+function toggleSelectedGroup(kind:'summary'|'range',axis?:'row'|'column'):void{
+  if(!commitDraft()||!editableReference())return;
+  axis??=selectionMode()==='rows'?'row':selectionMode()==='columns'?'column':undefined;
+  if(!axis){
+    dialog(kind==='summary'?'Summary group':'Plain group','<div class="button-row"><button data-toggle-group-axis="row">Rows</button><button data-toggle-group-axis="column">Columns</button></div>',d=>{
+      d.querySelectorAll<HTMLButtonElement>('[data-toggle-group-axis]').forEach(button=>button.onclick=()=>{d.close();toggleSelectedGroup(kind,button.dataset.toggleGroupAxis as 'row'|'column');});
+    });return;
+  }
+  groupSelected(groupingSelection(kind,axis).targets.length>0,axis,kind);
+}
 function groupSelected(remove=false,axis?:'row'|'column',kind:'summary'|'range'='summary'):void {
   if(!commitDraft()||!editableReference())return;
   if(extraSelections.some(area=>area.table!==selectionScope)){flash('Group one table or sheet scope at a time. Mixed-scope selections remain separate.');return;}
@@ -1518,9 +1836,7 @@ function groupSelected(remove=false,axis?:'row'|'column',kind:'summary'|'range'=
       d.querySelectorAll<HTMLButtonElement>('[data-group-axis]').forEach(button=>button.onclick=()=>{d.close();groupSelected(remove,button.dataset.groupAxis as 'row'|'column',kind);});
     });return;
   }
-  const s=sheet(),b=bounds(),view=gridReference(),members=axis==='row'
-    ?selectedAxisIndices('row').map(i=>s.rows[i]).filter(r=>!view||view.rows.includes(r.id)).map(r=>r.id)
-    :selectedAxisIndices('column').map(i=>s.columns[i]).filter(c=>!view||view.columns.includes(c.id)).map(c=>c.id);
+  const s=sheet(),b=bounds(),{members,targets}=groupingSelection(kind,axis);
   const chosen=new Set(members),groups=s.groups.filter(g=>g.table===selectionScope&&g.axis===axis&&(g.kind??'range')===kind),exact=groups.find(g=>g.members.length===chosen.size&&g.members.every(id=>chosen.has(id)));
   mutate(remove?'Ungroup selection':'Group selection',()=>{
     if(!members.length)throw Error('Select rows or columns to group.');
@@ -1529,15 +1845,12 @@ function groupSelected(remove=false,axis?:'row'|'column',kind:'summary'|'range'=
       if(kind==='summary'&&members.length<2)throw Error('Select the summary row or column together with at least one detail.');
       s.groups.push({id:uid(),axis,members,kind,collapsed:false,...(selectionScope?{table:selectionScope}:{}),label:axis==='row'?`Rows ${b.r1+1}-${b.r2+1}`:`Columns ${letters(b.c1)}-${letters(b.c2)}`});return;
     }
-    const containing=groups.filter(g=>members.every(id=>g.members.includes(id))).sort((a,z)=>a.members.length-z.members.length);
-    const inside=groups.filter(g=>g.members.every(id=>chosen.has(id)));
-    const targets=exact?[exact]:containing.length?[containing[0]]:inside.filter(g=>!inside.some(parent=>parent.id!==g.id&&parent.members.length>g.members.length&&g.members.every(id=>parent.members.includes(id))));
     if(!targets.length)throw Error('No complete or containing group matches this selection.');
     const ids=new Set(targets.map(g=>g.id));s.groups=s.groups.filter(g=>!ids.has(g.id));
   });
 }
 function openBlock():void {
-  const s=sheet(),t=tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??book.tables.find(t=>t.sheet===s.id);
+  const s=sheet(),t=tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??allTables(book).find(t=>t.sheet===s.id);
   if(!t){flash('Choose a table with Meal, Date, isMeal, or isDay columns. Other tables still support ordinary row groups.');return;}
   const find=(name:string)=>t.columns.find(c=>c.name.toLowerCase()===name.toLowerCase());
   const flag=find('isDay')??find('isMeal'),label=find('Meal')??find('Weight'),date=find('Date');
@@ -1545,25 +1858,31 @@ function openBlock():void {
   let members:string[]=[],blockIssue='';
   try{members=positionalBlock(book,s,t,s.rows[selected.r].id,engine);}catch(e){blockIssue=e instanceof Error?e.message:String(e);}
   const positions=members.map(id=>s.rows.findIndex(r=>r.id===id));
-  const isDay=!!find('isDay')||(!find('Meal')&&!!date),title=isDay?'Day':'Meal';
-  dialog(`${title} blocks`, `<p>A block runs from one header record to the next. Moving ingredients across a header still changes membership. Existing formulas are never silently repaired.</p>${blockIssue?`<p>${esc(blockIssue)}</p>`:''}<div class="menu"><button id="group-top" ${members.length?'':'disabled'}>Group & move to top</button><button id="select-block" ${members.length?'':'disabled'}>Select current block (${members.length} records)</button><button id="move-block" ${members.length?'':'disabled'}>Move current block below table header</button><button id="collapse-block" ${members.length?'':'disabled'}>Group block details for collapse</button></div><hr><h3>New ${title.toLowerCase()} header</h3><form id="new-block"><label>${isDay?'Date':'Meal name'}<input id="block-label" ${isDay?'type="date"':''} required></label><label>Status<select id="block-status"><option>real</option><option>planned</option><option>hypothetical</option></select></label><button class="primary">Create explicit ${title.toLowerCase()}</button></form><p class="muted">Only newly created headers get default totals, including an explicit end-of-table bound. Imported header formulas remain unchanged.</p>`,d=>{
-    d.querySelector<HTMLButtonElement>('#group-top')!.onclick=()=>{mutate('Group & move block to top',()=>{
+  const isDay=!!find('isDay')||(!find('Meal')&&!!date),title=isDay?'Day':'Meal',local=tableSelectionMode;
+  const groupDetails=(ids:string[])=>{if(ids.length<2)throw Error('Add detail rows to this block first.');sheet().groups.push({id:uid(),axis:'row',members:ids,kind:'summary',collapsed:true,label:`${title} details`,...(local?{table:t.id}:{})});};
+  dialog(`${title} blocks`, `<p>A block runs from one header record to the next. Moving ingredients across a header still changes membership. Existing formulas are never silently repaired.</p>${blockIssue?`<p>${esc(blockIssue)}</p>`:''}<div class="menu"><button id="group-top" ${members.length?'':'disabled'}>Group & move to top</button><button id="select-block" ${members.length?'':'disabled'}>Select current block (${members.length} records)</button><button id="move-block" ${members.length?'':'disabled'}>Move current block below table header</button><button id="collapse-block" ${members.length?'':'disabled'}>Group block details for collapse</button></div><hr><h3>New ${title.toLowerCase()} header</h3><form id="new-block"><label>${isDay?'Date':'Meal name'}<input id="block-label" ${isDay?'type="date"':''} required></label><label>Status<select id="block-status"><option>real</option>${local?'':'<option>planned</option>'}<option>hypothetical</option></select></label><button class="primary">Create explicit ${title.toLowerCase()}</button></form><p class="muted">Only newly created headers get default totals, including an explicit end-of-table bound. Imported header formulas remain unchanged.${local?' Planned status is sheet-wide; turn off Table selection to use it.':''}</p>`,d=>{
+    d.querySelector<HTMLButtonElement>('#group-top')!.onclick=()=>{
+      if(local){d.close();runTableEdit(t.id,'row',{kind:'move',ids:members,boundary:s.rows.findIndex(row=>row.id===t.header)+1},'Group & move block to top',{finish:ids=>{if(ids.length>1&&!sheet().groups.some(group=>group.table===t.id&&group.kind==='summary'&&group.members[0]===ids[0]))groupDetails(ids);}});return;}
+      mutate('Group & move block to top',()=>{
       const at=groupBlockToTop(book,s,t,s.rows[selected.r].id);selected={r:at,c:0};anchor={...selected};selectionKind='cells';scrollTarget=at;
     });d.close();};
-    d.querySelector<HTMLButtonElement>('#select-block')!.onclick=()=>{anchor={r:Math.min(...positions),c:0};selected={r:Math.max(...positions),c:s.columns.length-1};selectionKind='cells';scrollTarget=anchor.r;page=Math.floor(anchor.r/60);render();d.close();};
-    d.querySelector<HTMLButtonElement>('#move-block')!.onclick=()=>{mutate('Move whole block',()=>{
+    d.querySelector<HTMLButtonElement>('#select-block')!.onclick=()=>{const fields=t.columns.map(field=>s.columns.findIndex(column=>column.id===field.column));anchor={r:Math.min(...positions),c:local?Math.min(...fields):0};selected={r:Math.max(...positions),c:local?Math.max(...fields):s.columns.length-1};selectionKind=local?'rows':'cells';selectionScope=local?t.id:undefined;scrollTarget=anchor.r;page=Math.floor(anchor.r/60);render();d.close();};
+    d.querySelector<HTMLButtonElement>('#move-block')!.onclick=()=>{
+      if(local){d.close();runTableEdit(t.id,'row',{kind:'move',ids:members,boundary:s.rows.findIndex(row=>row.id===t.header)+1},'Move whole block');return;}
+      mutate('Move whole block',()=>{
       if(!label&&!flag)throw Error('This table has no recognized meal/day header marker. Use explicit row selection instead.');
       const at=moveRows(book,s,members,s.rows.findIndex(r=>r.id===t.header)+1);
       selected={r:at,c:0};anchor={...selected};selectionKind='cells';page=Math.floor(at/60);
     });d.close();};
-    d.querySelector<HTMLButtonElement>('#collapse-block')!.onclick=()=>{mutate('Group block details',()=>{if(members.length<2)throw Error('Add detail rows to this block first.');s.groups.push({id:uid(),axis:'row',members,kind:'summary',collapsed:true,label:`${title} details`});});d.close();};
+    d.querySelector<HTMLButtonElement>('#collapse-block')!.onclick=()=>{mutate('Group block details',()=>groupDetails(members));d.close();};
     d.querySelector('form')!.onsubmit=e=>{
       e.preventDefault();const text=d.querySelector<HTMLInputElement>('#block-label')!.value,status=d.querySelector<HTMLSelectElement>('#block-status')!.value as 'real'|'planned'|'hypothetical';
-      mutate(`Create ${title.toLowerCase()}`,()=>{
+      const createHeader=(row:string)=>{
+        const s=sheet(),updated=allTables(book).find(table=>table.id===t.id)!,r=s.rows.find(item=>item.id===row)!;
         if(isDay&&!date)throw Error('This table needs a Date column to create an explicit day.');
         if(!isDay&&!find('Meal'))throw Error('This table needs a Meal column to create a meal header.');
-        const at=Math.max(s.rows.findIndex(r=>r.id===t.header)+1,...t.rows.map(id=>s.rows.findIndex(r=>r.id===id)+1)),r=addRow(book,s,at,t);
-        r.status=status;
+        if(local){if(status==='planned')throw Error('Planned status is sheet-wide. Turn off Table selection first.');r.hypotheticalTables??={};r.hypotheticalTables[t.id]=status==='hypothetical';}
+        else r.status=status;
         if(isDay){
           const [year,month,day]=text.split('-').map(Number),serial=excelDate(year,month,day);
           if(year<1900||serial===undefined||excelDateText(serial)!==text)throw Error('Choose a valid date from 1900-01-01 through 9999-12-31.');
@@ -1571,7 +1890,12 @@ function openBlock():void {
         }
         else{setInput(book,s,r.id,find('Meal')!.column,text);if(flag)setInput(book,s,r.id,flag.column,'TRUE');}
         const portions=find('Portions');if(portions)setInput(book,s,r.id,portions.column,'1');
-        for(const c of t.columns)if(/^(Calories(?: \(kcal\))?|(?:Fat|Carbs|Sugar|Protein) \(g\)|Sodium \(mg\))$/i.test(c.name))setInput(book,s,r.id,c.column,defaultHeaderFormula(book,t,c.id));
+        for(const c of updated.columns)if(/^(Calories(?: \(kcal\))?|(?:Fat|Carbs|Sugar|Protein) \(g\)|Sodium \(mg\))$/i.test(c.name))setInput(book,s,r.id,c.column,defaultHeaderFormula(book,updated,c.id));
+      };
+      const at=Math.max(s.rows.findIndex(r=>r.id===t.header)+1,...t.rows.map(id=>s.rows.findIndex(r=>r.id===id)+1));
+      if(local){d.close();runTableEdit(t.id,'row',{kind:'insert',boundary:at,count:1},`Create ${title.toLowerCase()}`,{finish:ids=>createHeader(ids[0])});return;}
+      mutate(`Create ${title.toLowerCase()}`,()=>{
+        const r=addRow(book,s,at,t);createHeader(r.id);
         selected={r:at,c:0};anchor={...selected};selectionKind='cells';page=Math.floor(at/60);
       });d.close();
     };
@@ -1591,6 +1915,7 @@ function backToWorkbook():void{
   referenceId=undefined;movingRows=movingColumns=undefined;
   const view=workbookView;workbookView=undefined;
   if(view&&book.sheets.some(s=>s.id===view.sheet)){sheetId=view.sheet;selected=view.selected;anchor=view.anchor;selectionKind=view.kind;selectionScope=view.scope;tableSelectionMode=view.tableMode??tableSelectionMode;tableSelectionTarget=view.target;}
+  else{sheetId=book.sheets[0].id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';selectionScope=undefined;tableSelectionTarget=undefined;extraSelections=[];}
   renderedSheet='';render();const grid=root.querySelector<HTMLElement>('#grid-scroll')!;if(view){grid.scrollTop=view.scroll;grid.scrollLeft=view.left;drawRowWindow?.();}
 }
 function referenceHost():ReferenceHost{return{
@@ -1607,11 +1932,11 @@ function dropdownScope():{rows:string[];columns:string[]}{
   const s=sheet(),b=bounds(),owner=scopedSelectionTable(),cols=s.columns.filter((c,i)=>i>=b.c1&&i<=b.c2&&(!gridReference()||gridReference()!.columns.includes(c.id))&&(!owner||owner.columns.some(field=>field.column===c.id))).map(c=>c.id);
   let rows=s.rows.filter((r,i)=>i>=b.r1&&i<=b.r2&&(!gridReference()||gridReference()!.rows.includes(r.id))&&(!owner||r.id===owner.header||owner.rows.includes(r.id))).map(r=>r.id);
   if(selectionKind==='columns'){
-    const candidates=book.tables.filter(t=>t.sheet===s.id&&t.columns.some(c=>cols.includes(c.column))),t=owner??gridReference()?.table??candidates.find(t=>t.id===selectionTable)??(candidates.length===1?candidates[0]:undefined);
+    const candidates=allTables(book).filter(t=>t.sheet===s.id&&t.columns.some(c=>cols.includes(c.column))),t=owner??gridReference()?.table??candidates.find(t=>t.id===selectionTable)??(candidates.length===1?candidates[0]:undefined);
     if(candidates.length>1&&!t)throw Error('This column crosses multiple tables. Select a data cell in your intended table before selecting its column.');
     if(t)rows=t.rows;
   }
-  rows=rows.filter(r=>!book.tables.some(t=>t.sheet===s.id&&t.header===r&&t.columns.some(c=>cols.includes(c.column))));
+  rows=rows.filter(r=>!allTables(book).some(t=>t.sheet===s.id&&t.header===r&&t.columns.some(c=>cols.includes(c.column))));
   if(!rows.length||!cols.length)throw Error('Select a data cell or a column, not a table header.');
   return{rows,columns:cols};
 }
@@ -1628,7 +1953,7 @@ function openDropdownAssignment():void{
     const scope=dropdownScope(),s=sheet();
     const sources=(book.references??[]).filter(r=>!r.archived&&r.kind!=='conversions'&&r.kind!=='units');
     const rememberedFields=new Set(Object.values(book.pickerSources));
-    const fields=book.tables.filter(t=>!book.references?.some(r=>r.table===t.id)).flatMap(t=>t.columns.filter(c=>t.name.toLowerCase()==='ingredients'&&/^ingredients?$/i.test(c.name)||rememberedFields.has(`${t.id}:${c.id}`)).map(c=>({table:t,column:c})));
+    const fields=allTables(book).filter(t=>!book.references?.some(r=>r.table===t.id)).flatMap(t=>t.columns.filter(c=>t.name.toLowerCase()==='ingredients'&&/^ingredients?$/i.test(c.name)||rememberedFields.has(`${t.id}:${c.id}`)).map(c=>({table:t,column:c})));
     const options:{value:string;label:string;displayLabel?:string;group?:string;ast?:Ast;error?:string}[]=[
       ...sources.map(r=>{const value=r.kind==='derived'?`ref:${r.id}`:`${r.table}:${r.column}`,displayLabel=referenceLabel(r),group=r.group;try{return{value,label:referenceCaption(r),displayLabel,group,ast:referenceFormula(r)};}catch(e){return{value,label:referenceCaption(r),displayLabel,group,error:String(e)};}}),
       ...fields.map(({table:t,column:c})=>({value:`${t.id}:${c.id}`,label:fields.filter(f=>f.table.id===t.id).length>1?`${t.name} / ${c.name}`:t.name,ast:{kind:'structured' as const,table:t.id,columns:[c.id],mode:'data' as const}}))
@@ -1654,14 +1979,13 @@ function openDropdownAssignment():void{
         else{const value=`current:${v.id}:${options.length}`;options.push({value,label:'Current custom source',ast:part});selectedSources.add(value);}
       }
     }
-    dialog('Dropdowns for selection',`<div class="button-row dropdown-view-controls"><button type="button" id="dropdown-list-view">List view</button><button type="button" id="dropdown-grid-view">Grid view</button></div><form><input class="dropdown-source-search" type="search" aria-label="Search dropdown sources" placeholder="Search sources…"><div id="dropdown-source-cards" class="dropdown-source-cards"></div><div class="dropdown-assignment-footer"><button type="button" id="no-dropdown">No dropdown</button><span id="dropdown-selected-count" role="status"></span><button class="primary">Apply dropdown</button></div><p id="dropdown-assignment-error" class="dropdown-source-error" role="alert" hidden></p></form>`,d=>{
+    dialog('Dropdowns for selection',`${sourcePickerControlsHtml}<form>${sourcePickerBodyHtml}<div class="dropdown-assignment-footer"><button type="button" id="no-dropdown">No dropdown</button><span id="dropdown-selected-count" role="status"></span><button class="primary">Apply dropdown</button></div><p id="dropdown-assignment-error" class="dropdown-source-error" role="alert" hidden></p></form>`,d=>{
       d.classList.add('dropdown-assignment');
-      const cards=d.querySelector<HTMLElement>('#dropdown-source-cards')!,search=d.querySelector<HTMLInputElement>('.dropdown-source-search')!,previews=new Map<string,{choices:string[];error?:string}>();
+      const cards=d.querySelector<HTMLElement>('#dropdown-source-cards')!,previews=new Map<string,{choices:string[];error?:string}>();
       const sync=()=>{cards.querySelectorAll<HTMLInputElement>('input').forEach(input=>input.checked=selectedSources.has(input.value));d.querySelector('#dropdown-selected-count')!.textContent=`${selectedSources.size} selected`;d.querySelector('#no-dropdown')!.setAttribute('aria-pressed',String(!selectedSources.size));};
-      const setView=(grid:boolean)=>{
-        dropdownAssignmentGrid=grid;cards.classList.toggle('dropdown-source-checklist',!grid);cards.replaceChildren();
-        d.querySelector('#dropdown-grid-view')!.setAttribute('aria-pressed',String(grid));d.querySelector('#dropdown-list-view')!.setAttribute('aria-pressed',String(!grid));
-        const query=search.value.toLowerCase(),visible=options.filter(o=>o.label.toLowerCase().includes(query)),ordered:typeof options=[];
+      const setView=(grid:boolean,query:string)=>{
+        cards.replaceChildren();
+        const visible=options.filter(o=>o.label.toLowerCase().includes(query)),ordered:typeof options=[];
         for(const option of visible)if(!ordered.includes(option))ordered.push(...(option.group?visible.filter(o=>o.group?.toLowerCase()===option.group!.toLowerCase()):[option]));
         let group='';
         for(const option of ordered){
@@ -1681,9 +2005,8 @@ function openDropdownAssignment():void{
         }
         if(!visible.length){const empty=document.createElement('p');empty.className='muted';empty.textContent='No matching sources';cards.append(empty);}sync();
       };
-      search.oninput=()=>setView(dropdownAssignmentGrid);
       d.querySelector<HTMLButtonElement>('#no-dropdown')!.onclick=()=>{selectedSources.clear();sync();};
-      d.querySelector<HTMLButtonElement>('#dropdown-grid-view')!.onclick=()=>setView(true);d.querySelector<HTMLButtonElement>('#dropdown-list-view')!.onclick=()=>setView(false);setView(dropdownAssignmentGrid);
+      mountSourcePicker(d,{grid:dropdownAssignmentGrid,changeView:grid=>{dropdownAssignmentGrid=grid;},render:setView});
       d.querySelector('form')!.onsubmit=e=>{
         e.preventDefault();
         try{
@@ -1703,6 +2026,7 @@ function selectedReferenceRows():string[]{
 function dropRows(ids:string[],boundary:number):void{
   if(!sheetAxisSelectionAllowed('Moving rows'))return;
   if(!editableReference()){flash('Edit the live list source instead.');return;}
+  const owner=scopedSelectionTable();if(owner){runTableEdit(owner.id,'row',{kind:'move',ids,boundary:projectedBoundary(owner.id,'row',boundary)},'Move table rows');return;}
   movingRows=undefined;extraSelections=[];mutate('Move rows',()=>{
     const scope=gridReference()?.table,group=moveTargetGroups(sheet(),'row',ids,boundary,scope).filter(g=>g.collapsed).sort((a,b)=>a.members.length-b.members.length)[0];
     const at=group?moveIntoGroup(book,sheet(),'row',ids,group.id,scope):moveRows(book,sheet(),ids,boundary,scope);
@@ -1751,6 +2075,13 @@ function showGroupMovePreview(axis:'row'|'column',groupId:string):void{
 function dropIntoGroup(axis:'row'|'column',ids:string[],groupId:string):void{
   if(!sheetAxisSelectionAllowed('Moving sheet axes'))return;
   if(!editableReference()){flash('Edit the live list source instead.');return;}
+  const owner=scopedSelectionTable();
+  if(owner){
+    try{
+      const target=groupMoveTarget({...sheet(),groups:sheet().groups.filter(group=>group.table===owner.id)},axis,ids,groupId,owner);
+      runTableEdit(owner.id,axis,{kind:'move',ids,boundary:target.boundary},'Move table members into group',{joining:[target.group.id,...target.parents.map(group=>group.id)]});
+    }catch(error){flash(error);}return;
+  }
   movingRows=movingColumns=undefined;extraSelections=[];clearMovePreview();
   mutate(`Move ${axis==='row'?'rows':'columns'} into group`,()=>{
     const at=moveIntoGroup(book,sheet(),axis,ids,groupId,axis==='row'?gridReference()?.table:undefined);
@@ -1814,11 +2145,15 @@ function insertDimensions(axis:'row'|'column',boundary:number):void{
   }
   renderedTarget=`${sheetId}:${selected.r}`;
 }
+  function resizeAxisAllowed(axis:'row'|'column',index:number):boolean{
+    if(!tableSelectionMode||!headerSelectionTables(sheet(),allTables(book),axis,index).length)return true;
+    flash(`A ${axis==='row'?'row height':'column width'} is shared across the sheet. Turn off Table selection to resize it.`);return false;
+  }
   function bindResizeControls():void{
     root.querySelectorAll<HTMLElement>('[data-resize-column],[data-resize-row]').forEach(el=>{
       const axis=el.dataset.resizeColumn!==undefined?'column':'row',index=Number(el.dataset.resizeColumn??el.dataset.resizeRow);
       el.onpointerdown=e=>{
-        e.stopPropagation();if(e.button!==0||busy||!editableReference()||!commitDraft())return;
+        e.stopPropagation();if(e.button!==0||busy||!editableReference()||!commitDraft()||!resizeAxisAllowed(axis,index))return;
         const s=sheet(),id=axis==='column'?s.columns[index].id:s.rows[index].id;
         const size=axis==='column'?s.columns[index].width??145:el.closest('tr')!.getBoundingClientRect().height;
         resizing={axis,id,sheet:s.id,start:size,size,position:axis==='column'?e.clientX:e.clientY,pointer:e.pointerId,capture:el};el.setPointerCapture(e.pointerId);
@@ -1832,7 +2167,7 @@ function insertDimensions(axis:'row'|'column',boundary:number):void{
     if(resize.capture.hasPointerCapture(resize.pointer))resize.capture.releasePointerCapture(resize.pointer);
     if(resize.start===resize.size)return;
     if(!commit){render();return;}
-    const s=book.sheets.find(s=>s.id===resize.sheet)!;
+    const s=allSheets(book).find(s=>s.id===resize.sheet)!;
     mutate(`Resize ${resize.axis}`,()=>{
       if(resize.axis==='column'){s.columns.find(c=>c.id===resize.id)!.width=resize.size;measuredRowHeights.clear();}
       else{s.rows.find(r=>r.id===resize.id)!.height=resize.size*3/4;measuredRowHeights.delete(resize.id);}
@@ -1857,6 +2192,7 @@ function insertDimensions(axis:'row'|'column',boundary:number):void{
   root.addEventListener('pointerup',e=>{if(resizing?.pointer===e.pointerId)finishResize(true);});
   root.addEventListener('pointercancel',e=>{if(resizing?.pointer===e.pointerId)finishResize(false);});
   function autoFit(axis:'column'|'row',index:number):void{
+    if(!resizeAxisAllowed(axis,index))return;
     const s=sheet(),view=gridReference(),sample=root.querySelector<HTMLElement>('td[data-r]:not(.table-header)')??root.querySelector<HTMLElement>('td[data-r]'),style=sample?getComputedStyle(sample):getComputedStyle(root),canvas=document.createElement('canvas'),context=canvas.getContext('2d');
     if(!context){flash('This browser cannot measure text for auto-fit.');return;}
     engine.beginPass();
@@ -1868,7 +2204,7 @@ function insertDimensions(axis:'row'|'column',boundary:number):void{
       const rows=axis==='row'?[index]:s.rows.map((r,i)=>!view||view.rows.includes(r.id)?i:-1).filter(i=>i>=0);
       const columns=axis==='column'?[index]:s.columns.map((c,i)=>!view||view.columns.includes(c.id)?i:-1).filter(i=>i>=0);
       for(const r of rows)for(const c of columns){
-        const cell=getCell(s,s.rows[r].id,s.columns[c].id),text=cellText(cell,s,r,c),header=book.tables.some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(col=>col.column===s.columns[c].id));
+        const cell=getCell(s,s.rows[r].id,s.columns[c].id),text=cellText(cell,s,r,c),header=allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(col=>col.column===s.columns[c].id));
         if(axis==='column'){
           context.font=font(cell,header);
           const lines=cell.format?.wrap?text.split(/\r?\n/):[text.replace(/[ \t\r\n\f]+/g,' ')];
@@ -1882,11 +2218,56 @@ function insertDimensions(axis:'row'|'column',boundary:number):void{
     }catch(e){flash(e);}finally{measure.remove();}
   }
 const selectedTabs=new Set<string>();let tabSelectionAnchor:string|undefined;
+function openSheetTabSettings(ids?:string[]):void{
+  const targets=book.sheets.filter(sheet=>ids?ids.includes(sheet.id):selectedTabs.has(sheet.id));
+  if(!targets.length){const current=book.sheets.find(sheet=>sheet.id===sheetId);if(current)targets.push(current);}
+  if(!targets.length){flash('Select a workbook sheet first.');return;}
+  const initialGroup=book.sheetTabGroups?.[targets[0].id]??'',mixed=targets.some(sheet=>(book.sheetTabGroups?.[sheet.id]??'')!==initialGroup);
+  dialog('Sheet settings',`<form id="sheet-tab-settings"><fieldset class="reference-selected-tabs"><legend>${targets.length>1?`Selected tabs (${targets.length})`:'Sheet'}</legend>${targets.map(sheet=>`<label><span>${esc(sheet.name)}</span><input data-sheet-name="${sheet.id}" aria-label="${esc(sheet.name)} sheet name" value="${esc(sheet.name)}" required></label>`).join('')}</fieldset><label>Visual group${targets.length>1?' (all selected tabs)':''}<input id="reference-group" value="${esc(mixed?'':initialGroup)}"${mixed?' data-empty-label="Mixed groups"':''} maxlength="120"></label><p class="muted">Visual organization only. Sheets, tables and formulas stay where they are. Shift-click tabs to organize several together.</p><div id="sheet-tab-settings-error" class="error" role="alert" hidden></div></form>`,d=>{
+    d.classList.add('sheet-settings','reference-settings');
+    mountGroupPicker(referenceHost(),d,[...new Set(Object.values(book.sheetTabGroups??{}))].sort((a,b)=>a.localeCompare(b)));
+    const group=d.querySelector<HTMLInputElement>('#reference-group')!,names=[...d.querySelectorAll<HTMLInputElement>('[data-sheet-name]')],problem=d.querySelector<HTMLElement>('#sheet-tab-settings-error')!;
+    const apply=()=>{
+      const updates=new Map(names.map(input=>[input.dataset.sheetName!,input.value.trim()])),groupChanged=group.dataset.changed==='true',value=group.value.trim();
+      const fail=(message:string)=>{problem.textContent=message;problem.hidden=false;return false;};
+      if([...updates].some(([id,name])=>!name||!book.sheets.some(sheet=>sheet.id===id)))return fail('Use a nonempty name for each existing sheet.');
+      const allNames=allSheets(book).map(sheet=>(updates.get(sheet.id)??sheet.name).toLowerCase());
+      if(new Set(allNames).size!==allNames.length)return fail('Each sheet must have a unique name.');
+      if(value.length>120)return fail('Use at most 120 characters for the visual group.');
+      if(!groupChanged&&targets.every(sheet=>updates.get(sheet.id)===book.sheets.find(current=>current.id===sheet.id)?.name))return true;
+      return mutate('Update sheet tab settings',()=>{
+        for(const [id,name]of updates){
+          book.sheets.find(sheet=>sheet.id===id)!.name=name;
+          if(groupChanged){
+            book.sheetTabGroups??={};
+            const canonical=Object.values(book.sheetTabGroups).find(group=>group.toLowerCase()===value.toLowerCase())??value;
+            if(canonical)book.sheetTabGroups[id]=canonical;else delete book.sheetTabGroups[id];
+          }
+        }
+      });
+    };
+    const close=()=>{if(apply())d.close();};
+    d.querySelector<HTMLButtonElement>('.close')!.onclick=close;
+    d.addEventListener('cancel',e=>{e.preventDefault();close();});
+    d.addEventListener('click',e=>{if(e.target===d){const rect=d.getBoundingClientRect();if(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom)close();}});
+    d.querySelector('form')!.onsubmit=e=>{e.preventDefault();close();};
+  });
+}
 function selectedReferenceTabs():ReferenceSource[]{
   const selected=new Map<string,ReferenceSource>();
   const collect=(nodes:ReferenceNavigation[])=>{for(const node of nodes){if(selectedTabs.has(node.group?`group:${node.group}`:node.members[0].id))for(const source of node.members)selected.set(source.id,source);collect(node.children);}};collect(referenceNavigation(book));return[...selected.values()];
 }
 function bindTabs():void{
+  root.querySelectorAll<HTMLButtonElement>('[data-sheet-group]').forEach(button=>{
+    button.onclick=()=>{
+      if(!commitDraft())return;const group=button.dataset.sheetGroup!;
+      selectedTabs.clear();for(const sheet of book.sheets)if(book.sheetTabGroups?.[sheet.id]===group)selectedTabs.add(sheet.id);
+      book.sheetTabCollapsed=book.sheetTabCollapsed?.includes(group)?book.sheetTabCollapsed.filter(name=>name!==group):[...book.sheetTabCollapsed??[],group];
+      changed('Toggle visual sheet group',false);render();
+    };
+    button.ondblclick=()=>openSheetTabSettings(book.sheets.filter(sheet=>book.sheetTabGroups?.[sheet.id]===button.dataset.sheetGroup).map(sheet=>sheet.id));
+    button.oncontextmenu=e=>{e.preventDefault();openSheetTabSettings(book.sheets.filter(sheet=>book.sheetTabGroups?.[sheet.id]===button.dataset.sheetGroup).map(sheet=>sheet.id));};
+  });
   const entries=[...root.querySelectorAll<HTMLElement>('[data-sheet],[data-reference]')],token=(el:HTMLElement)=>el.dataset.referenceGroup?`group:${el.dataset.referenceGroup}`:el.dataset.reference??el.dataset.sheet!;
   for(const id of selectedTabs)if(!entries.some(el=>token(el)===id))selectedTabs.delete(id);
   const highlight=()=>entries.forEach(el=>{const selected=selectedTabs.size>1&&selectedTabs.has(token(el));el.classList.toggle('tab-multi-selected',selected);el.setAttribute('aria-pressed',String(selected));});
@@ -1919,13 +2300,13 @@ function bindTabs():void{
 }
 function inlineTabName(el:HTMLElement):void{
   if(!commitDraft())return;
-  const reference=!!el.dataset.reference,id=el.dataset.reference??el.dataset.sheet!,entry=reference?book.references?.find(s=>s.id===id):book.sheets.find(s=>s.id===id);if(!entry)return;
+  const reference=!!el.dataset.reference,id=el.dataset.reference??el.dataset.sheet!,entry=reference?book.references?.find(s=>s.id===id):allSheets(book).find(s=>s.id===id);if(!entry)return;
   const group=el.dataset.referenceGroup,style=getComputedStyle(el),pseudo=getComputedStyle(el,'::before'),width=el.getBoundingClientRect().width,contentWidth=Math.max(1,width-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)-parseFloat(style.borderLeftWidth)-parseFloat(style.borderRightWidth)-(pseudo.content==='none'?0:parseFloat(pseudo.width)+parseFloat(pseudo.marginRight)));
   el.draggable=false;el.style.minWidth=width+'px';const input=document.createElement('input');input.value=group?group.split(' / ').at(-1)!:(reference?referenceLabel(entry as ReferenceSource):entry.name);input.style.width=contentWidth+'px';input.setAttribute('aria-label',group?'Rename group':reference?'Rename list':'Rename sheet');el.replaceChildren(input);input.onclick=e=>e.stopPropagation();
   const measure=document.createElement('canvas').getContext('2d')!;measure.font=`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;input.oninput=()=>{input.style.width=Math.max(contentWidth,Math.ceil(measure.measureText(input.value).width)+1)+'px';};input.focus();input.select();
   let done=false;
   const commit=()=>{if(done)return;done=true;const name=input.value.trim();if(!name){flash('Use a nonempty tab name.');render();return;}
-    if(!mutate('Rename tab',()=>{if(group){renameReferenceGroup(book,group,name);return;}if(reference){const source=book.references?.find(s=>s.id===id);if(!source)throw Error('This list was removed.');setReferencePresentation(book,source,name,source.group);return;}const target=book.sheets.find(s=>s.id===id);if(!target)throw Error('This tab was removed.');if(book.sheets.some(s=>s.id!==id&&s.name.toLowerCase()===name.toLowerCase()))throw Error('That tab name is already in use.');target.name=name;})){done=false;input.focus();input.select();}
+    if(!mutate('Rename tab',()=>{if(group){renameReferenceGroup(book,group,name);return;}if(reference){const source=book.references?.find(s=>s.id===id);if(!source)throw Error('This list was removed.');setReferencePresentation(book,source,name,source.group);return;}const target=allSheets(book).find(s=>s.id===id);if(!target)throw Error('This tab was removed.');if(allSheets(book).some(s=>s.id!==id&&s.name.toLowerCase()===name.toLowerCase()))throw Error('That tab name is already in use.');target.name=name;})){done=false;input.focus();input.select();}
   };
   input.onblur=commit;input.onkeydown=e=>{e.stopPropagation();if(e.isComposing)return;if(e.key==='Enter'){e.preventDefault();commit();}if(e.key==='Escape'){done=true;render();}};
 }
@@ -1941,9 +2322,10 @@ function tabMenu(el:HTMLElement,x:number,y:number):void{
   if(group)button('Ungroup dropdowns',()=>mutate('Ungroup dropdowns',()=>{for(const source of book.references??[])if(source.group?.toLowerCase()===group.toLowerCase()||source.group?.toLowerCase().startsWith(group.toLowerCase()+' / '))source.group=[...group.split(' / ').slice(0,-1),...source.group!.slice(group.length).split(' / ').filter(Boolean)].join(' / ')||undefined;}));
   else if(reference){button('Group',()=>{const source=book.references?.find(s=>s.id===id);if(source)groupReference(referenceHost(),source);});button('Dropdown settings',()=>{const source=book.references?.find(s=>s.id===id),targets=selectedReferenceTabs();if(source)referenceSettings(referenceHost(),source,targets.some(s=>s.id===id)?targets:undefined);});button('Duplicate',()=>{const targets=selectedReferenceTabs(),source=book.references?.find(s=>s.id===id),copies:string[]=[];if(!source){flash('This DD no longer exists.');return;}if(mutate('Duplicate DD tabs',()=>{for(const target of targets.some(s=>s.id===id)?targets:[source])copies.push(duplicateReference(book,target).id);})){referenceHost().open(copies[0],copies);}});}
   else{
-    button('Duplicate',()=>mutate('Duplicate sheet',()=>{const source=book.sheets.find(s=>s.id===id);if(!source)throw Error('Sheet was removed.');sheetId=duplicateSheet(book,source).id;}));
-    button('Tab color',()=>{const s=book.sheets.find(s=>s.id===id)!;dialog('Tab color',`<form><label>Color<input type="color" id="sheet-color" value="${esc(s.color)}"></label><button class="primary">Apply color</button></form>`,d=>{d.querySelector('form')!.onsubmit=e=>{e.preventDefault();mutate('Tab color',()=>{s.color=d.querySelector<HTMLInputElement>('#sheet-color')!.value;});d.close();};});});
-    button('Delete',()=>confirmAction('Delete sheet?', 'Deleted references become #REF!. Undo restores the complete sheet.',()=>mutate('Delete sheet',()=>{if(book.sheets.length===1)throw Error('Keep at least one sheet.');book.sheets=book.sheets.filter(s=>s.id!==id);book.tables=book.tables.filter(t=>t.sheet!==id);book.names=book.names.filter(n=>n.sheet!==id);if(sheetId===id){sheetId=book.sheets[0].id;selected={r:0,c:0};anchor={...selected};}})));
+    button('Sheet settings',()=>openSheetTabSettings(selectedTabs.has(id)?undefined:[id]));
+    button('Duplicate',()=>mutate('Duplicate sheet',()=>{const source=allSheets(book).find(s=>s.id===id);if(!source)throw Error('Sheet was removed.');sheetId=duplicateSheet(book,source).id;}));
+    button('Tab color',()=>{const s=allSheets(book).find(s=>s.id===id)!;dialog('Tab color',`<form><label>Color<input type="color" id="sheet-color" value="${esc(s.color)}"></label><button class="primary">Apply color</button></form>`,d=>{d.querySelector('form')!.onsubmit=e=>{e.preventDefault();mutate('Tab color',()=>{s.color=d.querySelector<HTMLInputElement>('#sheet-color')!.value;});d.close();};});});
+    button('Delete',()=>confirmAction('Delete sheet?', 'Deleted references become #REF!. Undo restores the complete sheet.',()=>mutate('Delete sheet',()=>{if(book.sheets.length===1)throw Error('Keep at least one sheet.');book.sheets=book.sheets.filter(s=>s.id!==id);replaceTables(book,allTables(book).filter(t=>t.sheet!==id));book.names=book.names.filter(n=>n.sheet!==id);if(sheetId===id){sheetId=book.sheets[0].id;selected={r:0,c:0};anchor={...selected};}})));
   }
   const rect=menu.getBoundingClientRect();menu.style.left=Math.max(4,Math.min(x,innerWidth-rect.width-4))+'px';menu.style.top=Math.max(4,Math.min(y,innerHeight-rect.height-4))+'px';
   document.addEventListener('pointerdown',e=>{if(!menu.contains(e.target as Node))close();},{signal:controller.signal});
@@ -1979,10 +2361,14 @@ function openFind():void {
     <div id="find-controls" class="find-controls" role="tabpanel"><label>Find<input id="find-text" type="search" autocomplete="off"></label><div id="replace-fields"></div>
     <details class="find-options" open><summary>Search options</summary><div class="find-selectors"><label>Within<select id="find-within"><option value="selected">Selected sheets</option><option value="workbook">Workbook</option></select></label><label>Direction<select id="find-direction"><option value="down">Down</option><option value="up">Up</option></select></label></div>
     <div class="find-flags"><label class="inline"><input id="find-case" type="checkbox">Match case</label><label class="inline"><input id="find-entire" type="checkbox">Match entire cell contents</label></div>
-    <fieldset class="find-scope"><legend>Search sheets</legend><label class="inline"><input id="find-all-sheets" type="checkbox">All</label>${book.sheets.map(s=>`<label class="inline"><input type="checkbox" name="scope" value="${s.id}" ${s.id===sheetId?'checked':''}>${esc(s.name)}</label>`).join('')}</fieldset></details></div>
-    <div class="find-results-panel"><p id="find-count" role="status">Results found (0)</p><div id="find-results" class="find-results-scroll"><table class="find-results-table"><colgroup><col style="width:80px"><col></colgroup><thead><tr><th scope="col">Cell</th><th scope="col">Value</th></tr></thead><tbody></tbody></table></div><div class="find-pagination" hidden><button id="find-previous-page" aria-label="Previous results page">Previous</button><span id="find-page-count"></span><button id="find-next-page" aria-label="Next results page">Next</button></div></div>
+    <fieldset class="find-scope"><legend>Search sheets</legend><label class="inline"><input id="find-all-sheets" type="checkbox">All</label>${allSheets(book).map(s=>`<label class="inline"><input type="checkbox" name="scope" value="${s.id}" ${s.id===sheetId?'checked':''}>${esc(s.name)}</label>`).join('')}</fieldset></details></div>
+    <div class="find-results-panel"><p id="find-count" role="status">Results found (0)</p><div id="find-results" class="find-results-scroll"></div><div class="find-pagination" hidden><button id="find-previous-page" aria-label="Previous results page">Previous</button><span id="find-page-count"></span><button id="find-next-page" aria-label="Next results page">Next</button></div></div>
     <p id="find-feedback" class="find-feedback" role="status"></p><div class="button-row find-actions"><button id="find-next" class="primary">Find next</button><button id="find-all">Find all</button><span id="replace-actions" class="button-row"></span></div>
-    <div id="membership-panel" class="membership-panel" role="tabpanel" aria-labelledby="membership-tab" hidden><div class="membership-tools"><button id="membership-scan">Scan workbook</button><span id="membership-count" role="status"></span></div><div class="find-results-scroll membership-results"><table class="find-results-table"><colgroup><col style="width:34px"><col style="width:155px"><col></colgroup><thead><tr><th><input type="checkbox" id="membership-all" aria-label="Select all membership results"></th><th scope="col">Table / position</th><th scope="col">Contents</th></tr></thead><tbody></tbody></table></div><div class="find-pagination" id="membership-pagination" hidden><button id="membership-previous">Previous</button><span id="membership-page"></span><button id="membership-next">Next</button></div><p class="find-feedback" id="membership-feedback" role="status"></p><div class="button-row"><button id="membership-convert" class="primary" disabled>Convert to table</button></div></div>`,d=>{
+    <div id="membership-panel" class="membership-panel" role="tabpanel" aria-labelledby="membership-tab" hidden>
+      <div class="membership-tools"><button id="membership-scan">Scan workbook</button><span id="membership-count" role="status"></span></div>
+      <div class="find-results-scroll membership-results"><table class="spreadsheet-grid find-results-table"><colgroup><col style="width:34px"><col style="width:60px"><col></colgroup><thead><tr><th><input type="checkbox" id="membership-all" aria-label="Select all membership results"></th><th scope="col">Position</th><th scope="col">Contents</th></tr></thead><tbody></tbody></table></div>
+      <div class="find-pagination" id="membership-pagination" hidden><button id="membership-previous">Previous</button><span id="membership-page"></span><button id="membership-next">Next</button></div>
+      <p class="find-feedback" id="membership-feedback" role="status"></p><div class="button-row"><button id="membership-convert" class="primary" disabled>Convert to table</button></div></div>`,d=>{
     d.classList.add('find-dialog');
     const field=<T extends HTMLElement>(id:string)=>d.querySelector<T>('#'+id)!;
     const input=field<HTMLInputElement>('find-text'),scopes=[...d.querySelectorAll<HTMLInputElement>('input[name=scope]')],all=field<HTMLInputElement>('find-all-sheets');
@@ -1991,7 +2377,7 @@ function openFind():void {
     type Match={sid:string;row:string;column:string;r:number;c:number;value:string};
     let matches:Match[]=[],active:string|undefined,resultPage=0,replacement='';
     const identity=(m:Match)=>`${m.sid}:${m.row}:${m.column}`;
-    const source=(m:Match)=>book.sheets.find(s=>s.id===m.sid)!;
+    const source=(m:Match)=>allSheets(book).find(s=>s.id===m.sid)!;
     const literal=(m:Match)=>{const cell=getCell(source(m),m.row,m.column);return !cell.formula&&!cell.binding&&typeof cell.value==='string';};
     const matcher=()=>createTextSearch(input.value,{matchCase:field<HTMLInputElement>('find-case').checked,entire:field<HTMLInputElement>('find-entire').checked});
     const feedback=(text:string,bad=false)=>{const el=field('find-feedback');el.textContent=text;el.classList.toggle('bad',bad);el.setAttribute('role',bad?'alert':'status');};
@@ -2004,11 +2390,33 @@ function openFind():void {
       if(multiple)multiple.disabled=!matches.some(literal);
     };
     const paint=()=>{
+      const search=matcher(),highlight=(value:string)=>{
+        let end=0,html='';
+        for(const range of search.ranges(value)){html+=esc(value.slice(end,range.start))+`<span class="find-match-text">${esc(value.slice(range.start,range.end))}</span>`;end=range.end;}
+        return html+esc(value.slice(end));
+      };
+      type Preview={sheet:ReturnType<typeof source>;table:ReturnType<typeof tableAt>;start:number;items:{match:Match;index:number}[]};
+      const previews=new Map<string,Preview>();
+      matches.slice(resultPage*200,resultPage*200+200).forEach((m,j)=>{
+        const s=source(m),table=tableAt(book,s.id,m.row,m.column),start=Math.max(0,Math.min(m.c-3,s.columns.length-8)),id=`${s.id}:${table?.id??'sheet'}:${start}`;
+        if(!previews.has(id))previews.set(id,{sheet:s,table,start,items:[]});
+        previews.get(id)!.items.push({match:m,index:resultPage*200+j});
+      });
       let previous='';
-      field('find-results').querySelector('tbody')!.innerHTML=matches.slice(resultPage*200,resultPage*200+200).map((m,j)=>{
-        const i=resultPage*200+j,s=source(m),header=previous===s.id?'':`<tr class="find-sheet-header"><th colspan="2">${esc(s.name)}</th></tr>`;previous=s.id;
-        return`${header}<tr data-find-match="${i}" tabindex="0" aria-selected="${identity(m)===active}"><th scope="row">${letters(m.c)}${m.r+1}</th><td title="${esc(m.value)}">${esc(m.value)}</td></tr>`;
+      const results=[...previews.values()].map(({sheet:s,table,start,items})=>{
+        const sheetHeading=previous===s.id?'':`<div class="find-sheet-header">${esc(s.name)}</div>`;previous=s.id;
+        const columns=s.columns.slice(start,start+8),headers=table?columns.map(column=>`<th scope="col">${esc(table.columns.find(field=>field.column===column.id)?.name??'')}</th>`).join(''):`<th scope="colgroup" colspan="${columns.length}">Row preview (up to 8 cells)</th>`;
+        const matchedColumns=new Set(items.map(({match})=>match.column)),widths=columns.map(column=>matchedColumns.has(column.id)?160:110),width=50+widths.reduce((sum,width)=>sum+width,0);
+        const rows=items.map(({match:m,index})=>{
+          const preview=columns.map((column,offset)=>{
+            const c=start+offset,address=`${letters(c)}${m.r+1}`,value=cellText(getCell(s,m.row,column.id),s,m.r,c),matched=column.id===m.column;
+            return`<td data-find-context="${address}" class="${matched?'find-context-match':''}" aria-label="${address}${matched?', matched cell':''}" title="${esc(value)}">${matched?highlight(value):esc(value)}</td>`;
+          }).join('');
+          return`<tr data-find-match="${index}" tabindex="0" aria-label="Match ${letters(m.c)}${m.r+1}" aria-selected="${identity(m)===active}"><th scope="row">${letters(m.c)}${m.r+1}</th>${preview}</tr>`;
+        }).join('');
+        return`${sheetHeading}${table?`<div class="find-table-header">Table: ${esc(table.name)}</div>`:''}<table class="spreadsheet-grid find-results-table find-row-results" style="--find-preview-width:${width}px" ${table?`data-find-table="${esc(table.id)}"`:''} aria-label="${esc(table?.name??s.name)} result previews"><colgroup><col style="width:50px">${widths.map(width=>`<col style="width:${width}px">`).join('')}</colgroup><thead><tr><th scope="col">Cell</th>${headers}</tr></thead><tbody>${rows}</tbody></table>`;
       }).join('');
+      field('find-results').innerHTML=results;
       field('find-count').textContent=`Results found (${matches.length})`;
       d.querySelector<HTMLElement>('.find-pagination')!.hidden=matches.length<=200;
       field('find-page-count').textContent=`${resultPage*200+1}-${Math.min(matches.length,resultPage*200+200)} of ${matches.length}`;
@@ -2019,7 +2427,7 @@ function openFind():void {
     const draw=(reset=true)=>{
       if(reset){active=undefined;resultPage=0;feedback('');}
       const chosen=new Set(scopes.filter(s=>s.checked).map(s=>s.value)),search=matcher();matches=[];engine.beginPass();
-      if(input.value)for(const s of book.sheets.filter(s=>chosen.has(s.id))){
+      if(input.value)for(const s of allSheets(book).filter(s=>chosen.has(s.id))){
         const rows=new Map(s.rows.map((r,i)=>[r.id,i])),columns=new Map(s.columns.map((c,i)=>[c.id,i])),found:Match[]=[];
         for(const [k,cell]of Object.entries(s.cells)){
           const [row,column]=k.split(':'),r=rows.get(row),c=columns.get(column);if(r===undefined||c===undefined)continue;
@@ -2031,21 +2439,22 @@ function openFind():void {
       resultPage=Math.min(resultPage,Math.max(0,Math.ceil(matches.length/200)-1));paint();
       if(input.value&&!chosen.size)feedback('Select at least one sheet to search.',true);
     };
+    const reveal=(s:ReturnType<typeof source>,rowId:string,columnId:string)=>{
+      const row=s.rows.find(r=>r.id===rowId)!,column=s.columns.find(c=>c.id===columnId)!;
+      const hidden=s.groups.filter(g=>g.collapsed&&outlineMembers(g,s.groups).includes(g.axis==='row'?rowId:columnId));
+      return !row.hidden&&!column.hidden&&!hidden.length||mutate('Reveal search result',()=>{if(row.hidden)row.hidden=false;if(column.hidden)column.hidden=false;hidden.forEach(g=>g.collapsed=false);});
+    };
     const go=(index:number)=>{
       const m=matches[index];if(!m)return;
-      const s=source(m),row=s.rows.find(r=>r.id===m.row)!,column=s.columns.find(c=>c.id===m.column)!;
-      const hidden=s.groups.filter(g=>g.collapsed&&outlineMembers(g,s.groups).includes(g.axis==='row'?m.row:m.column));
-      if(row.hidden||column.hidden||hidden.length){
-        if(!mutate('Reveal search result',()=>{if(row.hidden)row.hidden=false;if(column.hidden)column.hidden=false;hidden.forEach(g=>g.collapsed=false);})){feedback(error,true);return;}
-      }
-      sheetId=s.id;referenceId=undefined;workbookView=undefined;extraSelections=[];selected={r:m.r,c:m.c};anchor={...selected};selectionKind='cells';scrollTarget=m.r;page=Math.floor(m.r/60);active=identity(m);resultPage=Math.floor(index/200);render();paint();
+      const s=source(m);if(!reveal(s,m.row,m.column)){feedback(error,true);return;}
+      sheetId=s.id;referenceId=undefined;workbookView=undefined;extraSelections=[];selected={r:m.r,c:m.c};anchor={...selected};selectionKind='cells';scrollTarget={row:m.r,contextRows:1};page=Math.floor(m.r/60);active=identity(m);resultPage=Math.floor(index/200);render();paint();
       d.querySelector<HTMLElement>(`[data-find-match="${index}"]`)?.scrollIntoView({block:'nearest'});
     };
     const next=()=>{
       if(!matches.length)return;
       const up=field<HTMLSelectElement>('find-direction').value==='up',current=matches.findIndex(m=>identity(m)===active);
       if(current>=0){go((current+(up?-1:1)+matches.length)%matches.length);return;}
-      const order=book.sheets.findIndex(s=>s.id===sheetId),after=(m:Match)=>book.sheets.findIndex(s=>s.id===m.sid)-order||m.r-selected.r||m.c-selected.c;
+      const order=allSheets(book).findIndex(s=>s.id===sheetId),after=(m:Match)=>allSheets(book).findIndex(s=>s.id===m.sid)-order||m.r-selected.r||m.c-selected.c;
       const index=up?matches.reduce((last,m,i)=>after(m)<0?i:last,-1):matches.findIndex(m=>after(m)>0);go(index<0?(up?matches.length-1:0):index);
     };
     const replace=(every:boolean)=>{
@@ -2055,7 +2464,7 @@ function openFind():void {
       if(!mutate('Replace literal text',()=>{for(const m of editable){
         const s=source(m),cell=getCell(s,m.row,m.column);if(typeof cell.value!=='string'||cell.formula||cell.binding)throw Error('This result changed. Search again before replacing it.');
         const value=search.replace(cell.value,replacement);if(value===cell.value)continue;
-        const table=book.tables.find(t=>t.sheet===m.sid&&t.header===m.row&&t.columns.some(c=>c.column===m.column));
+        const table=allTables(book).find(t=>t.sheet===m.sid&&t.header===m.row&&t.columns.some(c=>c.column===m.column));
         if(table)renameColumn(book,table,table.columns.find(c=>c.column===m.column)!.id,value);
         else s.cells[key(m.row,m.column)]={...cell,value};changed++;
       }})){feedback(error,true);return;}
@@ -2072,13 +2481,27 @@ function openFind():void {
       const all=field<HTMLInputElement>('membership-all');all.disabled=!gaps.length;all.checked=!!gaps.length&&selectedGaps.size===gaps.length;all.indeterminate=!!selectedGaps.size&&selectedGaps.size<gaps.length;
     };
     const paintGaps=()=>{
-      let previous='';engine.beginPass();
-      field('membership-panel').querySelector('tbody')!.innerHTML=gaps.slice(gapPage*200,gapPage*200+200).map((gap,j)=>{
-        const index=gapPage*200+j,s=book.sheets.find(s=>s.id===gap.sheet)!,table=book.tables.find(t=>t.id===gap.table)!;
+      let previous='',previousTable='';engine.beginPass();
+      const entries=gaps.slice(gapPage*200,gapPage*200+200).map((gap,j)=>{
+        const index=gapPage*200+j,s=allSheets(book).find(s=>s.id===gap.sheet)!,table=allTables(book).find(t=>t.id===gap.table)!;
         const position=gap.axis==='row'?`Row ${gap.index+1}`:`Column ${letters(gap.index)}`;
-        const contents=gap.axis==='row'?table.columns.map(c=>cellText(getCell(s,gap.member,c.column),s,gap.index,s.columns.findIndex(x=>x.id===c.column))).filter(Boolean).join(' · '):cellText(getCell(s,table.header,gap.member),s,s.rows.findIndex(r=>r.id===table.header),gap.index)||s.columns[gap.index].label;
-        const header=previous===s.id?'':`<tr class="find-sheet-header"><th colspan="3">${esc(s.name)}</th></tr>`;previous=s.id;
-        return`${header}<tr data-membership-result="${index}"><td><input type="checkbox" aria-label="${esc(table.name)} ${position}" ${selectedGaps.has(gapId(gap))?'checked':''}></td><th scope="row">${esc(table.name)} · ${position}</th><td title="${esc(contents)}">${esc(contents)}</td></tr>`;
+        const ids=new Set(gap.axis==='row'?table.columns.map(field=>field.column):[table.header,...table.rows]),items=gap.axis==='row'?s.columns:s.rows,indices=items.flatMap((item,i)=>ids.has(item.id)?[i]:[]);
+        const start=indices[0],end=Math.min(start+8,indices.at(-1)!+1);
+        const cells=Array.from({length:end-start},(_,i)=>{
+          const r=gap.axis==='row'?gap.index:start+i,c=gap.axis==='column'?gap.index:start+i;
+          return{address:`${letters(c)}${r+1}`,value:cellText(getCell(s,s.rows[r].id,s.columns[c].id),s,r,c)};
+        });
+        return{gap,index,s,table,position,cells};
+      });
+      const count=Math.max(1,...entries.map(entry=>entry.cells.length)),preview=field('membership-panel').querySelector('table')!;
+      preview.style.width=`${94+count*110}px`;
+      preview.querySelector('colgroup')!.innerHTML=`<col style="width:34px"><col style="width:60px"><col span="${count}" style="width:110px">`;
+      preview.querySelector<HTMLTableCellElement>('thead th:last-child')!.colSpan=count;
+      preview.querySelector('tbody')!.innerHTML=entries.map(({gap,index,s,table,position,cells})=>{
+        const header=previous===s.id?'':`<tr class="find-sheet-header"><th colspan="${count+2}">${esc(s.name)}</th></tr>`;
+        const subheader=previous===s.id&&previousTable===table.id?'':`<tr class="find-table-header"><th colspan="${count+2}">Table: ${esc(table.name)}</th></tr>`;previous=s.id;previousTable=table.id;
+        const contents=Array.from({length:count},(_,i)=>{const cell=cells[i];return cell?`<td data-membership-context="${cell.address}" aria-label="${cell.address}" title="${esc(cell.value)}">${esc(cell.value)}</td>`:'<td></td>';}).join('');
+        return`${header}${subheader}<tr data-membership-result="${index}" tabindex="0" aria-label="${esc(table.name)} ${position}"><td><input type="checkbox" aria-label="${esc(table.name)} ${position}" ${selectedGaps.has(gapId(gap))?'checked':''}></td><th scope="row">${position}</th>${contents}</tr>`;
       }).join('');
       field('membership-count').textContent=`${gaps.length} sheet-only rows/columns`;
       field('membership-pagination').hidden=gaps.length<=200;
@@ -2088,13 +2511,26 @@ function openFind():void {
     };
     const scanGaps=()=>{
       gaps=tableMembershipGaps(book);selectedGaps.clear();gapPage=0;gapGeneration=generation;paintGaps();
-      const feedback=field('membership-feedback');feedback.textContent=gaps.length?'Select rows/columns to add to the indicated table.':'No sheet-only rows or columns found between table members.';feedback.classList.remove('bad');feedback.setAttribute('role','status');
+      const feedback=field('membership-feedback');feedback.textContent=gaps.length?'These are rows / columns that are currently sitting between table rows / columns but are not part of the table.':'No sheet-only rows or columns found between table members.';feedback.classList.remove('bad');feedback.setAttribute('role','status');
     };
     field('membership-panel').querySelector('tbody')!.onchange=e=>{
       const row=(e.target as HTMLElement).closest<HTMLElement>('[data-membership-result]');
       if(!row)return;const id=gapId(gaps[Number(row.dataset.membershipResult)]);
       if((e.target as HTMLInputElement).checked)selectedGaps.add(id);else selectedGaps.delete(id);gapButtons();
     };
+    const visitGap=(e:Event)=>{
+      if((e.target as HTMLElement).closest('input,button'))return;
+      const row=(e.target as HTMLElement).closest<HTMLElement>('[data-membership-result]');if(!row)return;
+      if(generation!==gapGeneration){const message=field('membership-feedback');message.textContent='The workbook changed. Scan again before navigating.';message.classList.add('bad');message.setAttribute('role','alert');return;}
+      const gap=gaps[Number(row.dataset.membershipResult)],s=allSheets(book).find(sheet=>sheet.id===gap.sheet)!,table=allTables(book).find(table=>table.id===gap.table)!;
+      const r=gap.axis==='row'?s.rows.findIndex(row=>row.id===gap.member):s.rows.findIndex(row=>row.id===table.header),c=gap.axis==='column'?s.columns.findIndex(column=>column.id===gap.member):s.columns.findIndex(column=>column.id===table.columns[0].column);
+      if(!reveal(s,s.rows[r].id,s.columns[c].id)){const message=field('membership-feedback');message.textContent=error;message.classList.add('bad');message.setAttribute('role','alert');return;}
+      sheetId=s.id;referenceId=undefined;workbookView=undefined;extraSelections=[];selectionScope=undefined;tableSelectionMode=false;tableSelectionTarget=undefined;
+      anchor=gap.axis==='row'?{r,c:0}:{r:0,c};selected=gap.axis==='row'?{r,c:s.columns.length-1}:{r:s.rows.length-1,c};selectionKind=gap.axis==='row'?'rows':'columns';scrollTarget={row:r,contextRows:1};page=Math.floor(r/60);
+      d.close();render();root.querySelector<HTMLElement>(`td[data-r="${r}"][data-c="${c}"]`)?.scrollIntoView({block:'nearest',inline:'nearest'});root.querySelector<HTMLElement>('#grid-scroll')!.focus({preventScroll:true});
+    };
+    field('membership-panel').querySelector('tbody')!.onclick=visitGap;
+    field('membership-panel').querySelector('tbody')!.onkeydown=e=>{if((e.key==='Enter'||e.key===' ')&&!(e.target as HTMLElement).closest('input,button')){e.preventDefault();visitGap(e);}};
     field<HTMLInputElement>('membership-all').onchange=e=>{selectedGaps.clear();if((e.target as HTMLInputElement).checked)gaps.forEach(gap=>selectedGaps.add(gapId(gap)));paintGaps();};
     field<HTMLButtonElement>('membership-scan').onclick=scanGaps;
     field<HTMLButtonElement>('membership-previous').onclick=()=>{gapPage--;paintGaps();};
@@ -2104,7 +2540,7 @@ function openFind():void {
       const ok=mutate('Convert sheet rows/columns to table',()=>{
         if(generation!==gapGeneration)throw Error('The workbook changed. Scan again before converting.');
         for(const tableId of new Set(chosen.map(gap=>gap.table))){
-          const table=book.tables.find(t=>t.id===tableId)!,s=book.sheets.find(s=>s.id===table.sheet)!;
+          const table=allTables(book).find(t=>t.id===tableId)!,s=allSheets(book).find(s=>s.id===table.sheet)!;
           const columns=chosen.filter(gap=>gap.table===tableId&&gap.axis==='column').map(gap=>gap.member),rows=chosen.filter(gap=>gap.table===tableId&&gap.axis==='row').map(gap=>gap.member);
           if(columns.length)addTableColumns(book,s,table,columns);if(rows.length)addTableRows(book,s,table,rows);
         }
@@ -2147,7 +2583,7 @@ async function exportBackup():Promise<void> {
 }
 function openFile():void {
   dialog('Workbook & recovery',`<div class="menu"><button id="backup" class="primary">Download independent full backup</button>${book.importReport?'<button id="original">Download unchanged original XLSX</button><button id="report">Compatibility report</button>':''}<label>Import Ingredients into this workbook<input type="file" id="import-ingredients" accept=".xlsx"></label><label>Restore Fnt backup<input type="file" id="restore" accept=".json"></label><label>Replace workbook from Excel (pre-import recovery)<input type="file" id="import" accept=".xlsx"></label><button id="history">Recovery checkpoints</button><button id="sync">Private GitHub sync</button><button id="privacy">Storage & privacy</button></div><p class="muted">Ingredients import keeps existing records and other sheets, saves a full pre-import recovery archive, and disconnects sync. Backups contain your data; keep them private. XLSX compatibility is not certified.</p>`,d=>{
-    const ingredients=book.tables.find(t=>t.name.toLowerCase()==='ingredients'),localContext=document.createElement('p');
+    const ingredients=allTables(book).find(t=>t.name.toLowerCase()==='ingredients'),localContext=document.createElement('p');
     localContext.id='browser-workbook';localContext.className='muted';
     localContext.textContent=`This browser profile at ${location.origin}. Other browser profiles and preview ports have separate local workbooks. ${ingredients?`Ingredients: ${ingredients.rows.length} records, ${ingredients.columns.length} columns.`:'No Ingredients table in this workbook.'} ${book.importReport?'An Excel source is attached locally.':'No Excel source has been imported into this workbook. Choose Import Ingredients below to load your Excel data here.'}`;
     d.querySelector('.menu')!.before(localContext);
@@ -2158,8 +2594,8 @@ function openFile():void {
         void(async()=>{busy=true;renderStatus();try{
           await flush();if(savedGeneration!==generation)throw Error('Save failed. Published workbook was not loaded.');
           const snapshot=await loadPublishedTesting(),before=await store.backup({...state,book:clone(book)});
-          state=await store.save(snapshot.book,state.version,'Load published testing workbook',true,undefined,{localOnly:true,recoveryArchive:stringifyArchive(before),publishedSnapshot:snapshot.id});
-          book=clone(state.book);engine=new Engine(book);sheetId=(book.sheets.find(s=>!s.supporting)??book.sheets[0]).id;referenceId=undefined;workbookView=undefined;extraSelections=[];selected={r:0,c:0};anchor={...selected};undo.length=redo.length=0;generation++;savedGeneration=generation;status='Published testing workbook saved in this browser';channel?.postMessage({version:state.version});render();
+          state=await store.save(migrateDropdownData(snapshot.book).book,state.version,'Load published testing workbook',true,undefined,{localOnly:true,recoveryArchive:stringifyArchive(before),publishedSnapshot:snapshot.id});
+          adoptSavedWorkbook();status='Published testing workbook saved in this browser';channel?.postMessage({version:state.version});render();
         }catch(e){flash(e);}finally{busy=false;renderStatus();}})();
       });};
     }
@@ -2195,7 +2631,7 @@ function openFile():void {
       try{
         await flush();if(savedGeneration!==generation)throw Error('Save failed. Restore cancelled.');
         const backup=input.id==='recover-xlsx'?await (await import('./xlsx')).recoverXlsxBackup(await file.arrayBuffer()):parseArchive(await file.text()) as Backup;
-        state=await store.restore(backup,state.version);token='';book=clone(state.book);engine=new Engine(book);generation++;savedGeneration=generation;sheetId=book.sheets[0].id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';page=0;undo.length=redo.length=0;status='Restored locally - sync disconnected; full pre-restore archive in recovery';channel?.postMessage({version:state.version});render();d.close();
+        state=await store.restore(normalizedBackup(backup),state.version);token='';adoptSavedWorkbook();status='Restored locally - sync disconnected; full pre-restore archive in recovery';channel?.postMessage({version:state.version});render();d.close();
       }catch(e){status='Restore failed - previous workbook retained';flash(e);}
       finally{busy=false;renderStatus();}
     });
@@ -2206,9 +2642,9 @@ function openFile():void {
         await flush();if(savedGeneration!==generation)throw Error('Save failed. Import cancelled.');
         const recovery=stringifyArchive(await store.backup({...state,book:clone(book)}));
         const {importXlsx}=await import('./xlsx');const result=await importXlsx(await file.arrayBuffer(),file.name);
-        if(result.nativeBackup)state=await store.restore(result.nativeBackup,state.version);
-        else state=await store.save(result.book,state.version,'Excel import',true,result.original,{localOnly:true,recoveryArchive:recovery});
-        token='';book=clone(state.book);engine=new Engine(book);generation++;savedGeneration=generation;sheetId=book.sheets[0].id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';page=0;undo.length=redo.length=0;status='Imported locally - sync disconnected; compatibility review required';channel?.postMessage({version:state.version});render();d.close();
+        if(result.nativeBackup)state=await store.restore(normalizedBackup(result.nativeBackup),state.version);
+        else state=await store.save(migrateDropdownData(result.book).book,state.version,'Excel import',true,result.original,{localOnly:true,recoveryArchive:recovery});
+        token='';adoptSavedWorkbook();status='Imported locally - sync disconnected; compatibility review required';channel?.postMessage({version:state.version});render();d.close();
       }catch(e){status='Import failed - previous workbook retained';flash(e);}finally{busy=false;renderStatus();}
     };
     d.querySelector<HTMLInputElement>('#import-ingredients')!.onchange=async e=>{
@@ -2223,15 +2659,14 @@ function openFile():void {
         const source=await importXlsx(await file.arrayBuffer(),file.name);
         if(source.nativeBackup)throw Error('This is a Fnt snapshot with existing identities. Restore/replace it as a workbook instead of appending it as an independent Ingredients source.');
         const attached=beforeImport.originals.find(original=>original.data===source.original.data);
-        if(attached&&book.tables.some(t=>t.name.toLowerCase()==='ingredients'))throw Error('This unchanged source file is already attached locally. Import cancelled to avoid duplicate records; delete Ingredients to recreate it, use recovery, or select an updated source file deliberately.');
+        if(attached&&allTables(book).some(t=>t.name.toLowerCase()==='ingredients'))throw Error('This unchanged source file is already attached locally. Import cancelled to avoid duplicate records; delete Ingredients to recreate it, use recovery, or select an updated source file deliberately.');
         if(attached){
           source.original=attached;
           if(source.book.importReport)source.book.importReport.originalId=attached.id;
         }
         const result=mergeIngredients(book,source.book);
         state=await store.save(result.book,state.version,'Ingredients import',true,source.original,{localOnly:true,recoveryArchive:recovery});
-        token='';book=clone(state.book);engine=new Engine(book);generation++;savedGeneration=generation;
-        sheetId=result.sheet;selected={r:1,c:0};anchor={...selected};selectionKind='cells';page=0;undo.length=redo.length=0;
+        token='';adoptSavedWorkbook(result.sheet);selected={r:1,c:0};anchor={...selected};
         status=`Imported ${result.rows} Ingredients records locally; ${result.retainedRows} existing records retained; ${result.linkedDropdownCells} DD cells linked - sync disconnected`;
         channel?.postMessage({version:state.version});
         render();d.close();
@@ -2253,7 +2688,7 @@ async function openHistory():Promise<void> {
         try{
           await flush();if(savedGeneration!==generation)throw Error('Save failed. Restore cancelled.');
           const checkpoint=history[Number(el.dataset.checkpoint)],backup=checkpoint.backup?parseArchive(checkpoint.backup) as Backup:await store.backup({...state,book:clone(checkpoint.book)});
-          state=await store.restore(backup,state.version);token='';book=clone(state.book);engine=new Engine(book);generation++;savedGeneration=generation;sheetId=book.sheets[0].id;page=0;selected={r:0,c:0};anchor={...selected};selectionKind='cells';undo.length=redo.length=0;status='Checkpoint restored locally - sync disconnected; full pre-restore archive in recovery';channel?.postMessage({version:state.version});render();d.close();
+          state=await store.restore(normalizedBackup(backup),state.version);token='';adoptSavedWorkbook();status='Checkpoint restored locally - sync disconnected; full pre-restore archive in recovery';channel?.postMessage({version:state.version});render();d.close();
         }catch(e){status='Checkpoint restore failed - previous workbook retained';flash(e);}
         finally{busy=false;renderStatus();}
       });
@@ -2284,6 +2719,8 @@ function deleteSelection(structural:boolean):void {
   if(!editableReference()){flash('Edit the live list source instead.');return;}
   const s=sheet(),b=bounds(),kind=structural?selectionMode():'cells',rowIndices=selectedAxisIndices('row'),columnIndices=selectedAxisIndices('column');
   if(structural&&kind!=='cells'&&!sheetAxisSelectionAllowed('Deleting rows or columns'))return;
+  const owner=scopedSelectionTable();
+  if(owner&&!referenceId&&kind!=='cells'){const axis=kind==='rows'?'row':'column';runTableEdit(owner.id,axis,{kind:'delete',ids:(axis==='row'?rowIndices:columnIndices).map(i=>(axis==='row'?s.rows:s.columns)[i].id)},`Delete table ${kind}`);return;}
   if(referenceId&&kind==='rows'){
     try{
       const ids=selectedReferenceRows(),source=activeReference()!,usages=ids.map(id=>referenceUsages(book,source,id));
@@ -2291,13 +2728,18 @@ function deleteSelection(structural:boolean):void {
         const choices=referenceChoices(book,source).filter(c=>!ids.includes(c.row));
         dialog('Options are in use',`<p>${usages.reduce((n,u)=>n+u.linked,0)} linked cells. Formula or manual lookups may also use these options. Hide options to preserve history, replace exact links, or cancel.</p><button id="archive-option">Hide selected options</button>${ids.length===1?`<label>Replace linked values with<select id="replacement"><option value="">Choose replacement</option>${choices.map(c=>`<option value="${c.row}">${esc(c.value)}</option>`).join('')}</select></label><button id="delete-option">Replace links and delete</button>`:''}`,d=>{
           d.querySelector<HTMLButtonElement>('#archive-option')!.onclick=()=>{mutate('Archive options',()=>{source.archivedRows=[...new Set([...source.archivedRows,...ids])];});d.close();};
-          d.querySelector<HTMLButtonElement>('#delete-option')?.addEventListener('click',()=>{if(mutate('Replace and delete option',()=>removeReferenceValue(book,activeReference()!,ids[0],d.querySelector<HTMLSelectElement>('#replacement')!.value||undefined)))d.close();});
+          d.querySelector<HTMLButtonElement>('#delete-option')?.addEventListener('click',()=>{if(mutate('Replace and delete option',()=>removeReferenceValue(book,activeReference()!,ids[0],d.querySelector<HTMLSelectElement>('#replacement')!.value||undefined,!!owner)))d.close();});
         });return;
       }
-      mutate('Delete options',()=>ids.forEach(id=>removeReferenceValue(book,activeReference()!,id)));return;
+      if(owner)runTableEdit(owner.id,'row',{kind:'delete',ids},'Delete table options');
+      else mutate('Delete options',()=>ids.forEach(id=>removeReferenceValue(book,activeReference()!,id)));return;
     }catch(e){flash(e);return;}
   }
-  if(referenceId&&kind==='columns'){mutate('Delete reference fields',()=>deleteReferenceColumns(book,activeReference()!,columnIndices.map(i=>s.columns[i]).filter(c=>gridReference()!.columns.includes(c.id)).map(c=>c.id)));extraSelections=[];return;}
+  if(referenceId&&kind==='columns'){
+    const ids=columnIndices.map(i=>s.columns[i]).filter(c=>gridReference()!.columns.includes(c.id)).map(c=>c.id);
+    if(owner)runTableEdit(owner.id,'column',{kind:'delete',ids},'Delete reference fields');
+    else mutate('Delete reference fields',()=>deleteReferenceColumns(book,activeReference()!,ids));extraSelections=[];return;
+  }
   mutate(kind==='rows'?'Delete rows':kind==='columns'?'Delete columns':'Clear cells',()=>{
     if(kind==='rows'){
       if(rowIndices.length===s.rows.length)throw Error('Keep at least one row.');
@@ -2309,7 +2751,7 @@ function deleteSelection(structural:boolean):void {
       selected={r:s.rows.length-1,c:Math.min(b.c1,s.columns.length-1)};anchor={r:0,c:selected.c};
       renderedTarget=`${sheetId}:${selected.r}`;
     }else eachSelected((s,r,c)=>{
-      if(book.tables.some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(x=>x.column===s.columns[c].id)))throw Error('Rename table headers explicitly.');
+      if(allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(x=>x.column===s.columns[c].id)))throw Error('Rename table headers explicitly.');
       setInput(book,s,s.rows[r].id,s.columns[c].id,'');
     });
   });
@@ -2334,6 +2776,7 @@ document.addEventListener('keydown',e=>{
   if(editing)return;
   if(e.altKey&&e.key==='ArrowDown'){e.preventDefault();openCellDropdown();return;}
   const mod=e.ctrlKey||e.metaKey;
+  if(mod&&!e.altKey&&!e.shiftKey&&!e.getModifierState('AltGraph')&&e.key.toLowerCase()==='t'){e.preventDefault();openCreateTable();return;}
   if(mod&&!e.altKey&&!e.getModifierState('AltGraph')&&e.key.toLowerCase()==='h'){e.preventDefault();void action(e.shiftKey?'clear-hypothetical':'hypothetical');return;}
   if(mod&&!e.getModifierState('AltGraph')&&e.key.toLowerCase()==='g'){e.preventDefault();groupSelected(e.shiftKey,undefined,e.altKey?'range':'summary');return;}
   if(mod&&!e.shiftKey&&!e.getModifierState('AltGraph')){
@@ -2359,7 +2802,7 @@ document.addEventListener('paste',e=>{
   if(!requireRectangle('Paste'))return;
   if(e.clipboardData?.getData('application/x-fnt-copy')===clipboardId&&copied){pasteCells();return;}
   if(!editableReference()){flash('Edit the live list source instead.');return;}
-  mutate('Paste text',()=>{const rows=parseTsv(text),s=sheet();rows.forEach((row,i)=>row.forEach((v,j)=>{const p=pastePosition(i,j);if(!p)throw Error('Paste exceeds this sheet or list.');if(book.tables.some(t=>t.sheet===s.id&&t.header===s.rows[p.r].id&&t.columns.some(c=>c.column===s.columns[p.c].id)))throw Error('Rename table headers explicitly.');writeGridCell(book,s,s.rows[p.r].id,s.columns[p.c].id,v);}));});
+  mutate('Paste text',()=>{const rows=parseTsv(text),s=sheet();rows.forEach((row,i)=>row.forEach((v,j)=>{const p=pastePosition(i,j);if(!p)throw Error('Paste exceeds this sheet or list.');if(allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[p.r].id&&t.columns.some(c=>c.column===s.columns[p.c].id)))throw Error('Rename table headers explicitly.');writeGridCell(book,s,s.rows[p.r].id,s.columns[p.c].id,v);}));});
 });
 document.addEventListener('cut',e=>{
   if(!book||['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)||document.querySelector('dialog[open]'))return;
@@ -2411,8 +2854,18 @@ async function start():Promise<void> {
         state=await store.save(book,0,'Load published testing workbook',false,undefined,{localOnly:true,publishedSnapshot:snapshot.id});
       }else{book=seedDropdownCatalog(createDemo()).book;state=await store.save(book,0,'Create starter workbook with original Dropdowns catalogs');}
     }
+    stage='moving supporting data into DD storage';
+    const migrated=migrateDropdownData(book);
+    if(migrated.changed){
+      const before=await store.backup(state);
+      state=await store.save(migrated.book,state.version,'Move dropdown records into DD storage',true,undefined,{recoveryArchive:stringifyArchive(before)});
+      book=clone(state.book);for(const entry of undo)if('book'in entry)entry.book=migrateDropdownData(entry.book).book;
+      channel?.postMessage({version:state.version});
+    }
+    const savedUndo=await store.undoHistory(state.version,book.id);
+    if(savedUndo){undo.splice(0,undo.length,...savedUndo.undo);redo.splice(0,redo.length,...savedUndo.redo);}
     let remembered:string|null=null;try{remembered=sessionStorage.getItem('fnt-current-sheet');}catch(e){error=`Selected-tab preference unavailable: ${String(e)}`;}
-    stage='rendering the spreadsheet';engine=new Engine(book);sheetId=book.sheets.some(s=>s.id===remembered)?remembered!:book.sheets[0].id;const view=restoreView();if(referenceId&&!workbookView){const s=book.sheets.find(s=>!s.supporting)??book.sheets[0];workbookView={sheet:s.id,selected:{r:0,c:0},anchor:{r:0,c:0},kind:'cells',scroll:0,left:0};}status=state.sync?`Saved locally - ${state.pending.length} pending changes`:'Saved in this browser';render();if(view){const grid=root.querySelector<HTMLElement>('#grid-scroll')!;grid.scrollTop=view.scroll;grid.scrollLeft=view.left;drawRowWindow?.();rememberView();}
+    stage='rendering the spreadsheet';engine=new Engine(book);sheetId=book.sheets.some(s=>s.id===remembered)?remembered!:book.sheets[0].id;const view=restoreView(remembered);if(referenceId&&!workbookView){const s=book.sheets.find(s=>!s.supporting)??book.sheets[0];workbookView={sheet:s.id,selected:{r:0,c:0},anchor:{r:0,c:0},kind:'cells',scroll:0,left:0};}status=state.sync?`Saved locally - ${state.pending.length} pending changes`:'Saved in this browser';render();if(view){const grid=root.querySelector<HTMLElement>('#grid-scroll')!;grid.scrollTop=view.scroll;grid.scrollLeft=view.left;drawRowWindow?.();rememberView();}
     if('serviceWorker'in navigator&&import.meta.env.PROD){
       navigator.serviceWorker.addEventListener('message',e=>{
         if(e.data?.type!=='fnt-update-ready'||!Array.isArray(e.data.files))return;

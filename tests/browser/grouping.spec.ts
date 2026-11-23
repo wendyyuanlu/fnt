@@ -139,7 +139,7 @@ test('left chevrons retain summaries, independent branches, plain hints and form
   const before=await fixture(page);
   await expect(page.locator('tr[data-row="1"] td:first-of-type [data-group-id="outer"]')).toBeVisible();
   await expect(page.locator('tbody th .row-group-controls')).toHaveCount(0);
-  expect(await page.locator('.grid col').first().evaluate(el=>el.getBoundingClientRect().width)).toBe(72);
+  expect(await page.locator('.grid col').first().evaluate(el=>el.getBoundingClientRect().width)).toBe(78);
   await expect(page.locator('th[data-col="2"] .plain-group-hints [data-group-id="plain-col"]')).toHaveCount(1);
   await page.locator('.grid [data-group-id="outer"]').click();
   await expect(page.locator('[data-row-select="1"]')).toBeVisible();await expect(page.locator('[data-row-select="3"]')).toHaveCount(0);
@@ -241,8 +241,9 @@ test('row grips stay centered and column grips stay above letters with grouping 
   expect((await snapshot(page)).sheets[0].columns).toEqual(before.sheets[0].columns);
   await page.getByRole('button',{name:'Add sheet',exact:true}).click();
   await page.locator('#ask-form').getByRole('button',{name:'Apply',exact:true}).click();
-  await expect(page.locator('.group-menu-button')).toHaveCount(0);
-  expect(await page.locator('.grid col').first().evaluate(el=>el.getBoundingClientRect().width)).toBe(48);
+  await expect(page.locator('.toolbar .group-menu-button')).toBeVisible();
+  await expect(page.locator('.corner .group-menu-button')).toHaveCount(0);
+  expect(await page.locator('.grid col').first().evaluate(el=>el.getBoundingClientRect().width)).toBe(54);
   expect(await page.locator('th[data-col="0"]').evaluate(el=>el.getBoundingClientRect().height)).toBe(35);
   expect(await gripPosition()).toEqual(position);
   await expect(page.locator('td .row-move-control')).toHaveCount(0);
@@ -290,7 +291,8 @@ test('popover is content-sized, single levels omit duplicate controls and icons 
   await expect(small.locator('.outline-layer-grid button')).toHaveCount(2);
   expect(await small.evaluate(el=>el.getBoundingClientRect().width)).toBeLessThan(large);
   await page.keyboard.press('Escape');await page.getByRole('button',{name:'Ingredients',exact:true}).click();
-  await expect(page.getByRole('button',{name:'Group controls',exact:true})).toHaveCount(0);
+  await expect(page.locator('.toolbar .group-menu-button')).toBeVisible();
+  await page.getByRole('button',{name:'Group controls',exact:true}).click();
   await expect(page.getByRole('button',{name:'Select all cells',exact:true})).toBeVisible();
 });
 

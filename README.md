@@ -49,6 +49,28 @@ automatically bundled or published.
 - Dialogs fit their contents and grow only as needed, up to 1000px or the
   available screen height. Dropdown lists and search results use that room
   before scrolling; short dialogs remain compact.
+- **Ctrl/Cmd+T** creates a table from the selected rectangle. **My table has
+  headers** uses the first row as headers; uncheck it to insert generated headers
+  above all selected records, shifting cells below in those columns while keeping
+  formula references attached. Unsafe shifts are refused without changing data.
+  **Table manager** reuses the DD picker's searchable card layout and previews
+  every workbook table with its sheet name and row/column counts. Click the sheet
+  name to jump to that table's header. Double-click a table name (or focus it
+  and press Enter) to rename it inline. With a single table cell selected, the
+  toolbar button opens only that table's rename field. Renames retain table/field
+  identities, formulas and DD links. **Delete table** requires confirmation and
+  retains sheet cell contents; references to the deleted table show errors until
+  restored with Undo.
+  Sort tables by **Last activity** (cell edits, including formatting), **Frequently
+  used** (visits when entering a table), **A-Z**, or **Z-A**. The sort choice and
+  activity are saved with the workbook. Older tables have no inferred history;
+  alphabetical order breaks ties until activity is recorded.
+- Supporting dropdown-data sheets migrate into DD-owned storage, after an atomic
+  full pre-migration recovery archive. They disappear from workbook tabs and the
+  table manager, but their original table, field, row and sheet identities remain
+  live for formulas and linked cells. Ordinary workbook tables (including
+  Ingredients) stay in the workbook even when a DD reads their columns.
+  Imports, restores and remote adoption normalize this ownership too.
 - Select a cell and type, or edit in the formula bar. Both editors show the same
   live draft, committed once by Enter/Apply or selecting another cell. Escape
   cancels the draft; formulas display their results after commit. Enter/F2 starts
@@ -69,13 +91,20 @@ automatically bundled or published.
   Ctrl/Cmd-click adds cells, rows or columns without losing a Shift-selected
   range. Formatting and clearing affect only the selection, not the gaps;
   operations requiring one rectangle explicitly reject disjoint selections.
-  **Table selection** changes only the existing row-number and column-letter
-  header clicks; there are no Excel-style cell-edge targets or extra handles.
-  Auto uses the active cell's table when it intersects the clicked header, or
-  the sole matching table. Ambiguous headers ask which table to select.
-  The toolbar target picker can lock a particular table instead. With no matching
-  table, the app explains how to switch back to sheet selection rather than
-  silently selecting an entire sheet axis. Shift extends within the same owner.
+  **Table selection** uses the compact lock/chevron split control in the grid
+  corner. The lock toggles table bounds; the chevron chooses **Auto** or a named
+  table, enabling table selection if necessary. Group controls occupy its former
+  toolbar position and share the other toolbar icon-button styling.
+  There are no Excel-style cell-edge targets or extra handles.
+  Auto selects the matching table nearest the sticky column headers in the
+  current viewport, including a table partially scrolled behind those headers.
+  Row-header clicks use the same rule horizontally: the matching table nearest
+  the visible row-number headers wins, including after horizontal scrolling.
+  Visible matches take priority over offscreen tables. Equally near tables use
+  the active cell's table if possible; otherwise a chooser resolves the tie.
+  Rows/columns with no tables select the whole sheet axis without turning Auto
+  off. The toolbar target picker can lock a particular table instead; a lock
+  refuses headers outside that table. Shift extends within the same owner.
   On touch, use the cell-count menu's **Extend row/column selection on next header
   tap**. DD assignment stays in the chosen owner; assign different scopes
   separately. Discontiguous table fields never include the intervening cells.
@@ -83,19 +112,46 @@ automatically bundled or published.
   same browser tab.
   Summary/plain groups and **hypo** tags inherit the selected table or sheet
   scope; different table and sheet scopes can coexist on the same physical axes.
-  Table-only collapse/hypo hiding masks only owned cells, preserving neighboring
-  tables and sheet coordinates. Whole-sheet insertion, deletion, movement and
-  hiding are explicitly refused from table-only selections; switch the toggle off
-  and select sheet headers for those operations. Native backups preserve scope.
+  Table-only group collapse compacts visible records and fields up/left within
+  that table's existing slots. Neighboring tables and sheet coordinates stay fixed;
+  editing, keyboard navigation and formulas retain the original cell identities.
+  Expanding restores the original layout without moving stored data.
+  Hypo hiding masks only owned cells. Insertion, deletion, duplication, movement,
+  clipboard operations, fill, grouping and hiding stay within the selected table.
+  Table record moves relocate owned cells and follow exact references, DD links
+  and validations without moving neighboring tables. Field identities survive
+  rearrangement; deleted references become explicit errors.
+  Growth into occupied space asks before shifting the sheet below/right by the
+  required number of rows/columns. When formulas are affected, the dialog audits
+  their actual before/after results and shows their surrounding cells, flagging
+  new errors and calculations requiring review. Otherwise it mentions only the
+  shift. Optional finite skips apply to subsequent matching-risk shifts in this
+  browser session, not newly risky shifts. Cancel makes no changes.
+  Row heights and column widths are shared sheet geometry: turn table selection
+  off to resize them. Partial cell shifts that would split table records remain
+  explicitly refused. DD deletions retain linked-use/archive safeguards.
+  Native backups preserve scope.
   XLSX export emits only sheet-wide Excel outlines; table-scoped groups remain
   in the embedded native archive, not misleading full-sheet Excel outlines.
   Arrow keys commit an in-cell or formula-bar edit and immediately navigate;
   rejected edits stay open. The expanded editor retains normal text navigation.
   Enter applies formula-bar edits. Ctrl/Cmd+Z, Y, F, S, A, C, X, V work.
+  Undo retains up to 1,000 actions, including structural edits, with no separate
+  three-snapshot limit. Undo/redo stacks autosave atomically with the workbook
+  in this browser and survive reloads. Structural history stores changes rather
+  than repeated full workbooks. A new edit clears redo. Import, restore and remote
+  replacement start a fresh undo history; full pre-replacement recovery archives
+  remain available. Undo stacks are browser-local, not synced or exported.
   Scrollable surfaces share thin scrollbars without arrow buttons; cell displays
   and in-cell editors remain scrollbar-free. Tables have solid right and bottom
-  edges, slightly darker than their header underline, following visible table
-  identities through moves, hiding and virtual scrolling.
+  edges matching their header underline, following visible table
+  identities through moves, hiding and virtual scrolling. Table headers stay
+  below the sheet column headers while scrolling through that table, including
+  virtualized rows, and disappear after its last visible row.
+  Sheets retain at least four sheet rows below their last table and two sheet
+  columns to the right, within the sheet size limits. These are editable sheet
+  cells, not table records or fields. Existing space and contents are preserved;
+  newly needed space is autosaved locally.
   Ctrl/Cmd+G creates a summary group; Ctrl/Cmd+Shift+G ungroups it.
   Select the summary row/column along with its details: the topmost row or
   leftmost column stays visible on collapse. Moving it moves its group together.
@@ -134,6 +190,15 @@ automatically bundled or published.
   individual tools. Drag any selected tool to move the selection together in
   toolbar order. Rearranging tools or editing dividers preserves the toolbar's
   current scroll position.
+  **Toolbar styling rule:** every new toolbar button must reuse the shared
+  `.icon-button` styling, including its responsive sizing and interaction states.
+  Do not add per-button sizing or styling overrides.
+  Dialog close controls use the shared 18px SVG close icon, not a text x or toggle.
+  All dialogs reuse `.dialog-surface` and the shared `src/dialog.css` tokens for
+  padding, corners and typography. H1 follows Find and Replace; H2 follows
+  Dropdown settings. The default width is 600px, including DD/sheet settings;
+  the 336px `.popover` variant uses an H2 title. The manual-tag overwrite
+  comparison retains its 1,950px maximum. All share a 10px minimum page-edge gutter.
   The stamp-framed H toggles tags and reflects the selection's effective tags
   (including inherited and mixed states). The crossed-out, frame-free H toggles
   visibility of tagged rows and columns; they are visible by default. Hiding is
@@ -355,7 +420,9 @@ automatically bundled or published.
   exclude rows from existing calculations**.
 - Tabs can be duplicated, renamed (double-click the active tab or use settings),
   reordered, colored, and deleted. Ctrl/Cmd+F commits the current draft and opens
-  the content-sized Find and Replace dialog. **Text** combines finding and
+  the 800px-tall Find and Replace dialog (shrinking for shorter screens).
+  Search controls fit their contents without an inner scrollbar; the results
+  area grows or shrinks around them. **Text** combines finding and
   replacement; drafts survive tab switches. **All** selects every search sheet.
   **Rows/Columns** scans the workbook for sheet-only rows/columns inside table
   spans. Select results and **Convert to table** to join the indicated existing
@@ -370,7 +437,23 @@ automatically bundled or published.
   treatment: a single 1px border, with no offset outer focus ring. Copilot's shared Browser
   panel intercepts Ctrl/Cmd+F before forwarding it to the page; use the
   **Find / replace** toolbar button there. The shortcut works in a normal browser.
-  Results have Cell/Value columns with one subheader per sheet; long result sets
+  Results show the matched address and up to eight surrounding cells in the same
+  row, with the matched cell highlighted and one subheader per sheet. Source
+  table field names appear once per preview window and remain sticky only while
+  that table's results are in view; cell addresses are not repeated inside previews.
+  Previews share the spreadsheet's `.spreadsheet-grid` cell and header styling,
+  retaining strokes and the matched-cell highlight. Each table has a `Table: name`
+  subheader below its sheet label; cell positions use the spreadsheet's row-header
+  styling in a left-aligned 50px column. Columns containing matches are 160px wide;
+  surrounding columns remain 110px. Only matching characters are semibold; the
+  matched cell retains its fill without an extra outline. Empty results show no
+  column headers.
+  Rows/Columns previews also keep up to eight source values in individual cells,
+  including blanks. Click a result or press Enter/Space on it to close Find and
+  select its source row/column; checkboxes only select memberships for conversion.
+  Both Find tabs position the target as the second visible row when a preceding
+  row exists, accounting for hidden rows and individual row heights.
+  Formula and linked-cell values are evaluated; long result sets
   have explicit pagination. Case, entire-cell matching, `*`, `?`, escaped
   wildcards and upward/downward Find next are supported. Replace/Replace all are
   undoable and only change literal text, never formula source or linked cells.

@@ -1,6 +1,6 @@
 import { strFromU8, unzipSync } from 'fflate';
 import { compile, maySpill, supportedFunctions } from './formula';
-import { blankSheet, columnIndex, fault, key, translate, uid, type Format, type Sheet, type Workbook } from './model';
+import { allSheets, blankSheet, columnIndex, fault, key, translate, uid, type Format, type Sheet, type Workbook } from './model';
 import { inspectNative,readNativeBackup } from './xlsx-native';
 import type { Backup } from './storage';
 
@@ -183,11 +183,11 @@ export async function importXlsx(buffer:ArrayBuffer,name:string,options?:{sheets
     }
   }
   for(const n of elements(wb,'definedName')){
-    const scope=n.hasAttribute('localSheetId')?book.sheets[Number(attr(n,'localSheetId'))]?.id:undefined;
-    book.names.push({id:uid(),name:attr(n,'name'),sheet:scope,context:scope??book.sheets[0].id,original:n.textContent??'',formula:{kind:'literal',value:null}});
+    const scope=n.hasAttribute('localSheetId')?allSheets(book)[Number(attr(n,'localSheetId'))]?.id:undefined;
+    book.names.push({id:uid(),name:attr(n,'name'),sheet:scope,context:scope??allSheets(book)[0].id,original:n.textContent??'',formula:{kind:'literal',value:null}});
   }
   for(const n of book.names){
-    const s=book.sheets.find(s=>s.id===n.context)!;
+    const s=allSheets(book).find(s=>s.id===n.context)!;
     try{n.formula=compile(n.original,book,s.id,s.rows[0].id,s.columns[0].id);}catch{n.formula={kind:'error',value:fault('#UNSUPPORTED!','Named expression could not be parsed; original expression preserved.')};report.unsupported['Named expressions']=(report.unsupported['Named expressions']??0)+1;}
   }
   const sharedBases=new Map<string,typeof formulas[number]>();
@@ -214,7 +214,7 @@ export async function importXlsx(buffer:ArrayBuffer,name:string,options?:{sheets
     }
     if(i%2000===0)await new Promise(resolve=>setTimeout(resolve,0));
   }
-  for(const s of book.sheets)for(const v of s.validations)if(!v.values)try{v.source=JSON.stringify(compile(v.source,book,s.id,v.rows[0],v.columns[0]));}catch{report.unsupported['Validation source']=(report.unsupported['Validation source']??0)+1;}
+  for(const s of allSheets(book))for(const v of s.validations)if(!v.values)try{v.source=JSON.stringify(compile(v.source,book,s.id,v.rows[0],v.columns[0]));}catch{report.unsupported['Validation source']=(report.unsupported['Validation source']??0)+1;}
   const features:Record<string,string>={mergeCell:'Merged cell layout',conditionalFormatting:'Conditional formatting',drawing:'Drawings/charts/images',sheetProtection:'Sheet protection',autoFilter:'Excel filter UI',extLst:'Extended Excel metadata'};
   for(const [tag,label]of Object.entries(features))if(definitions.some(d=>elements(d.doc,tag).length))report.entries.push(`${label}: preserved in original XLSX package, not rendered/enforced in the grid.`);
   report.entries.push('All original package bytes are preserved locally and included in independent backups. Excel export creates a new supported-feature projection plus an exact native archive; it does not rewrite the preserved original or recreate all Excel presentation. Native backups remain authoritative.');

@@ -1,10 +1,10 @@
 import { Engine,scalar } from './formula';
-import { addRow,clone,getCell,key,setInput,uid,type ReferenceSource,type Sheet,type Workbook } from './model';
+import { allTables,allSheets, addRow,clone,getCell,key,replaceTables,setInput,uid,type ReferenceSource,type Sheet,type Workbook } from './model';
 import { referenceChoices,referenceUsages,renameReferenceValue } from './references';
 
 export function referenceView(book:Workbook,source:ReferenceSource){
-  const table=book.tables.find(t=>t.id===(source.derived?.table??source.table));
-  const sheet=book.sheets.find(s=>s.id===table?.sheet);
+  const table=allTables(book).find(t=>t.id===(source.derived?.table??source.table));
+  const sheet=allSheets(book).find(s=>s.id===table?.sheet);
   if(!table||!sheet)return{table,sheet,rows:[] as string[],columns:[] as string[],error:'Original source unavailable. Choose its connection explicitly.'};
   try{
     const rows=source.kind==='derived'?referenceChoices(book,source,true,true).map(c=>c.row):table.rows;
@@ -13,7 +13,7 @@ export function referenceView(book:Workbook,source:ReferenceSource){
   }catch(e){return{table,sheet,rows:[] as string[],columns:[] as string[],error:e instanceof Error?e.message:String(e)};}
 }
 export function writeGridCell(book:Workbook,sheet:Sheet,row:string,column:string,text:string,literal=false):void{
-  const source=book.references?.find(r=>r.kind==='units'&&r.table&&book.tables.some(t=>t.id===r.table&&t.sheet===sheet.id&&t.rows.includes(row)&&t.columns.some(c=>c.id===r.column&&c.column===column)));
+  const source=book.references?.find(r=>r.kind==='units'&&r.table&&allTables(book).some(t=>t.id===r.table&&t.sheet===sheet.id&&t.rows.includes(row)&&t.columns.some(c=>c.id===r.column&&c.column===column)));
   if(source&&text.trim()&&(literal||!text.startsWith('=')))renameReferenceValue(book,source,row,text);
   else setInput(book,sheet,row,column,literal?"'"+text:text);
 }
@@ -31,8 +31,8 @@ export function conversionEditImpact(before:Workbook,after:Workbook):string{
   const changed:ReferenceSource[]=[];
   for(const source of after.references??[]){
     if(source.kind!=='conversions'||!source.conversion)continue;
-    const table=after.tables.find(t=>t.id===source.table),sheet=after.sheets.find(s=>s.id===table?.sheet),column=table?.columns.find(c=>c.id===source.conversion!.factor);
-    const oldTable=before.tables.find(t=>t.id===source.table),oldSheet=before.sheets.find(s=>s.id===oldTable?.sheet),oldColumn=oldTable?.columns.find(c=>c.id===source.conversion!.factor);
+    const table=allTables(after).find(t=>t.id===source.table),sheet=allSheets(after).find(s=>s.id===table?.sheet),column=table?.columns.find(c=>c.id===source.conversion!.factor);
+    const oldTable=allTables(before).find(t=>t.id===source.table),oldSheet=allSheets(before).find(s=>s.id===oldTable?.sheet),oldColumn=oldTable?.columns.find(c=>c.id===source.conversion!.factor);
     if(!table||!sheet||!column)continue;
     for(const row of table.rows){
       const cell=getCell(sheet,row,column.column),old=oldSheet&&oldColumn?getCell(oldSheet,row,oldColumn.column):{};
@@ -54,12 +54,12 @@ export function conversionEditImpact(before:Workbook,after:Workbook):string{
   return [...new Set(changed)].map(source=>{const u=referenceUsages(before,source);return u.formulas||u.linked?`${source.name}: ${u.formulas} formula/source and ${u.linked} linked usages may recalculate, including historical records.`:'';}).filter(Boolean).join(' ');
 }
 export function deleteReferenceColumns(book:Workbook,source:ReferenceSource,columns:string[]):void{
-  const table=book.tables.find(t=>t.id===source.table),sheet=book.sheets.find(s=>s.id===table?.sheet);
+  const table=allTables(book).find(t=>t.id===source.table),sheet=allSheets(book).find(s=>s.id===table?.sheet);
   if(!table||!sheet)throw Error('Original source unavailable.');
   const owned=new Set([table.header,...table.rows]),removed=new Set(columns);
   for(const row of owned)for(const column of removed)delete sheet.cells[key(row,column)];
   table.columns=table.columns.filter(c=>!removed.has(c.column));
-  if(!table.columns.length)book.tables=book.tables.filter(t=>t.id!==table.id);
+  if(!table.columns.length)replaceTables(book,allTables(book).filter(t=>t.id!==table.id));
   sheet.validations=sheet.validations.flatMap(v=>{
     const outside=v.rows.filter(r=>!owned.has(r)),inside=v.rows.filter(r=>owned.has(r)),remaining=v.columns.filter(c=>!removed.has(c));
     return[...(outside.length?[{...clone(v),rows:outside}]:[]),...(inside.length&&remaining.length?[{...clone(v),id:uid(),rows:inside,columns:remaining}]:[])];

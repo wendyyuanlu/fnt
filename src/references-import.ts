@@ -1,8 +1,9 @@
 import { compile,type Ast } from './formula';
-import { clone,key,mapAst,uid,type Named,type ReferenceSource,type Sheet,type Workbook } from './model';
+import { allTables,allSheets, clone,key,mapAst,uid,type Named,type ReferenceSource,type Sheet,type Workbook } from './model';
 import { addReferenceValue,referenceChoices,unitsSource } from './references';
 import { validateBook } from './storage';
 import { dropdownCatalog,matchesDropdownCatalog } from './dropdown-catalog';
+import {migrateDropdownData} from './dd-storage';
 
 const auxiliary=(s:Sheet)=>['dropdowns','convert','mealdd'].includes(s.name.toLowerCase());
 const sourceNames=['IngredientType','Period','AnimalType','Table14','SnackCountry','SnackFlavour','SnackCategory','Convert'];
@@ -15,14 +16,14 @@ function sameImportedCell(incoming:unknown,existing:unknown):boolean{
 }
 export function mergeReferences(current:Workbook,source:Workbook,original:string,verifiedAttached=false):{book:Workbook;changed:boolean;counts:{name:string;rows:number;columns:number}[];derivedUnavailable:boolean}{
   validateBook(current);validateBook(source);
-  const expected=source.tables.filter(t=>sourceNames.includes(t.name)&&source.sheets.some(s=>s.id===t.sheet&&auxiliary(s)));
+  const expected=allTables(source).filter(t=>sourceNames.includes(t.name)&&allSheets(source).some(s=>s.id===t.sheet&&auxiliary(s)));
   if(expected.length!==8||new Set(expected.map(t=>t.name)).size!==8)throw Error('The original seven Dropdowns lists and three-column Convert table are required. No partial source import was applied.');
   const counts=expected.map(t=>({name:t.name,rows:t.rows.length,columns:t.columns.length}));
   const prior=current.references??[];
-  if(sourceNames.every(name=>prior.some(r=>r.origin?.original===original&&r.origin.table===name))&&prior.some(r=>r.kind==='derived'&&r.origin?.original===original))return{book:clone(current),changed:false,counts,derivedUnavailable:!current.tables.some(t=>t.id===prior.find(r=>r.kind==='derived'&&r.origin?.original===original)?.derived?.table)};
+  if(sourceNames.every(name=>prior.some(r=>r.origin?.original===original&&r.origin.table===name))&&prior.some(r=>r.kind==='derived'&&r.origin?.original===original))return{book:clone(current),changed:false,counts,derivedUnavailable:!allTables(current).some(t=>t.id===prior.find(r=>r.kind==='derived'&&r.origin?.original===original)?.derived?.table)};
   const book=clone(current),ids=new Map<string,string>(),known=verifiedAttached&&current.importReport?.originalId===original;
   book.references??=[];
-  const existingIngredient=book.tables.filter(t=>t.name==='Ingredients'),incomingIngredient=source.tables.find(t=>t.name==='Ingredients');
+  const existingIngredient=allTables(book).filter(t=>t.name==='Ingredients'),incomingIngredient=allTables(source).find(t=>t.name==='Ingredients');
   if(known&&existingIngredient.length===1&&incomingIngredient){
     ids.set(incomingIngredient.id,existingIngredient[0].id);
     for(const c of incomingIngredient.columns){const target=existingIngredient[0].columns.find(x=>x.name===c.name);if(target){ids.set(c.id,target.id);ids.set(c.column,target.column);}}
@@ -32,14 +33,14 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
   if(matchesDropdownCatalog(source))for(const t of expected){
     const ref=book.references.find(r=>r.catalog?.id===dropdownCatalog.id&&r.catalog.table===t.name&&r.catalog.rows?.length===t.rows.length);
     if(!ref)continue;
-    const target=book.tables.find(table=>table.id===ref.table);
+    const target=allTables(book).find(table=>table.id===ref.table);
     if(!target||!target.columns.some(c=>c.id===ref.column))throw Error('A bundled catalog backing table was removed. Restore it or resolve the import explicitly.');
     const column=target.columns.find(c=>c.id===ref.column)!;
     catalogs.set(t.id,ref);reused.add(t.id);ids.set(t.id,target.id);ids.set(t.columns[0].id,column.id);
     for(const[row,to]of [[t.header,target.header],...t.rows.map((row,i)=>[row,ref.catalog!.rows![i]])])catalogCells.set(key(row,t.columns[0].column),{sheet:target.sheet,row:to,column:column.column});
   }
-  for(const s of source.sheets.filter(auxiliary)){
-    const matches=book.sheets.filter(x=>x.name.toLowerCase()===s.name.toLowerCase());
+  for(const s of allSheets(source).filter(auxiliary)){
+    const matches=allSheets(book).filter(x=>x.name.toLowerCase()===s.name.toLowerCase());
     if(matches.length>1)throw Error('Ambiguous supporting sheet name. Resolve it explicitly before import.');
     const target=matches[0];
     if(target){
@@ -52,7 +53,7 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
   }
   for(const t of expected){
     if(catalogs.has(t.id))continue;
-    const matches=book.tables.filter(x=>x.name.toLowerCase()===t.name.toLowerCase()),target=matches[0],s=source.sheets.find(s=>s.id===t.sheet)!,to=destination.get(t.sheet)!;
+    const matches=allTables(book).filter(x=>x.name.toLowerCase()===t.name.toLowerCase()),target=matches[0],s=allSheets(source).find(s=>s.id===t.sheet)!,to=destination.get(t.sheet)!;
     if(matches.length>1)throw Error('Ambiguous reference table name. Resolve it explicitly.');
     if(target){
       if(!known||target.sheet!==to.id||target.header!==(ids.get(t.header)??t.header)||target.rows.length!==t.rows.length||target.columns.length!==t.columns.length)throw Error(`Reference table "${t.name}" already exists with different provenance or shape.`);
@@ -87,7 +88,7 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
       mapAst(n.formula,node=>{if(node.kind==='structured')before.push(node);return node;});mapAst(matches[0].formula,node=>{if(node.kind==='structured')after.push(node);return node;});
       if(before.length===after.length)before.forEach((node,i)=>{
         const old=after[i];
-        if(!book.tables.some(t=>t.id===old.table)&&node.columns.length===old.columns.length){ids.set(node.table,old.table);node.columns.forEach((c,j)=>ids.set(c,old.columns[j]));}
+        if(!allTables(book).some(t=>t.id===old.table)&&node.columns.length===old.columns.length){ids.set(node.table,old.table);node.columns.forEach((c,j)=>ids.set(c,old.columns[j]));}
       });
     }
   }
@@ -96,7 +97,7 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
     if(catalog){catalog.origin={original,table:t.name};continue;}
     const copied={...clone(t),id:remap(t.id),sheet:remap(t.sheet),header:remap(t.header),rows:t.rows.map(remap),columns:t.columns.map(c=>({...c,id:remap(c.id),column:remap(c.column)}))};
     if(!reused.has(t.id))book.tables.push(copied);
-    const s=source.sheets.find(s=>s.id===t.sheet)!,to=destination.get(t.sheet)!;
+    const s=allSheets(source).find(s=>s.id===t.sheet)!,to=destination.get(t.sheet)!;
     for(const r of[t.header,...t.rows])for(const c of t.columns){
       const cell=s.cells[key(r,c.column)];if(!cell)continue;
       const address=key(remap(r),remap(c.column)),existing=to.cells[address];
@@ -116,7 +117,7 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
     for(const g of s.groups){if(g.kind==='summary'&&!(g.axis==='row'?owned:columns).has(g.members[0]))continue;const members=g.members.filter(id=>g.axis==='row'?owned.has(id):columns.has(id)).map(remap);if((g.kind==='summary'?members.length>1:members.length)&&!to.groups.some(old=>old.id===g.id))to.groups.push({...clone(g),members});}
   }
   for(const n of globals)if(!book.names.some(old=>old.id===remap(n.id)))book.names.push({...clone(n),id:remap(n.id),context:remap(n.context),formula:remapAst(n.formula)});
-  const meal=source.sheets.find(s=>s.name.toLowerCase()==='mealdd');
+  const meal=allSheets(source).find(s=>s.name.toLowerCase()==='mealdd');
   if(!meal)throw Error('The original MealDD definition is missing.');
   const anchor=Object.entries(meal.cells).find(([,c])=>c.formula);
   if(!anchor)throw Error('MealDD must contain its original live formula; cached values were not substituted.');
@@ -130,7 +131,7 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
   book.references.push(derived);
   const unitList=unitsSource(book),units=new Map(referenceChoices(book,unitList,true).map(choice=>[choice.value,choice.binding]));
   for(const ref of book.references.filter(ref=>ref.kind==='conversions'&&ref.origin?.original===original)){
-    const table=book.tables.find(t=>t.id===ref.table)!,sheet=book.sheets.find(s=>s.id===table.sheet)!;
+    const table=allTables(book).find(t=>t.id===ref.table)!,sheet=allSheets(book).find(s=>s.id===table.sheet)!;
     for(const row of table.rows)for(const id of[ref.conversion!.from,ref.conversion!.to]){
       const column=table.columns.find(c=>c.id===id)!.column,cell=sheet.cells[key(row,column)],label=cell?.value;
       if(typeof label!=='string'||!label)continue;
@@ -138,21 +139,21 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
       sheet.cells[key(row,column)]={...cell,value:undefined,binding:units.get(label)};
     }
   }
-  for(const s of book.sheets)for(const v of s.validations)if(v.originalSource){
+  for(const s of allSheets(book))for(const v of s.validations)if(v.originalSource){
     // Rebind only named/table auxiliary sources from the byte-verified original.
     if(!known)continue;
-    const originalSheet=source.sheets.find(original=>original.name===s.name);if(!originalSheet)continue;
+    const originalSheet=allSheets(source).find(original=>original.name===s.name);if(!originalSheet)continue;
     const ast=mapAst(compile(v.originalSource,source,originalSheet.id,originalSheet.rows[0].id,originalSheet.columns[0].id),n=>{
       if(n.kind==='call'&&n.name==='INDIRECT'&&n.args[0]?.kind==='literal'&&typeof n.args[0].value==='string')return compile(n.args[0].value,source,originalSheet.id,originalSheet.rows[0].id,originalSheet.columns[0].id);
       return n;
     });
     v.source=JSON.stringify(remapAst(ast));
   }
-  for(const table of book.tables){
+  for(const table of allTables(book)){
     for(const column of table.columns.filter(c=>['Unit','Conversion Unit'].includes(c.name))){
       book.pickerSources[`${table.sheet}:${column.column}`]??=`${unitList.table}:${unitList.column}`;
     }
   }
   book.revision++;validateBook(book);
-  return{book,changed:true,counts,derivedUnavailable:!book.tables.some(t=>t.id===derived.derived!.table)};
+  return{book:current.dropdownData?migrateDropdownData(book).book:book,changed:true,counts,derivedUnavailable:!allTables(book).some(t=>t.id===derived.derived!.table)};
 }

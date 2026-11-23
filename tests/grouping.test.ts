@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import {addRow,blankSheet,clone,duplicateSheet,getCell,groupMoveTarget,hypotheticalTagDescendants,insertColumn,moveColumns,moveRows,moveIntoGroup,moveTargetGroups,outlineMembers,setInput,setHypotheticalTag,summaryMoveMembers,type Group,type Table,type Workbook} from '../src/model';
 import {Engine} from '../src/formula';
-import {groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,ungroupPlainGroups} from '../src/grouping';
+import {groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,tableGroupProjection,ungroupPlainGroups} from '../src/grouping';
 import {validateBook} from '../src/storage';
 import {createDemo} from '../src/model';
 import {exportXlsx} from '../src/xlsx-export';
@@ -18,6 +18,24 @@ function scopedFixture(){
   const book:Workbook={schema:1,id:'scope-book',title:'Synthetic scopes',revision:0,sheets:[sheet],tables,names:[],pickerSources:{}};
   return{book,sheet,left:tables[0],right:tables[1],below:tables[2]};
 }
+it('projects nested row and column groups into owned slots without moving sparse neighbors or changing workbook data',()=>{
+  const {book,sheet,left,right}=scopedFixture(),rows=sheet.rows.map(row=>row.id),columns=sheet.columns.map(column=>column.id);
+  sheet.groups=[
+    {id:'outer',kind:'summary',axis:'row',table:left.id,members:left.rows.slice(0,4),collapsed:true,label:'Outer'},
+    {id:'inner',kind:'summary',axis:'row',table:left.id,members:left.rows.slice(1,3),collapsed:true,label:'Inner'},
+    {id:'column',kind:'range',axis:'column',table:left.id,members:[columns[2]],collapsed:true,label:'Column'},
+  ];
+  const before=clone(book),project=tableGroupProjection(book,sheet,rows,columns);
+  expect(project.source(rows[4],columns[2])).toEqual({row:rows[7],column:columns[3]});
+  expect(project.display(rows[7],columns[3])).toEqual({row:rows[4],column:columns[2]});
+  expect(project.display(rows[4],columns[1])).toBeUndefined();
+  expect(project.source(rows[7],columns[1])).toBeUndefined();
+  expect(project.source(rows[4],right.columns[0].column)).toEqual({row:rows[4],column:right.columns[0].column});
+  expect(project.axis(left.id,'row',rows[4])).toBe(rows[7]);
+  expect(book).toEqual(before);
+  sheet.groups.forEach(group=>group.collapsed=false);
+  expect(tableGroupProjection(book,sheet,rows,columns).source(rows[7],columns[3])).toEqual({row:rows[7],column:columns[3]});
+});
 for(const axis of ['row','column'] as const){
   it(`keeps table ${axis} hypo inheritance separate from shared sheet axes and other table owners`,()=>{
     const {book,sheet,left,right,below}=scopedFixture(),other=axis==='row'?right:below,items=axis==='row'?sheet.rows:sheet.columns;
@@ -162,13 +180,13 @@ it('derives summary depth from identity containment without treating overlapping
   ];
   const entries=outlineGroups(groups);
   expect(entries.map(e=>[e.group.id,e.depth])).toEqual([['child',2],['root',1],['leaf',3],['overlap',1],['plain',1],['column',1]]);
-  expect(outlineGutter(entries,['a','b','c','d','e','f'],true)).toBe(72);
-  expect(outlineGutter(entries,['a','f'],true)).toBe(72);
-  expect(outlineGutter(entries,['a','b','c','d','e','f'],false)).toBe(72);
-  expect(outlineGutter(entries,['a','b'],false,10000)).toBe(84);
-  expect(outlineGutter([],['a','b'],false)).toBe(48);
-  expect(outlineGutter(entries.filter(e=>e.group.axis==='column'),['a','b'],false)).toBe(48);
-  expect(outlineGutter(entries.filter(e=>e.group.id==='plain'),['a','b'],false,2,false)).toBe(48);
+  expect(outlineGutter(entries,['a','b','c','d','e','f'],true)).toBe(78);
+  expect(outlineGutter(entries,['a','f'],true)).toBe(78);
+  expect(outlineGutter(entries,['a','b','c','d','e','f'],false)).toBe(78);
+  expect(outlineGutter(entries,['a','b'],false,10000)).toBe(90);
+  expect(outlineGutter([],['a','b'],false)).toBe(54);
+  expect(outlineGutter(entries.filter(e=>e.group.axis==='column'),['a','b'],false)).toBe(54);
+  expect(outlineGutter(entries.filter(e=>e.group.id==='plain'),['a','b'],false,2,false)).toBe(54);
 });
 
 it('connects nested summary controls and always caps the last grouped row, including blank cells',()=>{

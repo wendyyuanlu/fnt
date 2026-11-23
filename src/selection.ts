@@ -8,6 +8,19 @@ export function headerSelectionTables(sheet:Sheet,tables:readonly Table[],axis:'
   const id=(axis==='row'?sheet.rows:sheet.columns)[index]?.id;
   return tables.filter(table=>table.sheet===sheet.id&&(axis==='row'?table.header===id||table.rows.includes(id):table.columns.some(field=>field.column===id)));
 }
+export function nearestHeaderTables(tables:readonly Table[],axis:'row'|'column',positions:ReadonlyMap<string,{start:number;end:number}>,viewport:{start:number;end:number}):Table[] {
+  const ranked=tables.flatMap(table=>{
+    const ids=axis==='column'?[table.header,...table.rows]:table.columns.map(field=>field.column);
+    const spans=ids.flatMap(id=>positions.has(id)?[positions.get(id)!]:[]);
+    if(!spans.length)return[];
+    const visible=spans.filter(span=>span.end>viewport.start&&span.start<viewport.end);
+    const distance=Math.min(...(visible.length?visible:spans).map(span=>Math.max(0,span.start-viewport.start,viewport.start-span.end)));
+    return[{table,visible:visible.length>0,distance}];
+  });
+  const eligible=ranked.some(entry=>entry.visible)?ranked.filter(entry=>entry.visible):ranked;
+  const distance=Math.min(...eligible.map(entry=>entry.distance));
+  return eligible.filter(entry=>Math.abs(entry.distance-distance)<1).map(entry=>entry.table);
+}
 export function tableHeaderBounds(sheet:Sheet,table:Table,axis:'row'|'column',index:number,anchor?:number):SelectionBounds {
   const rows=sheet.rows.flatMap((row,i)=>row.id===table.header||table.rows.includes(row.id)?[i]:[]);
   const columns=sheet.columns.flatMap((column,i)=>table.columns.some(field=>field.column===column.id)?[i]:[]);

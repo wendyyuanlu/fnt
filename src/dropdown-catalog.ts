@@ -1,4 +1,4 @@
-import { addRow,clone,key,renameColumn,uniqueName,type Cell,type Workbook } from './model';
+import { allTables,allSheets, addRow,clone,key,renameColumn,uniqueName,type Cell,type Workbook } from './model';
 import { createReference,referenceLabel,referenceTable,setReferencePresentation } from './references';
 import { validateBook,type Backup } from './storage';
 
@@ -30,7 +30,7 @@ const originalFormat:NonNullable<Cell['format']>={bold:false,underline:false,wra
 function seedFormats(book:Workbook):void{
   for(const source of book.references??[]){
     if(source.catalog?.id!==dropdownCatalog.id||!source.catalog.rows)continue;
-    const list=dropdownCatalog.lists.find(l=>l.name===source.catalog!.table),table=book.tables.find(t=>t.id===source.table),sheet=book.sheets.find(s=>s.id===table?.sheet),column=table?.columns.find(c=>c.id===source.column);
+    const list=dropdownCatalog.lists.find(l=>l.name===source.catalog!.table),table=allTables(book).find(t=>t.id===source.table),sheet=allSheets(book).find(s=>s.id===table?.sheet),column=table?.columns.find(c=>c.id===source.column);
     if(!list||!table||!sheet||!column)continue;
     const header=sheet.cells[key(table.header,column.column)];if(header&&!header.format)header.format={...originalFormat};
     source.catalog.rows.forEach((row,i)=>{
@@ -43,7 +43,7 @@ function seedFormats(book:Workbook):void{
 
 export function matchesDropdownCatalog(book:Workbook):boolean{
   return dropdownCatalog.lists.every(list=>{
-    const tables=book.tables.filter(t=>t.name===list.name),table=tables[0],sheet=book.sheets.find(s=>s.id===table?.sheet);
+    const tables=allTables(book).filter(t=>t.name===list.name),table=tables[0],sheet=allSheets(book).find(s=>s.id===table?.sheet);
     if(tables.length!==1||sheet?.name!==dropdownCatalog.sheet||table.columns.length!==1||table.columns[0].name!==list.field||table.rows.length!==list.values.length)return false;
     const column=table.columns[0].column,first=Number(list.range.split(':')[0].slice(1));
     return sheet.rows.findIndex(r=>r.id===table.header)===first-1&&table.rows.every((row,i)=>
@@ -84,7 +84,7 @@ export function seedDropdownCatalog(current:Workbook,verifiedOrigins:ReadonlySet
     const name=uniqueName(book.references?.map(r=>r.name)??[],list.name);
     const source=createReference(book,name),{table,sheet}=referenceTable(book,source);
     source.catalog={id:dropdownCatalog.id,table:list.name,rows:[]};
-    table.name=uniqueName(book.tables.filter(t=>t!==table).map(t=>t.name),list.name);
+    table.name=uniqueName(allTables(book).filter(t=>t!==table).map(t=>t.name),list.name);
     renameColumn(book,table,table.columns[0].id,list.field);
     for(const value of list.values){
       const at=sheet.rows.findIndex(r=>r.id===(table.rows.at(-1)??table.header))+1;

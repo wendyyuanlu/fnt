@@ -21,6 +21,26 @@ function source(){
   b.names.push({id:uid(),name:'MealDD',context:derived.id,original,formula:compile(original,b,derived.id,derived.rows[0].id,derived.columns[0].id)},{id:uid(),name:'MealDD',sheet:meals.id,context:meals.id,original,formula:compile(original,b,meals.id,meals.rows[0].id,meals.columns[0].id)});
   return b;
 }
+it('table-local DD replacement preserves shared rows, exact links and archived option identities',()=>{
+  const b=createDemo(),source=createReference(b,'Synthetic local options');
+  const first=addReferenceValue(b,source,'Synthetic first option'),replacement=addReferenceValue(b,source,'Synthetic replacement'),archived=addReferenceValue(b,source,'Synthetic archived');
+  const {table,sheet}=referenceTable(b,source),neighbor={id:uid(),name:'Neighbor',sheet:sheet.id,header:table.header,rows:[...table.rows],columns:[{id:uid(),name:'Note',column:sheet.columns[2].id}]};
+  source.archivedRows=[archived];b.tables.push(neighbor);
+  for(const row of [neighbor.header,...neighbor.rows])sheet.cells[key(row,neighbor.columns[0].column)]={value:'Unrelated note '+row};
+  const destination=b.sheets[0],choices=referenceChoices(b,source);
+  destination.cells[key(destination.rows[1].id,destination.columns[0].id)]={binding:choices.find(choice=>choice.row===first)!.binding};
+  destination.cells[key(destination.rows[2].id,destination.columns[0].id)]={binding:choices.find(choice=>choice.row===replacement)!.binding};
+  const before=clone(b),notes=Object.entries(sheet.cells).filter(([address])=>address.endsWith(':'+neighbor.columns[0].column));
+  expect(()=>removeReferenceValue(b,source,first,undefined,true)).toThrow('linked');expect(b).toEqual(before);
+  removeReferenceValue(b,source,first,replacement,true);
+  const updated=referenceTable(b,b.references!.find(item=>item.id===source.id)!);
+  expect(updated.sheet.rows).toEqual(sheet.rows);
+  expect(Object.entries(updated.sheet.cells).filter(([address])=>address.endsWith(':'+neighbor.columns[0].column))).toEqual(notes);
+  expect(updated.table.rows).toEqual([first,replacement]);expect(b.tables.find(item=>item.id===neighbor.id)).toEqual(neighbor);
+  expect(b.references!.find(item=>item.id===source.id)!.archivedRows).toEqual([replacement]);
+  const engine=new Engine(b);for(const index of [1,2])expect(engine.cell(destination.id,destination.rows[index].id,destination.columns[0].id)).toBe('Synthetic replacement');
+  expect(()=>validateBook(b)).not.toThrow();
+});
 it('nests DD categories through three levels and renames a branch without changing records or bindings',()=>{
   const b=createDemo(),a=createReference(b,'Country'),z=createReference(b,'Flavour'),row=addReferenceValue(b,a,'Japan'),s=b.sheets[0];
   setReferencePresentation(b,a,'Country',' Snack / Chocolate / Imported ');setReferencePresentation(b,z,'Flavour','Snack / Chocolate');

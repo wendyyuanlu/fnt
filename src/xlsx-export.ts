@@ -1,6 +1,6 @@
 import { strToU8,zipSync } from 'fflate';
 import { displayFormula,type Ast } from './formula';
-import { columnIndex,isFault,key,letters,mapAst,outlineMembers,type Cell,type Format } from './model';
+import { allTables,allSheets, columnIndex,isFault,key,letters,mapAst,outlineMembers,type Cell,type Format } from './model';
 import { validateBook,type Backup } from './storage';
 import { addNativeArchive,type PackageParts } from './xlsx-native';
 
@@ -32,7 +32,7 @@ function groups(values:number[]):number[][] {
 export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
   const book=backup.state.book;validateBook(book);
   const tableNames=new Set<string>(),definedNames=new Set<string>();
-  for(const t of book.tables){if(!excelName(t.name)||tableNames.has(t.name.toLowerCase()))throw Error('Excel table names must be valid and unique. Rename the affected table or use the native archive.');tableNames.add(t.name.toLowerCase());}
+  for(const t of allTables(book)){if(!excelName(t.name)||tableNames.has(t.name.toLowerCase()))throw Error('Excel table names must be valid and unique. Rename the affected table or use the native archive.');tableNames.add(t.name.toLowerCase());}
   for(const n of book.names){const id=(n.sheet??'')+':'+n.name.toLowerCase();if(!excelName(n.name)||definedNames.has(id)||(!n.sheet&&tableNames.has(n.name.toLowerCase())))throw Error('An Excel defined name is invalid or collides in its scope. Rename it or use the native archive.');definedNames.add(id);}
   if(book.importReport&&!backup.originals.some(o=>o.id===book.importReport!.originalId))throw Error('The original imported workbook is missing. A full-fidelity export requires it; restore a complete native backup.');
   const entries:PackageParts={},put=(name:string,body:string)=>{entries[name]=strToU8(doc(body));};
@@ -57,13 +57,13 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
   };
   let dynamic=false,tableNumber=0,commentsNumber=0,listNumber=0;
   const helperColumns:string[][]=[],helperNames:{name:string;formula:string;scope?:number}[]=[],validationSources=new Map<string,string>();
-  const reservedNames=new Set([...book.names.map(n=>n.name),...book.tables.map(t=>t.name)].map(n=>n.toLowerCase()));
+  const reservedNames=new Set([...book.names.map(n=>n.name),...allTables(book).map(t=>t.name)].map(n=>n.toLowerCase()));
   const helperId=(prefix:string)=>{let name=prefix+(++listNumber);while(reservedNames.has(name.toLowerCase()))name=prefix+(++listNumber);reservedNames.add(name.toLowerCase());return name;};
   let helperName='Fnt validation lists',suffix=2;
-  while(book.sheets.some(s=>s.name.toLowerCase()===helperName.toLowerCase()))helperName='Fnt validation lists '+suffix++;
+  while(allSheets(book).some(s=>s.name.toLowerCase()===helperName.toLowerCase()))helperName='Fnt validation lists '+suffix++;
   const sheetXml:string[]=[],seenNames=new Set<string>();
-  for(let index=0;index<book.sheets.length;index++){
-    const s=book.sheets[index],number=index+1;
+  for(let index=0;index<allSheets(book).length;index++){
+    const s=allSheets(book)[index],number=index+1;
     if(!s.name.trim()||s.name.length>31||s.name.startsWith("'")||s.name.endsWith("'")||/[\\/?*[\]:]/.test(s.name)||seenNames.has(s.name.toLowerCase()))throw Error('Excel sheet names must be unique, at most 31 characters, contain no \\ / ? * [ ] : characters, and not begin/end with an apostrophe. Rename the affected tab or use the native backup.');
     seenNames.add(s.name.toLowerCase());
     if(s.rows.length>100000||s.columns.length>512)throw Error('Workbook exceeds this review build\'s safe XLSX dimensions.');
@@ -94,7 +94,7 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
         }
         let expression=cell.formula?formula(cell.formula):undefined;
         if(cell.binding){
-          const t=book.tables.find(t=>t.id===cell.binding!.table),source=t&&book.sheets.find(s=>s.id===t.sheet),column=t?.columns.find(c=>c.id===cell.binding!.column);
+          const t=allTables(book).find(t=>t.id===cell.binding!.table),source=t&&allSheets(book).find(s=>s.id===t.sheet),column=t?.columns.find(c=>c.id===cell.binding!.column);
           const sr=source?.rows.findIndex(r=>r.id===cell.binding!.row)??-1,sc=source?.columns.findIndex(c=>c.id===column?.column)??-1;
           expression=source&&sr>=0&&sc>=0&&t?.rows.includes(cell.binding.row)?`'${source.name.replace(/'/g,"''")}'!$${letters(sc)}$${sr+1}`:'#REF!';
         }
@@ -109,7 +109,7 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
       if(!cells&&!row.hidden&&!row.height&&!collapsed('row',row.id)&&!outline&&!summary('row',r))return '';
       return `<row r="${r+1}"${row.height?` ht="${row.height}" customHeight="1"`:''}${row.hidden||collapsed('row',row.id)?' hidden="1"':''}${outline?` outlineLevel="${outline}"`:''}${summary('row',r)?' collapsed="1"':''}>${cells}</row>`;
     }).join('');
-    for(const t of book.tables.filter(t=>t.sheet===s.id)){
+    for(const t of allTables(book).filter(t=>t.sheet===s.id)){
       const header=rows.get(t.header)!,positions=t.rows.map(r=>rows.get(r)!),columns=[...t.columns].sort((a,b)=>cols.get(a.column)!-cols.get(b.column)!);
       if(positions.some(r=>r<=header))throw Error('Excel table records must be below their header. Move the records below the table header or use a native backup.');
       if(new Set(columns.map(c=>c.name.toLowerCase())).size!==columns.length||columns.some(c=>!c.name||c.name.length>255))throw Error('Excel table columns must have distinct nonempty names of at most 255 characters.');
@@ -160,7 +160,7 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
     sheetXml.push(`<sheet name="${x(s.name)}" sheetId="${number}" r:id="rSheet${number}"/>`);overrides.push({path:`xl/worksheets/sheet${number}.xml`,type:'worksheet'});
   }
   if(helperColumns.length){
-    const number=book.sheets.length+1,length=Math.max(...helperColumns.map(c=>c.length));
+    const number=allSheets(book).length+1,length=Math.max(...helperColumns.map(c=>c.length));
     if(helperColumns.length>512||length>100000)throw Error('Validation helper lists exceed the safe Excel reimport dimensions. Use the native archive.');
     put(`xl/worksheets/sheet${number}.xml`,`<worksheet xmlns="${main}"><sheetData>${Array.from({length},(_,r)=>`<row r="${r+1}">${helperColumns.map((column,c)=>column[r]===undefined?'':`<c r="${letters(c)}${r+1}" t="inlineStr"><is><t xml:space="preserve">${cellString(column[r])}</t></is></c>`).join('')}</row>`).join('')}</sheetData></worksheet>`);
     workbookRels.push({id:'rSheet'+number,type:'worksheet',target:`worksheets/sheet${number}.xml`});sheetXml.push(`<sheet name="${x(helperName)}" sheetId="${number}" state="veryHidden" r:id="rSheet${number}"/>`);overrides.push({path:`xl/worksheets/sheet${number}.xml`,type:'worksheet'});
@@ -172,7 +172,7 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
     workbookRels.push({id:'rMetadata',type:'sheetMetadata',target:'metadata.xml'});overrides.push({path:'xl/metadata.xml',type:'sheetMetadata'});
   }
   const names=[...book.names.map(n=>{
-    const scope=n.sheet?book.sheets.findIndex(s=>s.id===n.sheet):-1;
+    const scope=n.sheet?allSheets(book).findIndex(s=>s.id===n.sheet):-1;
     if(n.sheet&&scope<0)throw Error('A named expression belongs to a missing sheet. Repair it or use the native archive.');
     return `<definedName name="${x(n.name)}"${n.sheet?` localSheetId="${scope}"`:''}>${x(formula(n.formula))}</definedName>`;
   }),...helperNames.map(n=>`<definedName name="${n.name}"${n.scope!==undefined?` localSheetId="${n.scope}"`:''}>${x(n.formula)}</definedName>`)];

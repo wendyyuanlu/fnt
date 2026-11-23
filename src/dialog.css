@@ -1,0 +1,41 @@
+:root {
+  --dialog-width: 600px;
+  --dialog-popover-width: 336px;
+  --dialog-wide-width: 1950px;
+  --dialog-padding: 22px;
+  --dialog-radius: 12px;
+  --dialog-gap: 12px;
+  --dialog-background: #fff;
+  --dialog-h1-size: 20px;
+  --dialog-h2-size: 16px;
+}
+
+.dialog-surface {
+  --dialog-size: var(--dialog-width);
+  width: min(var(--dialog-size), var(--dialog-available-width, calc(100vw - var(--dialog-gutter))));
+  max-width: calc(100vw - var(--dialog-gutter));
+  height: var(--dialog-height, fit-content);
+  max-height: min(var(--dialog-max-height), var(--dialog-available-height, 100dvh));
+  padding: var(--dialog-padding);
+  border: 1px solid var(--line);
+  border-radius: var(--dialog-radius);
+  background: var(--dialog-background);
+  color: #233c34;
+  box-shadow: 0 20px 100px #18382e35;
+}
+
+.dialog-surface.popover { --dialog-size: var(--dialog-popover-width); }
+.dialog-surface.hypothetical-override-dialog { --dialog-size: var(--dialog-wide-width); }
+.dialog-surface :is(h1, h2) {
+  font-family: inherit;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: normal;
+  margin: 0;
+}
+.dialog-surface h1 { font-size: var(--dialog-h1-size); color: var(--green); }
+.dialog-surface h2 { font-size: var(--dialog-h2-size); }
+
+@media (max-width: 720px) {
+  :root { --dialog-padding: 18px; }
+}

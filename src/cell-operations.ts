@@ -1,5 +1,5 @@
 import { compile, Engine, type Ast } from './formula';
-import { fault, isFault, key, uid, type Cell, type Sheet, type Workbook } from './model';
+import { allTables,allSheets, fault, isFault, key, uid, type Cell, type Sheet, type Table, type Workbook } from './model';
 
 export interface CellRange { r1:number; r2:number; c1:number; c2:number }
 type Address={sheet:string;row:string;column:string};
@@ -12,23 +12,23 @@ function checkRange(sheet:Sheet,b:CellRange):void {
 function occupied(cell:Cell|undefined):boolean {
   return !!cell&&(cell.value!=null||!!cell.formula||!!cell.calculation||!!cell.binding||!!cell.note||!!cell.link);
 }
-function protectTables(book:Workbook,addresses:Set<string>):void {
-  for(const t of book.tables)for(const r of [t.header,...t.rows])for(const c of t.columns){
+function protectTables(book:Workbook,addresses:Set<string>,owner?:Table):void {
+  for(const t of allTables(book).filter(t=>t!==owner))for(const r of [t.header,...t.rows])for(const c of t.columns){
     if(addresses.has(`${t.sheet}:${key(r,c.column)}`))throw Error('Partial cell moves cannot split table records. Move whole table rows or columns instead.');
   }
 }
-function relocate(book:Workbook,mapping:Map<string,Address|null>,inserted=new Set<string>()):void {
+export function relocate(book:Workbook,mapping:Map<string,Address|null>,inserted=new Set<string>(),owner?:Table):void {
   const touched=new Set([...mapping.keys(),...[...mapping.values()].filter((a):a is Address=>a!==null).map(addressKey)]);
-  protectTables(book,touched);
-  const sheets=new Map(book.sheets.map(s=>[s.id,s]));
-  const indices=new Map(book.sheets.map(s=>[s.id,{rows:new Map(s.rows.map((r,i)=>[r.id,i])),columns:new Map(s.columns.map((c,i)=>[c.id,i]))}]));
+  protectTables(book,touched,owner);
+  const sheets=new Map(allSheets(book).map(s=>[s.id,s]));
+  const indices=new Map(allSheets(book).map(s=>[s.id,{rows:new Map(s.rows.map((r,i)=>[r.id,i])),columns:new Map(s.columns.map((c,i)=>[c.id,i]))}]));
   const touchedBounds=new Map<string,{row:number;column:number}>();
   for(const id of touched){
     const [sheet,row,column]=id.split(':'),index=indices.get(sheet)!,bounds=touchedBounds.get(sheet)??{row:-1,column:-1};
     bounds.row=Math.max(bounds.row,index.rows.get(row)!);bounds.column=Math.max(bounds.column,index.columns.get(column)!);touchedBounds.set(sheet,bounds);
   }
   const engine=new Engine(book);
-  for(const s of book.sheets)for(const [k,cell]of Object.entries(s.cells)){
+  for(const s of allSheets(book))for(const [k,cell]of Object.entries(s.cells)){
     if(!cell.spillHint)continue;
     const [row,column]=k.split(':'),r=indices.get(s.id)!.rows.get(row)!,c=indices.get(s.id)!.columns.get(column)!,bounds=touchedBounds.get(s.id);
     const potentiallyAffected=bounds&&bounds.row>=r&&bounds.column>=c;
@@ -86,9 +86,9 @@ function relocate(book:Workbook,mapping:Map<string,Address|null>,inserted=new Se
     else if(ast.kind==='call')result={...ast,args:ast.args.map(rewrite)};
     memo.set(ast,result);return result;
   };
-  const cells=new Map(book.sheets.map(s=>[s.id,{} as Record<string,Cell>]));
+  const cells=new Map(allSheets(book).map(s=>[s.id,{} as Record<string,Cell>]));
   const destinations=new Set([...mapping.values()].filter((a):a is Address=>a!==null).map(addressKey));
-  for(const s of book.sheets)for(const [k,cell]of Object.entries(s.cells)){
+  for(const s of allSheets(book))for(const [k,cell]of Object.entries(s.cells)){
     const [row,column]=k.split(':'),old={sheet:s.id,row,column},id=addressKey(old),target=mapping.has(id)?mapping.get(id):old;
     if(!target)continue;
     if(!mapping.has(id)&&destinations.has(id))continue;
@@ -107,11 +107,23 @@ function relocate(book:Workbook,mapping:Map<string,Address|null>,inserted=new Se
       if(formula)formula=qualify(formula);
       if(calculation)calculation=qualify(calculation);
     }
-    cells.get(target.sheet)![key(target.row,target.column)]={...cell,...(formula?{formula}:{}),...(calculation?{calculation}:{})};
+    let binding=cell.binding;
+    if(owner&&binding?.table===owner.id){
+      const field=owner.columns.find(field=>field.id===binding!.column);
+      if(field){
+        const sourceId=addressKey({sheet:owner.sheet,row:binding.row,column:field.column});
+        if(mapping.has(sourceId)){
+          const source=mapping.get(sourceId);
+          if(source)binding={...binding,row:source.row};
+          else{binding=undefined;formula={kind:'error',value:fault('#REF!','Linked table record or field was deleted.')};}
+        }
+      }
+    }
+    cells.get(target.sheet)![key(target.row,target.column)]={...cell,...(formula?{formula}:{}),...(calculation?{calculation}:{}),...(cell.binding?{binding}:{})};
   }
   const names=book.names.map(n=>({...n,formula:rewrite(n.formula)}));
-  const validations=new Map(book.sheets.map(s=>[s.id,[] as Sheet['validations']]));
-  for(const s of book.sheets)for(const v of s.validations){
+  const validations=new Map(allSheets(book).map(s=>[s.id,[] as Sheet['validations']]));
+  for(const s of allSheets(book))for(const v of s.validations){
     const source=v.values?v.source:JSON.stringify(rewrite(v.source.startsWith('{')?JSON.parse(v.source) as Ast:compile(v.source,book,v.sheet,v.rows[0],v.columns[0])));
     const affected=v.rows.some(row=>v.columns.some(column=>mapping.has(`${s.id}:${key(row,column)}`)||destinations.has(`${s.id}:${key(row,column)}`)));
     if(!affected){validations.get(s.id)!.push({...v,source});continue;}
@@ -129,8 +141,16 @@ function relocate(book:Workbook,mapping:Map<string,Address|null>,inserted=new Se
       validations.get(group.sheet)!.push({...v,id:first?v.id:uid(),sheet:group.sheet,rows:[group.row],columns:group.columns,source});first=false;
     }
   }
-  for(const s of book.sheets){s.cells=cells.get(s.id)!;s.validations=validations.get(s.id)!;}
+  const references=book.references?.map(source=>{
+    if(source.anchor){
+      const id=addressKey(source.anchor);
+      if(mapping.has(id)){const target=mapping.get(id);if(!target)throw Error('This edit would delete a DD source anchor. Change its connection first.');return{...source,anchor:{...target}};}
+    }
+    return source;
+  });
+  for(const s of allSheets(book)){s.cells=cells.get(s.id)!;s.validations=validations.get(s.id)!;}
   book.names=names;
+  if(references)book.references=references;
 }
 export function shiftCells(book:Workbook,sheet:Sheet,b:CellRange,direction:'right'|'down'|'left'|'up'):void {
   checkRange(sheet,b);

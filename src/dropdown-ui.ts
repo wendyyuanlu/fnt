@@ -1,5 +1,27 @@
 export const dropdownManualActionHtml='<button type="button" class="dropdown-manual-action" aria-label="Custom" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1"><path class="pencil-body" vector-effect="non-scaling-stroke" d="M4 20h4L20 8l-4-4L4 16v4Z"/><path class="pencil-detail" vector-effect="non-scaling-stroke" d="m14 6 4 4"/></svg><span>Custom</span></button>';
 export const dropdownArrowHtml='<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1"><path vector-effect="non-scaling-stroke" d="m3 4 3 3 3-3"/></svg>';
+export const sourcePickerControlsHtml='<div class="button-row dropdown-view-controls"><button type="button" id="dropdown-list-view">List view</button><button type="button" id="dropdown-grid-view">Grid view</button></div>';
+export const sourcePickerBodyHtml='<input class="dropdown-source-search" type="search" aria-label="Search dropdown sources" placeholder="Search sources…"><div id="dropdown-source-cards" class="dropdown-source-cards"></div>';
+
+export function mountSourcePicker(dialog:HTMLDialogElement,options:{
+  grid:boolean;viewControls?:boolean;searchLabel?:string;placeholder?:string;changeView?:(grid:boolean)=>void;render:(grid:boolean,query:string)=>void;
+}):{refresh:()=>void}{
+  const cards=dialog.querySelector<HTMLElement>('#dropdown-source-cards')!,search=dialog.querySelector<HTMLInputElement>('.dropdown-source-search')!;
+  if(options.searchLabel)search.setAttribute('aria-label',options.searchLabel);
+  if(options.placeholder)search.placeholder=options.placeholder;
+  let grid=options.grid;
+  const refresh=()=>{
+    cards.classList.toggle('dropdown-source-checklist',!grid);
+    if(options.viewControls!==false){
+      dialog.querySelector('#dropdown-grid-view')!.setAttribute('aria-pressed',String(grid));
+      dialog.querySelector('#dropdown-list-view')!.setAttribute('aria-pressed',String(!grid));
+    }
+    options.render(grid,search.value.toLowerCase());
+  };
+  search.oninput=refresh;
+  if(options.viewControls!==false)for(const [id,value]of [['dropdown-grid-view',true],['dropdown-list-view',false]] as const)dialog.querySelector<HTMLButtonElement>('#'+id)!.onclick=()=>{grid=value;options.changeView?.(grid);refresh();};
+  refresh();return{refresh};
+}
 
 export function mountSelectDropdown(select:HTMLSelectElement):{refresh:()=>void}{
   const dialog=select.closest('dialog')!,label=select.labels?.[0],trigger=document.createElement('button');

@@ -1,8 +1,39 @@
-import {outlineMembers,summaryMoveMembers,type Group,type Sheet,type Workbook} from './model';
+import { allSheets,allTables,outlineMembers,summaryMoveMembers,type Group,type Sheet,type Workbook} from './model';
+
+export function tableGroupProjection(book:Workbook,sheet:Sheet,rows:string[],columns:string[]){
+  const entries=allTables(book).filter(table=>table.sheet===sheet.id).flatMap(table=>{
+    const groups=sheet.groups.filter(group=>group.table===table.id&&group.collapsed);
+    if(!groups.length)return[];
+    const rowSlots=rows.filter(id=>id===table.header||table.rows.includes(id)),columnSlots=columns.filter(id=>table.columns.some(field=>field.column===id));
+    const hidden=(axis:Group['axis'])=>new Set(groups.filter(group=>group.axis===axis).flatMap(group=>outlineMembers(group,sheet.groups)));
+    const hiddenRows=hidden('row'),hiddenColumns=hidden('column');
+    const visibleRows=rowSlots.filter(id=>!hiddenRows.has(id)),visibleColumns=columnSlots.filter(id=>!hiddenColumns.has(id));
+    return[{table:table.id,rows:new Set(rowSlots),columns:new Set(columnSlots),
+      sourceRows:new Map(rowSlots.map((id,i)=>[id,visibleRows[i]])),sourceColumns:new Map(columnSlots.map((id,i)=>[id,visibleColumns[i]])),
+      displayRows:new Map(visibleRows.map((id,i)=>[id,rowSlots[i]])),displayColumns:new Map(visibleColumns.map((id,i)=>[id,columnSlots[i]]))}];
+  });
+  const owner=(row:string,column:string)=>entries.find(entry=>entry.rows.has(row)&&entry.columns.has(column));
+  return{
+    source(row:string,column:string):{row:string;column:string}|undefined{
+      const entry=owner(row,column);if(!entry)return{row,column};
+      const sourceRow=entry.sourceRows.get(row),sourceColumn=entry.sourceColumns.get(column);
+      return sourceRow&&sourceColumn?{row:sourceRow,column:sourceColumn}:undefined;
+    },
+    display(row:string,column:string):{row:string;column:string}|undefined{
+      const entry=owner(row,column);if(!entry)return{row,column};
+      const displayRow=entry.displayRows.get(row),displayColumn=entry.displayColumns.get(column);
+      return displayRow&&displayColumn?{row:displayRow,column:displayColumn}:undefined;
+    },
+    axis(table:string,axis:Group['axis'],slot:string):string|undefined{
+      const entry=entries.find(entry=>entry.table===table);
+      return entry&&(axis==='row'?entry.rows:entry.columns).has(slot)?(axis==='row'?entry.sourceRows:entry.sourceColumns).get(slot):slot;
+    }
+  };
+}
 
 export function ungroupPlainGroups(book:Workbook):number{
   let count=0;
-  for(const sheet of book.sheets){const summaries=sheet.groups.filter(group=>group.kind==='summary');count+=sheet.groups.length-summaries.length;sheet.groups=summaries;}
+  for(const sheet of allSheets(book)){const summaries=sheet.groups.filter(group=>group.kind==='summary');count+=sheet.groups.length-summaries.length;sheet.groups=summaries;}
   return count;
 }
 export function hypotheticalMembers(sheet:Sheet,axis:Group['axis']):Set<string>{
@@ -18,12 +49,12 @@ export function hypotheticalMembers(sheet:Sheet,axis:Group['axis']):Set<string>{
 }
 export function groupContainsCell(book:Workbook,sheet:Sheet,group:Pick<Group,'table'>,row:string,column:string):boolean{
   if(!group.table)return true;
-  const table=book.tables.find(t=>t.id===group.table&&t.sheet===sheet.id);
+  const table=allTables(book).find(t=>t.id===group.table&&t.sheet===sheet.id);
   return!!table&&(table.header===row||table.rows.includes(row))&&table.columns.some(c=>c.column===column);
 }
 export function hypotheticalProjection(book:Workbook,sheet:Sheet,axis:Group['axis']):(row:string,column:string)=>boolean{
   const global=hypotheticalMembers(sheet,axis),items=axis==='row'?sheet.rows:sheet.columns;
-  const owners=book.tables.filter(t=>t.sheet===sheet.id).map(table=>{
+  const owners=allTables(book).filter(t=>t.sheet===sheet.id).map(table=>{
     const rows=new Set([table.header,...table.rows]),columns=new Set(table.columns.map(c=>c.column));
     const owned=axis==='row'?rows:columns,groups=sheet.groups.filter(g=>g.table===table.id);
     const flags=new Map(items.map(item=>[item.id,item.hypotheticalTables?.[table.id]]));
@@ -67,7 +98,7 @@ export function precedingGroupMember(sheet:Sheet,group:Group,visible:string[]):s
 }
 export function outlineGutter(entries:OutlineGroup[],rows:string[],_tree:boolean,lastRowNumber=rows.length,hints=true):number {
   const controls=hints&&entries.some(e=>e.group.axis==='row'&&e.group.kind!=='summary');
-  return 48+(controls?24:0)+Math.max(0,String(lastRowNumber).length-3)*6;
+  return 54+(controls?24:0)+Math.max(0,String(lastRowNumber).length-3)*6;
 }
 export interface SummaryRowLayout {
   inset:number;

@@ -6,6 +6,19 @@ import { parseArchive,stringifyArchive } from '../src/archive';
 import {getHypotheticalStyle} from '../src/hypothetical';
 
 describe('recoverable local storage',()=>{
+  it('saves undo and redo atomically, retains them across metadata saves, and rejects stale or replaced workbook history',async()=>{
+    const name=uid(),store=await Store.open(name),book=createDemo(),history={undo:[{book:createDemo()}],redo:[]};
+    const state=await store.save(book,0,'Edit',false,undefined,{undoHistory:history});
+    const reopened=await Store.open(name);expect(await reopened.undoHistory(state.version,book.id)).toEqual(history);
+    const metadata=await reopened.metadata(state.version,state=>({...state,sync:{owner:'example',repo:'private',branch:'main',path:'book.json'}}));
+    expect(await reopened.undoHistory(metadata.version,book.id)).toEqual(history);
+    expect(await reopened.undoHistory(state.version,book.id)).toBeUndefined();
+    await expect(reopened.save(book,state.version,'Stale',false,undefined,{undoHistory:{undo:[],redo:[]}})).rejects.toThrow(/Another tab/);
+    expect(await reopened.undoHistory(metadata.version,book.id)).toEqual(history);
+    const replacement=await reopened.save(createDemo(),metadata.version,'Replace workbook');
+    expect(await reopened.undoHistory(replacement.version,replacement.book.id)).toBeUndefined();
+    reopened.close();store.close();
+  });
   it('validates toolbar identities and restores their order from native recovery archives',async()=>{
     const store=await Store.open(uid()),book=createDemo();
     for(const toolbarOrder of [null,[''],['action:bold','action:bold'],['action:bold<script>']])expect(()=>validateBook({...book,toolbarOrder})).toThrow('Invalid toolbar order');

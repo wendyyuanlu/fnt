@@ -1,6 +1,6 @@
 import {expect,it} from 'vitest';
 import {blankSheet,type Table} from '../src/model';
-import {captureSelection,headerSelectionTables,tableHeaderBounds,selectionCount,selectionRanges} from '../src/selection';
+import {captureSelection,headerSelectionTables,nearestHeaderTables,tableHeaderBounds,selectionCount,selectionRanges} from '../src/selection';
 
 it('adds a cell to a Shift range without selecting the intervening cells or counting overlaps twice',()=>{
   const sheet=blankSheet('Selection',8,8),first={r1:2,r2:2,c1:2,c2:5},area=captureSelection(sheet,first,'cells');
@@ -47,4 +47,28 @@ it('keeps scoped selections clipped to current table membership across moves, re
   ranges=selectionRanges(sheet,{r1:0,r2:0,c1:8,c2:8},[area],undefined,[table]);
   expect(selectionCount(ranges)).toBe(3);
   expect(selectionCount(selectionRanges(sheet,{r1:0,r2:0,c1:8,c2:8},[area],undefined,[]))).toBe(1);
+});
+it('targets the nearest visible table below the sticky headers, including partially scrolled tables and ties',()=>{
+  const sheet=blankSheet('Viewport',30,6);
+  const make=(id:string,start:number):Table=>({id,name:id,sheet:sheet.id,header:sheet.rows[start].id,rows:sheet.rows.slice(start+1,start+5).map(row=>row.id),columns:[]});
+  const top=make('top',2),middle=make('middle',10),side=make('side',10),bottom=make('bottom',20),tables=[top,middle,side,bottom];
+  const rows=new Map(sheet.rows.map((row,i)=>[row.id,{start:i*40,end:(i+1)*40}]));
+  expect(nearestHeaderTables(tables,'column',rows,{start:0,end:1000})).toEqual([top]);
+  expect(nearestHeaderTables(tables,'column',rows,{start:250,end:1000})).toEqual([top]);
+  expect(nearestHeaderTables(tables,'column',rows,{start:300,end:1000})).toEqual([middle,side]);
+  expect(nearestHeaderTables(tables,'column',rows,{start:590,end:1000})).toEqual([middle,side]);
+  expect(nearestHeaderTables(tables,'column',rows,{start:600,end:1000})).toEqual([bottom]);
+  expect(nearestHeaderTables([top,bottom],'column',rows,{start:300,end:700})).toEqual([top]);
+  for(const id of [top.header,...top.rows])rows.delete(id);
+  expect(nearestHeaderTables(tables,'column',rows,{start:0,end:1000})).toEqual([middle,side]);
+});
+it('ranks row selection by the nearest visible columns rather than the tables vertical position',()=>{
+  const sheet=blankSheet('Horizontal viewport',12,12);
+  const make=(id:string,start:number):Table=>({id,name:id,sheet:sheet.id,header:sheet.rows[2].id,rows:sheet.rows.slice(3,8).map(row=>row.id),columns:sheet.columns.slice(start,start+3).map((column,i)=>({id:id+i,name:'Field',column:column.id}))});
+  const left=make('left',1),right=make('right',5),far=make('far',9),tables=[left,right,far];
+  const columns=new Map(sheet.columns.map((column,i)=>[column.id,{start:i*80,end:(i+1)*80}]));
+  expect(nearestHeaderTables(tables,'row',columns,{start:0,end:500})).toEqual([left]);
+  expect(nearestHeaderTables(tables,'row',columns,{start:210,end:710})).toEqual([left]);
+  expect(nearestHeaderTables(tables,'row',columns,{start:330,end:830})).toEqual([right]);
+  expect(nearestHeaderTables(tables,'row',columns,{start:650,end:960})).toEqual([far]);
 });

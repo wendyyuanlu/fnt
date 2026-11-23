@@ -1,8 +1,8 @@
 import { compare,displayFormula,Engine,maySpill,scalar,type Ast } from './formula';
-import { clone,getCell,isFault,key,mapAst,tableAt,translate,type Sheet,type Table,type Workbook } from './model';
+import { allSheets,allTables, clone,getCell,isFault,key,mapAst,tableAt,translate,type Sheet,type Table,type Workbook } from './model';
 
 export function tableColumnFormulas(book:Workbook,table:Table,column:string):{row:string;formula:Ast}[]{
-  const sheet=book.sheets.find(s=>s.id===table.sheet);
+  const sheet=allSheets(book).find(s=>s.id===table.sheet);
   if(!sheet||!table.columns.some(c=>c.column===column))throw Error('This table column no longer exists.');
   const first=table.rows[0];if(!first)return[];
   const seen=new Set<string>(),result:{row:string;formula:Ast}[]=[];
@@ -14,7 +14,7 @@ export function tableColumnFormulas(book:Workbook,table:Table,column:string):{ro
   return result;
 }
 export function applyTableColumnFormula(book:Workbook,table:Table,column:string,formula:Ast,scope:'matching'|'calculated'|'all',source?:Ast):void{
-  const sheet=book.sheets.find(s=>s.id===table.sheet),first=table.rows[0];
+  const sheet=allSheets(book).find(s=>s.id===table.sheet),first=table.rows[0];
   if(!sheet||!first||!table.columns.some(c=>c.column===column))throw Error('Add a data row before editing this table column.');
   if(scope==='matching'&&!source)throw Error('Choose the existing formula pattern to modify.');
   let changed=0;
@@ -58,7 +58,7 @@ export function quantityDiagnostic(book:Workbook,sheet:Sheet,row:string,column:s
   if(!['amount (g)','grams'].includes(table.columns.find(c=>c.column===column)?.name.toLowerCase()??''))return;
   const amount=field('Amount'),unit=field('Unit'),ingredient=field('Ingredient')??field('Food');if(!amount||!unit||!ingredient)return;
   const dependencies=new Set<string>();mapAst(cell.formula,n=>{if(n.kind==='structured')dependencies.add(n.table);return n;});
-  const conversions=book.tables.find(t=>dependencies.has(t.id)&&['From Unit','To Unit','Conversion Factor'].every(name=>t.columns.some(c=>c.name===name)));
+  const conversions=allTables(book).find(t=>dependencies.has(t.id)&&['From Unit','To Unit','Conversion Factor'].every(name=>t.columns.some(c=>c.name===name)));
   if(!conversions)return;
   const read=(id:string)=>scalar(engine.cell(sheet.id,row,id)),unitValue=read(unit.column),amountValue=read(amount.column);
   if(isFault(unitValue)||isFault(amountValue))return 'The amount or unit has a reference/calculation error.';
@@ -66,9 +66,9 @@ export function quantityDiagnostic(book:Workbook,sheet:Sheet,row:string,column:s
   if(typeof amountValue!=='number'||!Number.isFinite(amountValue))return 'Enter a numeric Amount.';
   if(compare(unitValue,'g')===0)return;
   if(typeof unitValue!=='string'||!unitValue)return 'Choose a conversion unit, or enter grams manually.';
-  const source=book.tables.find(t=>dependencies.has(t.id)&&['Conversion Unit','Conversion Amount','Serving (g)'].every(name=>t.columns.some(c=>c.name===name)));
+  const source=allTables(book).find(t=>dependencies.has(t.id)&&['Conversion Unit','Conversion Amount','Serving (g)'].every(name=>t.columns.some(c=>c.name===name)));
   if(!source)return 'The original ingredient conversion source is unavailable. Reconnect its source or enter grams manually.';
-  const sourceSheet=book.sheets.find(s=>s.id===source.sheet)!,nameColumn=source.columns.find(c=>['ingredients','ingredient'].includes(c.name.toLowerCase()));
+  const sourceSheet=allSheets(book).find(s=>s.id===source.sheet)!,nameColumn=source.columns.find(c=>['ingredients','ingredient'].includes(c.name.toLowerCase()));
   if(!nameColumn)return 'The ingredient name field is unavailable.';
   const chosen=read(ingredient.column);
   // Match ordinary textual lookups in source order; never replace XLOOKUP semantics.
