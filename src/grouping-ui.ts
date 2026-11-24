@@ -8,7 +8,7 @@ interface GroupingHost {
   rowLayouts:Map<string,SummaryRowLayout>;
   tableRowLayouts:Map<string,{column:string;rows:Map<string,SummaryRowLayout>}>;
   menuOpen:boolean;setMenuOpen:(open:boolean)=>void;
-  change:(label:string,fn:()=>void)=>boolean;selectAll:()=>void;manage:()=>void;
+  change:(label:string,fn:()=>void,scope:{groups?:Group[];view?:boolean})=>boolean;selectAll:()=>void;manage:()=>void;
   refuse:(message:string)=>void;
   scope?:()=>{enabled:boolean;table?:string};
   menuButton?:HTMLButtonElement;
@@ -36,7 +36,7 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;positio
     el.setAttribute(plain?'aria-pressed':'aria-expanded',String(!group.collapsed));
     el.onclick=e=>{e.stopPropagation();
       const scope=host.scope?.();if(scope?.enabled&&group.table!==scope.table&&!(group.collapsed&&!scope.table)){host.refuse('This group belongs to another table or sheet scope. Select its table, or turn off Table selection first.');return;}
-      host.change('Toggle group',()=>{group.collapsed=!group.collapsed;});
+      host.change('Toggle group',()=>{group.collapsed=!group.collapsed;},{groups:[group]});
     };
     el.ondblclick=e=>e.stopPropagation();
     return el;
@@ -180,7 +180,7 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;positio
       const line=document.createElement('div');line.className='outline-switch-line';
       const label=document.createElement('span');label.textContent=name;
       const toggle=document.createElement('button');toggle.type='button';toggle.className='outline-switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-label',name);toggle.setAttribute('aria-checked',String(value));
-      toggle.onclick=()=>host.change(`Change ${name}`,()=>{sheet.outlineView={...sheet.outlineView,[property]:!value};});
+      toggle.onclick=()=>host.change(`Change ${name}`,()=>{sheet.outlineView={...sheet.outlineView,[property]:!value};},{view:true});
       line.append(label,toggle);return line;
     };
     menu.append(switchLine('Tree view',host.tree,'tree'));
@@ -196,7 +196,7 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;positio
         const collapsed=targets.length>0&&targets.every(e=>e.group.collapsed||!level&&[...e.members].every(id=>hidden(e.group.table).has(id)));
         const el=document.createElement('button');el.type='button';el.className='group-control';el.innerHTML=chevrons(collapsed,axis);el.disabled=!targets.length;
         el.dataset.outlineAxis=axis;el.dataset.outlineLevel=String(level);el.setAttribute('aria-pressed',String(collapsed));el.setAttribute('aria-label',`${collapsed?'Expand':'Collapse'} ${level?'level '+outlineLayer(level):'all'} ${axis==='row'?'rows':'columns'}`);
-        el.onclick=()=>host.change('Toggle outline level',()=>targets.forEach(e=>{e.group.collapsed=!collapsed;}));matrix.append(el);
+        el.onclick=()=>host.change('Toggle outline level',()=>targets.forEach(e=>{e.group.collapsed=!collapsed;}),{groups:targets.map(e=>e.group)});matrix.append(el);
       }
     }
     menu.append(matrix);

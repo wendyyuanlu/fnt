@@ -1,8 +1,9 @@
 import './style.css';
-import { allSheets,allTables, addRow, addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, columnIndex, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
+import { allSheets,allTables,addRow,addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
-import { Store, SyncConflict, syncGitHub, validateBook, type Backup, type LocalState } from './storage';
-import {applyUndo,structuralUndo,undoLimit,type History} from './undo-history';
+import { Store, SyncConflict, syncGitHub, validateBook,validateBookMetadata, type Backup, type LocalState } from './storage';
+import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch} from './undo-history';
+import {cachedCellText} from './display-values';
 import { parseArchive, stringifyArchive } from './archive';
 import { parseTsv,serializeTsv } from './clipboard';
 import { cutCells, shiftCells } from './cell-operations';
@@ -12,7 +13,7 @@ import {captureSelection,headerSelectionTables,nearestHeaderTables,tableHeaderBo
 import { defaultHeaderFormula,groupBlockToTop,positionalBlock } from './meal-block';
 import { applyTableColumnFormula,columnCalculations,quantityDiagnostic,restoreCalculation,tableColumnFormulas } from './calculation';
 import { groupReference,mountGroupPicker,newReference,referenceSettings,type ReferenceHost } from './reference-ui';
-import { dropdownArrowHtml,dropdownManualActionHtml,dropdownOptionsKey,mountDropdownOptions,mountSelectDropdown,mountSourcePicker,sourcePickerControlsHtml,sourcePickerBodyHtml } from './dropdown-ui';
+import { dropdownArrowHtml,dropdownManualActionHtml,dropdownOptionsKey,mountDropdownOptions,mountSelectDropdown,mountSourcePicker,sourcePickerControlsHtml,sourcePickerBodyHtml,type SourcePage } from './dropdown-ui';
 import { duplicateReference,moveReferenceGroup,referenceCaption,referenceChoices,referenceFormula,referenceGroups,referenceLabel,referenceNavigation,referenceUsages,removeReferenceValue,renameReferenceGroup,reorderReferenceSelection,setReferencePresentation,validationChoiceGroups,validationChoices,validationReference,type DropdownChoice,type ReferenceNavigation } from './references';
 import { appendReferenceOption,conversionEditImpact,deleteReferenceColumns,referenceView,writeGridCell } from './reference-grid';
 import { hexToHsv,hsvToHex,normalizeHex } from './colors';
@@ -95,7 +96,7 @@ let book: Workbook, state: LocalState, store: Store, engine: Engine;
 let sheetId = '', selected = {r:1,c:0}, anchor = {...selected}, page = 0, showHypothetical=true;
 let selectionKind:'cells'|'rows'|'columns'='cells';
 let extraSelections:SelectionArea[]=[];
-let renderedSheet='',renderedTarget='',scrollTarget:number|{row:number;contextRows:number}|undefined,drawRowWindow:(()=>void)|undefined;
+let renderedSheet='',renderedTarget='',scrollTarget:number|{row:number;contextRows:number}|undefined,drawRowWindow:((force?:boolean)=>void)|undefined;
 let navigationRows:number[]=[],navigationColumns:number[]=[];
 const measuredRowHeights=new Map<string,number>();
 const pinnedColumns=new Map<string,string[]>();
@@ -106,6 +107,11 @@ let savedGeneration = 0, generation = 0, saving: Promise<void> = Promise.resolve
 const undo: History[] = [], redo: History[] = [];
 let copied: {sheet:string; r:number;c:number;rows:string[];columns:string[];cells:Cell[][];cut?:boolean;table?:string;kind?:'rows'|'columns'|'cells'} | undefined;
 let saveTimer: ReturnType<typeof setTimeout>;
+let scopedChanges:History[]=[],fullSaveRequired=false,compactionWrites=0;
+let compactionTimer:ReturnType<typeof setTimeout>|undefined;
+let displayedVersion=0;
+let movePaintFrame=0,resizePaintFrame=0,selectionPaintFrame=0,previewGeneration=-1;
+let boundaryPreview:{axis:'row'|'column';boundary:number;index:number;after:boolean;generation:number;ids:string[]}|undefined;
 let draft:string|undefined;
 let draftLiteral=false;
 let movingColumns:string[]|undefined;
@@ -258,7 +264,7 @@ function runTableEdit(tableId:string,axis:'row'|'column',edit:TableAxisEdit,labe
   try{
     if(!editableReference()||gridReference()?.error)throw Error('This source is read-only or unavailable. Edit its original table instead.');
     const before=book,expected=generation,table=allTables(book).find(t=>t.id===tableId)!;
-    const plan=planTableAxisEdit(book,tableId,axis,edit),at=axis==='row'?bounds().r1:bounds().c1;
+    const plan=planTableAxisEdit(book,tableId,axis,edit,{candidate:editSnapshot(book)}),at=axis==='row'?bounds().r1:bounds().c1;
     confirmTableExpansion(before,plan,table.name,dialog,()=>{
       if(book!==before||generation!==expected){flash('The workbook changed while this edit was open. Select the records or fields and try again.');return false;}
       return mutate(label,()=>{
@@ -336,8 +342,8 @@ function restoreView(remembered?:string|null,saved?:string|null):{scroll:number;
   }catch(e){error=`View preference could not be restored: ${String(e)}`;}
 }
 const inputText = (cell: Cell): string => cell.formula ? displayFormula(cell.formula,book) : cell.binding ? String(scalar(engine.cell(sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id)) ?? '') : String(cell.value ?? '');
-const cellText = (cell: Cell, s: Sheet, r: number,c: number): string => {
-  const value = scalar(engine.cell(s.id,s.rows[r].id,s.columns[c].id));
+const cellText = (cell: Cell, s: Sheet, r: number,c: number): string => cachedCellText(engine,s.id,s.rows[r].id,s.columns[c].id,cell,raw=>{
+  const value = scalar(raw);
   if (isFault(value)) return value.error;
   if (value === null) return '';
   if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
@@ -348,12 +354,12 @@ const cellText = (cell: Cell, s: Sheet, r: number,c: number): string => {
     return cell.format?.number === 'decimal' ? value.toFixed(2) : String(+value.toPrecision(11));
   }
   return value;
-};
+});
 function flash(e: unknown): void { error = e instanceof Error ? e.message : String(e); renderStatus(); }
 function mutate(label: string, fn: () => void,confirmed=false): boolean {
   if (busy) { flash('Wait for the current save or sync to finish.'); return false; }
-  const before = clone(book);
-  const priorBook=book,shape=structureKey(book),metadata=metadataKey(book),cells=new Map(allSheets(book).map(s=>[s.id,new Map(Object.entries(s.cells))]));
+  const before = editSnapshot(book);
+  const priorBook=book,shape=structureKey(book),metadata=metadataKey(book),cells=new Map(allSheets(before).map(s=>[s.id,s.cells]));
   try {
     fn();
     const impact=confirmed?'':conversionEditImpact(before,book);
@@ -368,35 +374,91 @@ function mutate(label: string, fn: () => void,confirmed=false): boolean {
   catch(e) { book = before; engine = new Engine(book); flash(e); render(); return false; }
   const changes:{sheet:string;key:string;value?:Cell}[]=[];
   const incremental=priorBook===book&&metadata===metadataKey(book);
-  if(incremental){
+  const compared=new WeakMap<object,WeakSet<object>>();
+  const same=(a:unknown,b:unknown):boolean=>{
+    if(Object.is(a,b))return true;
+    if(!a||!b||typeof a!=='object'||typeof b!=='object'||Array.isArray(a)!==Array.isArray(b)||Array.isArray(a)&&Array.isArray(b)&&a.length!==b.length)return false;
+    if(compared.get(a)?.has(b))return true;
+    const first=a as Record<string,unknown>,second=b as Record<string,unknown>,keys=Object.keys(first);
+    if(keys.length!==Object.keys(second).length||!keys.every(k=>Object.prototype.hasOwnProperty.call(second,k)&&same(first[k],second[k])))return false;
+    let matches=compared.get(a);if(!matches)compared.set(a,matches=new WeakSet());matches.add(b);return true;
+  };
+  {
     for(const s of allSheets(book)){
-      const previous=cells.get(s.id)!,old=allSheets(before).find(old=>old.id===s.id)!;
-      for(const k of new Set([...Object.keys(s.cells),...previous.keys()]))if(previous.get(k)!==s.cells[k])changes.push({sheet:s.id,key:k,value:old.cells[k]});
+      const previous=cells.get(s.id);if(!previous)continue;
+      const old=allSheets(before).find(old=>old.id===s.id)!;
+      for(const k of Object.keys(s.cells))if(previous[k]!==s.cells[k]&&(incremental||!same(previous[k],s.cells[k])))changes.push({sheet:s.id,key:k,value:old.cells[k]});
+      for(const k of Object.keys(previous))if(!(k in s.cells))changes.push({sheet:s.id,key:k,value:old.cells[k]});
     }
+  }
+  if(incremental){
     if(!changes.length){render();return true;}undo.push({cells:changes});
-  }else{const entry=structuralUndo(before,book);if('patch'in entry&&!entry.patch.length){render();return true;}undo.push(entry);}
+  }else{
+    const entry=structuralUndo(before,book,true);
+    if('patch'in entry)for(const change of changes){
+      const s=allSheets(before).find(s=>s.id===change.sheet)!;
+      const path:Patch['path']=[...(before.sheets.includes(s)?['sheets',before.sheets.indexOf(s)]:['dropdownData','sheets',before.dropdownData!.sheets.indexOf(s)]),'cells',change.key];
+      if(!entry.patch.some(p=>p.path.length<path.length&&p.path.every((key,i)=>key===path[i])))entry.patch.push({path,exists:change.value!==undefined,value:clone(change.value)});
+    }
+    if('patch'in entry&&!entry.patch.length){render();return true;}undo.push(entry);
+  }
   while(undo.length>undoLimit)undo.shift();
   redo.length = 0;
-  recordTableEdits(before,book,incremental?changes:undefined);
+  recordTableEdits(before,book,changes);
   const reset=priorBook!==book||shape!==structureKey(book);
   if(!reset){
-    const changedCells:string[]=[];
-    for(const s of allSheets(book)){
-      const previous=cells.get(s.id)!;
-      for(const [k,v]of Object.entries(s.cells))if(previous.get(k)!==v)changedCells.push(`${s.id}:${k}`);
-      for(const k of previous.keys())if(!(k in s.cells))changedCells.push(`${s.id}:${k}`);
-    }
-    engine.invalidate(changedCells);
+    engine.invalidate(changes.map(change=>`${change.sheet}:${change.key}`));
   }
-  changed(label,reset); render();return true;
+  displayedVersion++;
+  const entry=undo.at(-1)!;
+  const forward:History='cells'in entry?{cells:entry.cells.map(change=>({sheet:change.sheet,key:change.key,value:clone(allSheets(book).find(s=>s.id===change.sheet)!.cells[change.key])}))}:'patch'in entry?capturePatch(book,entry.patch.map(p=>p.path)):{book:clone(book)};
+  const activity=capturePatch(book,[['tableActivity']]);if('patch'in forward)forward.patch.push(...activity.patch);
+  else scopedChanges.push(activity);
+  changed(label,reset,false,forward);
+  if(incremental&&!reset&&drawRowWindow){drawRowWindow(true);groupManager?.refresh();renderStatus();}else render();
+  return true;
+}
+function sheetPath(s:Sheet=sheet()):Patch['path']{
+  const at=book.sheets.findIndex(item=>item.id===s.id),dropdown=book.dropdownData?.sheets.findIndex(item=>item.id===s.id)??-1;
+  if(at<0&&dropdown<0)throw Error('This sheet no longer exists.');
+  return at>=0?['sheets',at]:['dropdownData','sheets',dropdown];
+}
+function tablePath(t:ReturnType<typeof allTables>[number]):Patch['path']{
+  const at=book.tables.findIndex(item=>item.id===t.id),dropdown=book.dropdownData?.tables.findIndex(item=>item.id===t.id)??-1;
+  if(at<0&&dropdown<0)throw Error('This table no longer exists.');
+  return at>=0?['tables',at]:['dropdownData','tables',dropdown];
+}
+function layoutHistory(entry:History):boolean{
+  if(!('patch'in entry))return false;
+  return entry.patch.every(({path})=>{
+    if(['title','hypotheticalStyle','toolbarOrder','toolbarDividers','tableManagerSort','sheetTabGroups','sheetTabCollapsed'].includes(String(path[0])))return true;
+    const offset=path[0]==='sheets'?2:path[0]==='dropdownData'&&path[1]==='sheets'?3:-1;
+    if(offset<0||typeof path[offset-1]!=='number')return false;
+    if(path[offset]==='groups'||path[offset]==='outlineView')return true;
+    return ['rows','columns'].includes(String(path[offset]))&&typeof path[offset+1]==='number'&&['hidden','height','width','hypothetical','hypotheticalTables'].includes(String(path[offset+2]));
+  });
+}
+function mutateMetadata(label:string,fn:()=>void,paths:Patch['path'][],reset=false,repaint=true):boolean{
+  if(busy){flash('Wait for the current save or sync to finish.');return false;}
+  const before=capturePatch(book,paths);
+  try{fn();}catch(e){if(patchDifference(before,capturePatch(book,paths)).patch.length){book=applyUndo(book,before).book;engine=new Engine(book);}flash(e);render();return false;}
+  const inverse=patchDifference(before,capturePatch(book,paths));
+  if(!inverse.patch.length)return true;
+  const forward=capturePatch(book,inverse.patch.map(p=>p.path));
+  undo.push(inverse);while(undo.length>undoLimit)undo.shift();redo.length=0;
+  if(reset)displayedVersion++;
+  changed(label,reset,false,forward);
+  if(repaint)render();else{renderStatus();refreshSelection(false);groupManager?.refresh();}
+  return true;
 }
 function structureKey(b:Workbook):string {
   return JSON.stringify([allSheets(b).map(s=>[s.id,s.name,s.rows.map(r=>r.id),s.columns.map(c=>c.id)]),allTables(b),b.names]);
 }
 function metadataKey(b:Workbook):string{return JSON.stringify(b,(k,v)=>k==='cells'?undefined:v);}
-function changed(label: string,reset=true,quiet=false): void {
+function changed(label: string,reset=true,quiet=false,forward?:History): void {
   const preservedStatus=quiet?status:undefined;
   book.revision++; generation++; if(reset)engine = new Engine(book);
+  if(forward)scopedChanges.push(forward);else fullSaveRequired=true;
   if(!quiet){error='';status = 'Unsaved changes - saving locally...';}
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { void flush(label,preservedStatus); },350);
@@ -406,17 +468,35 @@ async function flush(label = 'Edit workbook',preservedStatus?:string): Promise<v
   saving = saving.then(async () => {
     if (savedGeneration === generation && state) return;
     await navigationSaving;
-    const snapshot = book, g = generation,undoHistory=clone({undo,redo});
+    const snapshot = book, revision=book.revision,g = generation,undoHistory=clone({undo,redo}),records=scopedChanges.splice(0),full=fullSaveRequired||!state;
+    fullSaveRequired=false;
     if(preservedStatus===undefined)status = 'Saving locally...'; renderStatus();
     try {
-      state = await store.save(snapshot,state?.version ?? 0,label,false,undefined,{undoHistory});
+      if(full){
+        state=await store.save(snapshot,state?.version??0,label,false,undefined,{undoHistory});compactionWrites=0;
+      }else{
+        const receipt=await store.saveChanges(snapshot.id,revision,state.version,label,records,undoHistory);
+        let saved=state.book;for(const record of records)saved=applyUndo(saved,record).book;
+        saved={...saved,revision};state={...state,...receipt,book:saved};
+        compactionWrites++;
+        if(!compactionTimer)compactionTimer=setTimeout(()=>{compactionTimer=undefined;void compactSavedChanges();},10000);
+        if(compactionWrites>=32)void compactSavedChanges();
+      }
       navigationError=undefined;
       savedGeneration = g;
       status = state.sync ? `Saved locally - ${state.pending.length} pending changes` : preservedStatus??'Saved in this browser';
       channel?.postMessage({version:state.version});
-    } catch(e) { status = 'NOT SAVED - download a backup'; flash(e); throw e; }
+    } catch(e) { scopedChanges.unshift(...records);fullSaveRequired||=full;status = 'NOT SAVED - download a backup'; flash(e); throw e; }
     finally { renderStatus(); }
   }).catch(e => { flash(e); });
+  await saving;
+}
+async function compactSavedChanges():Promise<void>{
+  saving=saving.then(async()=>{
+    if(!state||!compactionWrites)return;
+    try{await store.compact(state.version);compactionWrites=0;}
+    catch(e){status='Changes saved; recovery compaction needs retry';flash(e);}
+  });
   await saving;
 }
 async function manualSave(): Promise<void> {
@@ -428,6 +508,7 @@ async function manualSave(): Promise<void> {
     if(navigationError)generation++;
     await flush('Manual save');
     if(savedGeneration!==generation)return;
+    await store.compact(state.version);compactionWrites=0;
     await navigationSaving;
     if(navigationDirty){state=await store.metadata(state.version,s=>s);navigationDirty=false;}
     if(!state.sync){await store.checkpoint('Manual save',book);status='Saved locally + recovery checkpoint';return;}
@@ -469,10 +550,12 @@ function openConflict(conflict:SyncConflict):void {
   });
 }
 function renderStatus(): void {
+  const title=root.querySelector('#title');if(title)title.textContent=book.title;
   updateCalculationState();
   for(const [action,entries]of [['undo',undo],['redo',redo]] as const){
     const button=root.querySelector<HTMLButtonElement>(`[data-action="${action}"]`);if(!button)continue;
     button.dataset.historyCount=String(entries.length);
+    button.disabled=busy||!entries.length;
     button.dataset.shortcutLabel=`${action==='undo'?'Undo':'Redo'} (${entries.length} available)`;
   }
   root.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('#formula,.cell-inline-editor').forEach(el=>el.disabled=busy||!editableReference()||!!gridReference()?.error);
@@ -526,6 +609,7 @@ function workbookTabsHtml():string{
   return`<div class="tabs">${tabs}<span class="tab-drop-marker" hidden></span></div>`;
 }
 function render(): void {
+  cancelAnimationFrame(selectionPaintFrame);selectionPaintFrame=0;
   const toolbarScroll=root.querySelector<HTMLElement>('.toolbar')?.scrollLeft??0;
   closeToolbar?.();closeToolbar=undefined;
   tableSelectionControl?.close();tableSelectionControl=undefined;
@@ -666,7 +750,7 @@ function render(): void {
   const grid=root.querySelector<HTMLElement>('#grid-scroll')!,body=grid.querySelector('tbody')!;
   grid.dataset.firstRow=String(rows[0]?.i??0);grid.dataset.firstColumn=String(columns[0]?.i??0);
   groupControls=mountGroupControls({sheet:s,groups,tables:allTables(book),grid,rows:rows.map(r=>r.id),columns:columns.map(c=>c.id),projection:groupProjection,rowLayouts,tableRowLayouts,tree,hints,menuOpen:groupMenuOpen,setMenuOpen:open=>{groupMenuOpen=open;},
-    change:(label,fn)=>commitDraft()&&mutate(label,fn),refuse:flash,selectAll:()=>{void action('select-all');},manage:openGroups,scope:()=>({enabled:tableSelectionMode,table:selectionScope??tableSelectionTarget}),menuButton:root.querySelector<HTMLButtonElement>('.toolbar .group-menu-button')!});
+    change:(label,fn,scope)=>commitDraft()&&mutateMetadata(label,fn,scope.view?[[...sheetPath(s),'outlineView']]:scope.groups!.map(group=>[...sheetPath(s),'groups',s.groups.indexOf(group),'collapsed'])),refuse:flash,selectAll:()=>{void action('select-all');},manage:openGroups,scope:()=>({enabled:tableSelectionMode,table:selectionScope??tableSelectionTarget}),menuButton:root.querySelector<HTMLButtonElement>('.toolbar .group-menu-button')!});
   const headerHeight=grid.querySelector('thead')!.getBoundingClientRect().height;
   stickyTableHeaders=mountStickyTableHeaders({grid,sheet:s,tables:view?.table?[view.table]:allTables(book),rows:rows.map((row,i)=>({id:row.id,get start(){return layout.offsets[i];},get end(){return layout.offsets[i+1];}})),display:groupProjection.display,masked:maskedCell,select:(row,column,edit)=>{
     if(!commitDraft())return;extraSelections=[];selected={r:s.rows.findIndex(item=>item.id===row),c:s.columns.findIndex(item=>item.id===column)};anchor={...selected};selectionKind='cells';refreshSelection();if(edit)renameSelectedColumn();
@@ -685,14 +769,14 @@ function render(): void {
   };
   let lastStart=-1,lastEnd=-1;
   const spacer=(height:number,position:string)=>`<tr class="virtual-spacer" aria-hidden="true" data-spacer="${position}"><td colspan="${columns.length+1}" style="height:${height}px;padding:0;border:0;line-height:0;font-size:0"></td></tr>`;
-  const draw=(initialTop?:number)=>{
+  const draw=(initialTop?:number,force=false)=>{
     const top=initialTop??grid.scrollTop,window=layout.window(top,Math.max(100,grid.clientHeight-headerHeight));
     page=Math.floor((rows[layout.at(top)]?.i??0)/60);
     const jump=root.querySelector<HTMLInputElement>('#row-jump')!;
     if(document.activeElement!==jump)jump.value=String(view?layout.at(top)+1:(rows[layout.at(top)]?.i??0)+1);
     root.querySelector<HTMLButtonElement>('[data-action="prev"]')!.disabled=top<=0;
     root.querySelector<HTMLButtonElement>('[data-action="next"]')!.disabled=top+grid.clientHeight>=layout.offsets.at(-1)!+headerHeight;
-    if(window.start===lastStart&&window.end===lastEnd&&initialTop===undefined)return;
+    if(window.start===lastStart&&window.end===lastEnd&&initialTop===undefined&&!force)return;
     lastStart=window.start;lastEnd=window.end;engine.beginPass();
     const active=document.activeElement,wasInline=active instanceof HTMLTextAreaElement&&active.classList.contains('cell-inline-editor'),caret=wasInline?[active.selectionStart,active.selectionEnd]:undefined,b=bounds(),ranges=currentSelections();
     body.innerHTML=spacer(window.before,'before')+rows.slice(window.start,window.end).map((slotRow,index)=>{const r=slotRow,rowNumber=view?window.start+index+1:r.i+1;return`<tr data-row="${r.i}"${r.height?` style="--row-height:${r.height*4/3}px"`:''} class="${activeReference()?.archivedRows.includes(r.id)?'archived ':''}${r.status&&r.status!=='real'?r.status:''}"><th data-row-select="${r.i}" class="${r.i>=b.r1&&r.i<=b.r2?'row-selected':''}"><span class="row-index">${rowNumber}</span>${editableReference()&&(!view||r.id!==view.table?.header)?`<button class="row-move-control" data-move-row="${r.i}" draggable="true" aria-label="Move row ${rowNumber}" title="Drag row, or tap then tap destination">${grip(false)}</button>`:''}<button class="boundary-control row-boundary" data-insert-row="${r.i+1}" aria-label="${movingRows?'Move rows':'Insert row'} after ${rowNumber}">+</button>${index===0||view&&r.id===view.table?.rows[0]?`<button class="boundary-control row-start" data-insert-row="${r.i}" aria-label="Insert row before ${rowNumber}">+</button>`:''}<button class="resize-edge resize-row" data-resize-row="${r.i}" aria-label="Resize row ${rowNumber}" title="Drag to resize; double-click to fit"></button></th>${columns.map(slotColumn=>{
@@ -731,7 +815,7 @@ function render(): void {
       if(wasInline){const editor=root.querySelector<HTMLTextAreaElement>('.cell-inline-editor')??root.querySelector<HTMLInputElement>('#formula')!;editor.focus({preventScroll:true});editor.setSelectionRange(caret![0],caret![1]);}
     }
   };
-  drawRowWindow=()=>draw();draw(vertical);
+  drawRowWindow=force=>draw(undefined,force);draw(vertical);
   grid.scrollLeft=scroll;
   bind();
   groupManager?.refresh();
@@ -740,7 +824,7 @@ function render(): void {
   expandedEditor?.position();
   renderStatus();
   const toolbar=root.querySelector<HTMLElement>('.toolbar')!;
-  closeToolbar=mountToolbar(toolbar,{order:book.toolbarOrder,dividers:book.toolbarDividers,editing:arrangingToolbar,selection:toolbarSelection,change:(order,dividers)=>commitDraft()&&mutate('Arrange toolbar',()=>{book.toolbarOrder=order;book.toolbarDividers=dividers;})});
+  closeToolbar=mountToolbar(toolbar,{order:book.toolbarOrder,dividers:book.toolbarDividers,editing:arrangingToolbar,selection:toolbarSelection,change:(order,dividers)=>commitDraft()&&mutateMetadata('Arrange toolbar',()=>{book.toolbarOrder=order;book.toolbarDividers=dividers;},[['toolbarOrder'],['toolbarDividers']])});
   toolbar.scrollLeft=toolbarScroll;
   groupControls?.positionMenu();
   rememberView();
@@ -792,7 +876,7 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
     let browsing=active!=='manual'?active:groups.some(g=>g.id===book.pickerSources[listKey])?book.pickerSources[listKey]:groups[0].id;
     const remember=(source:string)=>{
       if(book.pickerSources[preferenceKey]===source&&book.pickerSources[listKey]===browsing)return;
-      book.pickerSources[preferenceKey]=source;book.pickerSources[listKey]=browsing;changed('Remember dropdown source',false);renderStatus();
+      book.pickerSources[preferenceKey]=source;book.pickerSources[listKey]=browsing;changed('Remember dropdown source',false,false,capturePatch(book,[['pickerSources']]));renderStatus();
     };
     const sourceCheck='<svg class="dropdown-source-check" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1"><path vector-effect="non-scaling-stroke" d="m5 12 4 4L19 6"/></svg>';
     popup.innerHTML=`<div class="dropdown-source-tabs"><div role="tablist" aria-label="Dropdown sources"></div>${dropdownManualActionHtml}<button type="button" class="dropdown-add-source" aria-label="Choose another source" title="Choose another source…">+</button></div><div class="dropdown-panel" role="tabpanel"></div>`;
@@ -956,14 +1040,15 @@ function bind(): void {
   root.querySelector('#grid-scroll')!.addEventListener('pointermove',e=>{
     const event=e as PointerEvent;if(fillSource&&event.pointerId===fillPointer){
       event.preventDefault();const cell=document.elementFromPoint(event.clientX,event.clientY)?.closest<HTMLElement>('td[data-r]');
-      if(cell){anchor={r:Math.min(fillSource.r1,Number(cell.dataset.r)),c:Math.min(fillSource.c1,Number(cell.dataset.c))};selected={r:Math.max(fillSource.r2,Number(cell.dataset.r)),c:Math.max(fillSource.c2,Number(cell.dataset.c))};refreshSelection();}return;
+      if(cell){anchor={r:Math.min(fillSource.r1,Number(cell.dataset.r)),c:Math.min(fillSource.c1,Number(cell.dataset.c))};selected={r:Math.max(fillSource.r2,Number(cell.dataset.r)),c:Math.max(fillSource.c2,Number(cell.dataset.c))};scheduleSelectionPaint();}return;
     }
     if(!touchSelection||event.pointerId!==touchPointer)return;
     event.preventDefault();const cell=document.elementFromPoint(event.clientX,event.clientY)?.closest<HTMLElement>('td[data-r]');
-    if(cell){selected={r:Number(cell.dataset.r),c:Number(cell.dataset.c)};refreshSelection();}
+    if(cell){const r=Number(cell.dataset.r),c=Number(cell.dataset.c);if(selected.r!==r||selected.c!==c){selected={r,c};scheduleSelectionPaint();}}
   });
   const endTouch=()=>{touchPointer=undefined;touchSelection=false;root.querySelector('.grid')?.classList.remove('touch-select');};
   root.querySelector('#grid-scroll')!.addEventListener('pointerup',()=>{
+    if(selectionPaintFrame){cancelAnimationFrame(selectionPaintFrame);selectionPaintFrame=0;refreshSelection();}
     endTouch();if(fillSource){const source=fillSource,target=bounds();fillSource=undefined;fillPointer=undefined;if(JSON.stringify(source)!==JSON.stringify(target))mutate('Drag fill',()=>fillCells(book,sheet(),source,confineRange(target)));}
   });
   root.querySelector('#grid-scroll')!.addEventListener('pointercancel',()=>{endTouch();fillSource=undefined;fillPointer=undefined;});
@@ -1008,13 +1093,16 @@ function bind(): void {
   document.querySelector<HTMLInputElement>('#row-jump')!.onchange=e=>{
     if(!commitDraft())return;const s=sheet(),view=gridReference(),number=Number((e.target as HTMLInputElement).value),count=view?.rows.length??s.rows.length;if(!Number.isInteger(number)||number<1||number>count){flash(`Enter a row between 1 and ${count}.`);return;}selected.r=view?s.rows.findIndex(r=>r.id===view.rows[number-1]):number-1;anchor={...selected};selectionKind='cells';scrollTarget=selected.r;page=Math.floor(selected.r/60);render();
   };
-  document.querySelector('#title')!.addEventListener('click',()=>askText('Rename workbook',book.title,name=>mutate('Rename workbook',()=>{book.title=name;})));
+  document.querySelector('#title')!.addEventListener('click',()=>askText('Rename workbook',book.title,name=>mutateMetadata('Rename workbook',()=>{book.title=name;},[['title']],false,false)));
+}
+function scheduleSelectionPaint():void{
+  if(!selectionPaintFrame)selectionPaintFrame=requestAnimationFrame(()=>{selectionPaintFrame=0;refreshSelection();});
 }
 function inlineSheetName(el:HTMLElement):void {
   const s=allSheets(book).find(s=>s.id===el.dataset.sheet)!;el.draggable=false;
   const input=document.createElement('input');input.value=s.name;input.setAttribute('aria-label','Rename sheet');input.style.width='130px';el.replaceChildren(input);input.focus();input.select();
   let committed=false;
-  const commit=()=>{if(committed)return;committed=true;const name=input.value.trim();if(name&&name!==s.name)mutate('Rename sheet',()=>{if(allSheets(book).some(x=>x.id!==s.id&&x.name.toLowerCase()===name.toLowerCase()))throw Error('Sheet name is already in use.');s.name=name;});render();};
+  const commit=()=>{if(committed)return;committed=true;const name=input.value.trim();if(name&&name!==s.name)mutateMetadata('Rename sheet',()=>{if(allSheets(book).some(x=>x.id!==s.id&&x.name.toLowerCase()===name.toLowerCase()))throw Error('Sheet name is already in use.');s.name=name;},[[...sheetPath(s),'name']],true);render();};
   input.onclick=e=>e.stopPropagation();input.onblur=commit;input.onkeydown=e=>{e.stopPropagation();if(e.key==='Enter'){e.preventDefault();commit();}if(e.key==='Escape'){committed=true;render();}};
 }
 let navigationSaving:Promise<void>=Promise.resolve(),navigationDirty=false,navigationError:unknown;
@@ -1066,7 +1154,7 @@ function updateCalculationState():void{
   if(restore)restore.onclick=()=>{
     if(busy||!commitDraft())return;
     try{
-      const options=columnCalculations(book,s,row,column);
+      const options=columnCalculations(book,s,row,column,engine);
       if(!options.length)throw Error('No matching calculation remains. Enter a formula, or restore a recovery checkpoint.');
       const apply=(at:number)=>mutate('Restore calculation',()=>restoreCalculation(book,s,row,column,options[at].formula));
       if(options.length===1){apply(0);return;}
@@ -1298,10 +1386,17 @@ async function action(name:string):Promise<void> {
     case 'undo':case 'redo': {
       const from=name==='undo'?undo:redo,to=name==='undo'?redo:undo,previous=from.at(-1);
       if(previous){
-        const revision=book.revision,before=clone(book);
-        try{const applied=applyUndo(book,previous);validateBook(applied.book);book=applied.book;from.pop();to.push(applied.inverse);}catch(error){flash(error);return;}
-        recordTableEdits(before,book,'cells'in previous?previous.cells:undefined);
-        book.revision=revision;if(!allSheets(book).some(s=>s.id===sheetId))sheetId=allSheets(book)[0].id;changed(name);render();
+        const revision=book.revision,before=book,layoutOnly=layoutHistory(previous);let forward:History;
+        try{const applied=applyUndo(book,previous);if(layoutOnly)validateBookMetadata(applied.book);else validateBook(applied.book);book=applied.book;forward=clone(previous);from.pop();to.push(applied.inverse);}catch(error){flash(error);return;}
+        const cellChanges=layoutOnly?[]:'cells'in previous?previous.cells:'patch'in previous&&previous.patch.every(p=>p.path.length>1&&!(p.path.includes('cells')&&p.path.at(-1)==='cells'))?previous.patch.flatMap(p=>{
+          const at=p.path.indexOf('cells');if(at<0)return[];
+          const index=Number(p.path[at-1]),s=p.path[0]==='sheets'?before.sheets[index]:before.dropdownData?.sheets[index];
+          return s?[{sheet:s.id,key:String(p.path[at+1])}]:[];
+        }):undefined;
+        recordTableEdits(before,book,cellChanges);
+        scopedChanges.push(capturePatch(book,[['tableActivity']]));
+        const reset=!layoutOnly||!engine.rebindLayout(book);
+        if(reset)displayedVersion++;book.revision=revision;if(!allSheets(book).some(s=>s.id===sheetId))sheetId=allSheets(book)[0].id;changed(name,reset,false,'book'in forward?undefined:forward);render();
       }break;
     }
     case 'bold':case 'italic':case 'underline':case 'strikethrough':case 'wrap':{
@@ -1319,13 +1414,14 @@ async function action(name:string):Promise<void> {
     case 'paste':pasteCells();break;
     case 'fill':mutate('Fill down',()=>{
       const s=sheet(),b=currentSelections()[0];if(!b)throw Error('Select cells inside this table first.');
+      const translations=createTranslationContext(book);
       const rows=s.rows.map((_,i)=>i).filter(r=>r>=b.r1&&r<=b.r2&&inGrid(r,selected.c)),columns=s.columns.map((_,i)=>i).filter(c=>c>=b.c1&&c<=b.c2&&(!gridReference()||gridReference()!.columns.includes(s.columns[c].id)));
       for(const c of columns)for(const r of rows.slice(1)){
         if(allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(x=>x.column===s.columns[c].id)))throw Error('Fill cannot overwrite table headers. Rename headers explicitly.');
         const cell=clone(getCell(s,s.rows[rows[0]].id,s.columns[c].id));
-        if(cell.formula)cell.formula=translate(cell.formula,book,s.id,s.rows[rows[0]].id,s.columns[c].id,s.rows[r].id,s.columns[c].id);
+        if(cell.formula)cell.formula=translate(cell.formula,book,s.id,s.rows[rows[0]].id,s.columns[c].id,s.rows[r].id,s.columns[c].id,s.id,translations);
         else if(typeof cell.value==='string'&&/\d+$/.test(cell.value))cell.value=cell.value.replace(/\d+$/,n=>String(Number(n)+rows.indexOf(r)));
-        if(cell.calculation)cell.calculation=translate(cell.calculation,book,s.id,s.rows[rows[0]].id,s.columns[c].id,s.rows[r].id,s.columns[c].id);
+        if(cell.calculation)cell.calculation=translate(cell.calculation,book,s.id,s.rows[rows[0]].id,s.columns[c].id,s.rows[r].id,s.columns[c].id,s.id,translations);
         s.cells[key(s.rows[r].id,s.columns[c].id)]=cell;
       }
     });break;
@@ -1371,7 +1467,7 @@ async function action(name:string):Promise<void> {
     case 'plain-group':toggleSelectedGroup('range');break;
     case 'hypothetical-settings':{
       openHypotheticalSettings({style:getHypotheticalStyle(book),dialog,save:async style=>{
-        if(!mutate('Save hypothetical treatments',()=>{book.hypotheticalStyle=style;}))throw Error(error||'Treatment settings could not be applied.');
+        if(!mutateMetadata('Save hypothetical treatments',()=>{book.hypotheticalStyle=style;},[['hypotheticalStyle']]))throw Error(error||'Treatment settings could not be applied.');
         const g=generation;await flush('Save hypothetical treatments');
         if(savedGeneration<g)throw Error(error||'Treatment settings are not saved. Retry or download a backup.');
       }});break;
@@ -1387,9 +1483,12 @@ async function action(name:string):Promise<void> {
       const owner=scopedSelectionTable(),local=tableSelectionMode||!!owner;
       if(!(local?sheet().groups.some(g=>g.table===owner?.id&&g.kind!=='summary'):allSheets(book).some(s=>s.groups.some(g=>g.kind!=='summary')))){flash('There are no plain groups in this scope.');break;}
       try{
+        busy=true;status='Creating recovery checkpoint...';renderStatus();
         await flush();await store.checkpoint('Before ungrouping all plain groups',book);
-        if(mutate('Ungroup all plain groups',()=>{if(local)sheet().groups=sheet().groups.filter(g=>g.table!==owner?.id||g.kind==='summary');else ungroupPlainGroups(book);}))await flush('Ungroup all plain groups');
-      }catch(e){flash(e);}
+        busy=false;
+        if(mutateMetadata('Ungroup all plain groups',()=>{if(local)sheet().groups=sheet().groups.filter(g=>g.table!==owner?.id||g.kind==='summary');else ungroupPlainGroups(book);},(local?[sheet()]:allSheets(book)).map(s=>[...sheetPath(s),'groups'])))await flush('Ungroup all plain groups');
+      }catch(e){status='Group changes not applied; recovery checkpoint failed';flash(e);}
+      finally{busy=false;renderStatus();}
       break;
     }
     case 'block':openBlock();break;
@@ -1418,11 +1517,11 @@ function changeHypotheticalTags(axis:Group['axis'],ids:string[],enabled:boolean,
   const flag=(item:typeof items[number])=>tableId?item.hypotheticalTables?.[tableId]:item.hypothetical;
   const overrides=items.filter(item=>descendants.has(item.id)&&flag(item)!==undefined);
   const expectedGeneration=generation,label=enabled?'Mark hypo':'Remove hypo tag';
-  const apply=(overwrite:boolean)=>mutate(label,()=>{
+  const apply=(overwrite:boolean)=>mutateMetadata(label,()=>{
     if(sheet().id!==s.id||generation!==expectedGeneration)throw Error('The workbook changed. Select the summary again before changing its tags.');
     if(tableId&&!table)throw Error('The selected table no longer exists.');
     setHypotheticalTag(sheet(),axis,ids,enabled,overwrite,tableId);
-  });
+  },items.flatMap((item,i)=>ids.includes(item.id)||descendants.has(item.id)?[[...sheetPath(s),axis==='row'?'rows':'columns',i,tableId?'hypotheticalTables':'hypothetical']]:[]));
   if(!overrides.length){apply(false);return;}
   if(hypotheticalOverrideSkips>0){if(apply(true))hypotheticalOverrideSkips--;return;}
   const preview={sheet:s.id,axis,ids:new Set(overrides.map(item=>item.id)),table:tableId},style=getHypotheticalStyle(book);
@@ -1581,11 +1680,18 @@ function openStructure():void {
           const run=()=>runTableEdit(owner.id,axis,edit,items[op]);
           if(op===12||op===13)confirmAction(items[op]+'?','Only this table is changed. Deleted references become explicit errors.',run);else run();return;
         }
-        if(op===8||op===9){const axis=op===8?'row':'column',items=axis==='row'?s.rows:s.columns;mutate('Hide table members',()=>{s.groups.push({id:uid(),kind:'range',axis,table:owner.id,members:selectedAxisIndices(axis).map(i=>items[i].id),collapsed:true,label:'Hidden members'});});return;}
-        if(op===10){mutate('Unhide table members',()=>s.groups.filter(group=>group.table===owner.id).forEach(group=>group.collapsed=false));return;}
+        if(op===8||op===9){const axis=op===8?'row':'column',items=axis==='row'?s.rows:s.columns;mutateMetadata('Hide table members',()=>{s.groups.push({id:uid(),kind:'range',axis,table:owner.id,members:selectedAxisIndices(axis).map(i=>items[i].id),collapsed:true,label:'Hidden members'});},[[...sheetPath(s),'groups']]);return;}
+        if(op===10){const groups=s.groups.filter(group=>group.table===owner.id);mutateMetadata('Unhide table members',()=>groups.forEach(group=>group.collapsed=false),groups.map(g=>[...sheetPath(s),'groups',s.groups.indexOf(g),'collapsed']));return;}
       }
       if(op===2){renameSelectedColumn();return;}
-      if(op===11){const columns=selectedAxisIndices('column').map(c=>s.columns[c]);askText('Column width (pixels)',String(s.columns[selected.c].width??145),v=>mutate('Resize columns',()=>{const width=Number(v);if(!Number.isFinite(width)||width<60||width>800)throw Error('Width must be between 60 and 800 pixels.');columns.forEach(c=>c.width=width);}));return;}
+      if(op===11){const columns=selectedAxisIndices('column').map(c=>s.columns[c]);askText('Column width (pixels)',String(s.columns[selected.c].width??145),v=>mutateMetadata('Resize columns',()=>{const width=Number(v);if(!Number.isFinite(width)||width<60||width>800)throw Error('Width must be between 60 and 800 pixels.');columns.forEach(c=>c.width=width);},columns.map(c=>[...sheetPath(s),'columns',s.columns.indexOf(c),'width'])));return;}
+      if(op===8||op===9){
+        const axis=op===8?'row':'column',indices=selectedAxisIndices(axis),axes=axis==='row'?s.rows:s.columns;
+        mutateMetadata(items[op],()=>indices.forEach(i=>axes[i].hidden=true),indices.map(i=>[...sheetPath(s),axis==='row'?'rows':'columns',i,'hidden']));return;
+      }
+      if(op===10){
+        mutateMetadata(items[op],()=>{s.rows.forEach(r=>r.hidden=false);s.columns.forEach(c=>c.hidden=false);s.groups.forEach(g=>g.collapsed=false);},[...s.rows.map((_,i)=>[...sheetPath(s),'rows',i,'hidden']),...s.columns.map((_,i)=>[...sheetPath(s),'columns',i,'hidden']),...s.groups.map((_,i)=>[...sheetPath(s),'groups',i,'collapsed'])]);return;
+      }
       if(op>=15){const range=requireRectangle('Shifting cells');if(!range)return;b=range;}
       const run=()=>mutate(items[op],()=>{
         switch(op){
@@ -1666,7 +1772,7 @@ function openTableRename(id:string):void{
     d.classList.add('table-rename-dialog');
     const input=d.querySelector<HTMLInputElement>('#answer')!;input.focus();input.select();
     d.querySelector('form')!.onsubmit=e=>{
-      e.preventDefault();if(mutate('Rename table',()=>renameTable(book,id,input.value)))d.close();
+      e.preventDefault();const table=allTables(book).find(t=>t.id===id)!;if(mutateMetadata('Rename table',()=>renameTable(book,id,input.value),[[...tablePath(table),'name']],true))d.close();
       else{const message=d.querySelector<HTMLElement>('#table-rename-error')!;message.textContent=error;message.hidden=false;}
     };
     d.querySelector<HTMLButtonElement>('#delete-table')!.onclick=()=>confirmTableDeletion(id);
@@ -1687,9 +1793,10 @@ function openTables(showAll=false):void {
     d.classList.add('dropdown-assignment','table-manager');d.querySelector('form')!.onsubmit=e=>e.preventDefault();
     const cards=d.querySelector<HTMLElement>('#dropdown-source-cards')!,message=d.querySelector<HTMLElement>('#table-manager-error')!;
     const sort=d.querySelector<HTMLSelectElement>('#table-manager-sort')!;sort.value=book.tableManagerSort??'activity';mountSelectDropdown(sort);
-    const picker=mountSourcePicker(d,{grid:true,viewControls:false,searchLabel:'Search tables',placeholder:'Search tables or sheets…',render:(grid,query)=>{
+    const picker=mountSourcePicker(d,{grid:true,viewControls:false,searchLabel:'Search tables',placeholder:'Search tables or sheets…',render:(grid,query,sourcePage)=>{
       cards.replaceChildren();
-      for(const table of sortedTables(book,book.tableManagerSort??'activity')){
+      const matching=sortedTables(book,book.tableManagerSort??'activity').filter(table=>`${table.name} ${allSheets(book).find(sheet=>sheet.id===table.sheet)!.name}`.toLowerCase().includes(query));
+      for(const table of sourcePage(matching)){
         const owner=allSheets(book).find(sheet=>sheet.id===table.sheet)!;
         if(!`${table.name} ${owner.name}`.toLowerCase().includes(query))continue;
         const card=document.createElement('div');card.className=`${grid?'dropdown-source-card':'dropdown-source-row'} table-manager-card`;card.dataset.tableId=table.id;
@@ -1698,7 +1805,7 @@ function openTables(showAll=false):void {
           const current=allTables(book).find(candidate=>candidate.id===table.id)!;
           const editor=document.createElement('div'),input=document.createElement('input'),save=document.createElement('button');
           editor.className='table-manager-name-editor';input.value=current.name;input.setAttribute('aria-label','Table name');save.type='button';save.textContent='Save';
-          const commit=()=>{if(mutate('Rename table',()=>renameTable(book,current.id,input.value))){message.hidden=true;picker.refresh();}else{message.textContent=error;message.hidden=false;}};
+          const commit=()=>{if(mutateMetadata('Rename table',()=>renameTable(book,current.id,input.value),[[...tablePath(current),'name']],true)){message.hidden=true;picker.refresh();}else{message.textContent=error;message.hidden=false;}};
           save.onclick=commit;input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();commit();}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();picker.refresh();}};
           editor.append(input,save);title.replaceWith(editor);input.focus();input.select();
         };
@@ -1727,7 +1834,7 @@ function openTables(showAll=false):void {
     }});
     sort.onchange=()=>{
       const value=sort.value;if(value!=='activity'&&value!=='frequent'&&value!=='az'&&value!=='za'){flash('Unknown table sort.');return;}
-      book.tableManagerSort=value;changed('Sort tables',false);renderStatus();picker.refresh();
+      book.tableManagerSort=value;changed('Sort tables',false,false,capturePatch(book,[['tableManagerSort']]));renderStatus();picker.refresh();
     };
     d.querySelector<HTMLButtonElement>('#create-table')!.onclick=()=>{d.close();openCreateTable();};
   });
@@ -1746,6 +1853,11 @@ function openGroups():void {
   if(!commitDraft())return;
   groupManager?.close();document.querySelector('dialog')?.remove();
   const id=sheetId,panel=document.createElement('aside'),controller=new AbortController();let located:string|undefined;
+  const cards=new Map<string,HTMLElement>(),cached=new Map<string,{signature:string;html:string}>();
+  let structureSignature='',structureVersion=0,refreshNumber=0;
+  let observer:IntersectionObserver|undefined;
+  let hydrateFocus:((el:HTMLElement)=>void)|undefined;
+  panel.addEventListener('focusin',e=>{const el=(e.target as HTMLElement).closest<HTMLElement>('[data-group-card]');if(el)hydrateFocus?.(el);},{signal:controller.signal});
   panel.className='dialog-surface group-manager';panel.setAttribute('role','dialog');panel.setAttribute('aria-labelledby','group-manager-title');
   const affected=(g:Sheet['groups'][number],s:Sheet)=>new Set(g.kind==='summary'?g.members:outlineMembers(g,s.groups));
   const coordinates=(g:Sheet['groups'][number],s:Sheet,effective=true)=>{
@@ -1761,42 +1873,90 @@ function openGroups():void {
     });
     root.querySelectorAll<HTMLElement>('.grid [data-group-id]').forEach(el=>el.classList.toggle('group-located',el.dataset.groupId===located));
   };
-  const close=()=>{controller.abort();panel.remove();located=undefined;paint();groupManager=undefined;};
+  const close=()=>{refreshNumber++;controller.abort();observer?.disconnect();panel.remove();located=undefined;paint();groupManager=undefined;};
   const refresh=()=>{
     const s=allSheets(book).find(s=>s.id===id);if(!s||sheetId!==id){close();return;}
+    const refreshVersion=++refreshNumber;
     const owner=scopedSelectionTable(),local=tableSelectionMode||!!owner,visibleGroups=s.groups.filter(group=>!local||group.table===owner?.id);
     const focus=panel.contains(document.activeElement)?(document.activeElement as HTMLElement).dataset:undefined;
     const scroll=panel.querySelector('.group-card-list')?.scrollTop??0;
+    const allRows=s.rows.map((r,i)=>({...r,i})),allColumns=s.columns.map((c,i)=>({...c,i}));
+    const tables=new Map(allTables(book).filter(t=>t.sheet===s.id).map(t=>[t.id,t]));
+    const layouts=new Map([...tables.values()].map(t=>{
+      const rows=new Set([t.header,...t.rows]),columns=new Set(t.columns.map(c=>c.column));
+      return[t.id,{rows:allRows.filter(r=>rows.has(r.id)),columns:allColumns.filter(c=>columns.has(c.id))}] as const;
+    }));
+    const shape=JSON.stringify([s.name,s.groups.map(g=>[g.id,g.axis,g.table,g.kind,g.members]),s.rows.map(r=>r.id),s.columns.map(c=>c.id),[...tables.values()]]);
+    if(shape!==structureSignature){structureSignature=shape;structureVersion++;}
     const preview=(g:Sheet['groups'][number])=>{
-      const owner=allTables(book).find(t=>t.id===g.table&&t.sheet===s.id);
-      const members=affected(g,s),allRows=s.rows.map((r,i)=>({...r,i})).filter(r=>!g.table||!!owner&&(r.id===owner.header||owner.rows.includes(r.id))),allColumns=s.columns.map((c,i)=>({...c,i})).filter(c=>!g.table||owner?.columns.some(field=>field.column===c.id));
+      const members=affected(g,s),layout=g.table?layouts.get(g.table):{rows:allRows,columns:allColumns};
       const sample=<T,>(items:T[]):T[]=>items.length>4?[...items.slice(0,3),items.at(-1)!]:items;
-      const rows=g.axis==='row'?sample(allRows.filter(r=>members.has(r.id))):allRows.slice(0,3),columns=g.axis==='column'?sample(allColumns.filter(c=>members.has(c.id))):allColumns.slice(0,3);
-      return `<div class="group-cell-preview"><table aria-label="${esc(coordinates(g,s))} cell preview"><thead><tr><th>Row</th>${columns.map(c=>`<th class="${g.kind==='summary'&&g.axis==='column'&&c.id===g.members[0]?'preview-summary':''}">${letters(c.i)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr class="${g.kind==='summary'&&g.axis==='row'&&r.id===g.members[0]?'preview-summary':''}"><th>${r.i+1}</th>${columns.map(c=>`<td class="${g.kind==='summary'&&g.axis==='column'&&c.id===g.members[0]?'preview-summary':''}" title="${esc(cellText(getCell(s,r.id,c.id),s,r.i,c.i))}">${esc(cellText(getCell(s,r.id,c.id),s,r.i,c.i))||'<span class="muted">(blank)</span>'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+      const rows=g.axis==='row'?sample((layout?.rows??[]).filter(r=>members.has(r.id))):(layout?.rows??[]).slice(0,3),columns=g.axis==='column'?sample((layout?.columns??[]).filter(c=>members.has(c.id))):(layout?.columns??[]).slice(0,3);
+      return `<div class="group-cell-preview"><table class="spreadsheet-grid" aria-label="${esc(coordinates(g,s))} cell preview"><thead><tr><th>Row</th>${columns.map(c=>`<th class="${g.kind==='summary'&&g.axis==='column'&&c.id===g.members[0]?'preview-summary':''}">${letters(c.i)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr class="${g.kind==='summary'&&g.axis==='row'&&r.id===g.members[0]?'preview-summary':''}"><th>${r.i+1}</th>${columns.map(c=>{const value=cellText(getCell(s,r.id,c.id),s,r.i,c.i);return`<td class="${g.kind==='summary'&&g.axis==='column'&&c.id===g.members[0]?'preview-summary':''}" title="${esc(value)}">${esc(value)||'<span class="muted">(blank)</span>'}</td>`;}).join('')}</tr>`).join('')}</tbody></table></div>`;
     };
-    panel.innerHTML=`<div class="dialog-heading"><h1 class="dialog-title" id="group-manager-title">Groups on ${esc(s.name)}</h1><button type="button" class="close" aria-label="Close group manager">${toolbarIcon('close')}</button></div>
+    if(!panel.firstChild)panel.innerHTML=`<div class="dialog-heading"><h1 class="dialog-title" id="group-manager-title"></h1><button type="button" class="close" aria-label="Close group manager">${toolbarIcon('close')}</button></div>
       <div class="group-type-guide"><p><strong>Summary group</strong> keeps its summary row/column visible and hides the details.</p><p><strong>Plain group</strong> hides all its members. A selected summary also hides its entire group.</p></div>
       <div class="group-create-controls">${(['summary','range'] as const).map(kind=>`<div><strong>${kind==='summary'?'Summary':'Plain'}</strong>${(['row','column'] as const).map(axis=>`<button data-create-kind="${kind}" data-create-axis="${axis}">${axis==='row'?'Group selected rows':'Group selected columns'}</button>`).join('')}</div>`).join('')}</div>
-      <button id="ungroup-all-plain" ${(local?visibleGroups.some(group=>group.kind!=='summary'):allSheets(book).some(s=>s.groups.some(g=>g.kind!=='summary')))?'':'disabled'}>Ungroup all plain groups (${local?owner?esc(owner.name):'this sheet':'workbook'})</button>
-      <div class="group-card-list">${visibleGroups.length?visibleGroups.map(g=>{
+      <button id="ungroup-all-plain"></button><div class="group-card-list"></div>`;
+    panel.querySelector('#group-manager-title')!.textContent=`Groups on ${s.name}`;
+    const ungroup=panel.querySelector<HTMLButtonElement>('#ungroup-all-plain')!;
+    ungroup.disabled=!(local?visibleGroups.some(group=>group.kind!=='summary'):allSheets(book).some(s=>s.groups.some(g=>g.kind!=='summary')));
+    ungroup.textContent=`Ungroup all plain groups (${local?owner?.name??'this sheet':'workbook'})`;
+    const list=panel.querySelector<HTMLElement>('.group-card-list')!;
+    const cardHtml=(g:Group)=>{
         const summary=g.kind==='summary',rootAt=(g.axis==='row'?s.rows:s.columns).findIndex(item=>item.id===g.members[0]),count=affected(g,s).size;
-        const owner=g.table?allTables(book).find(t=>t.id===g.table):undefined;
-        return `<section class="group-card ${located===g.id?'located':''}" data-group-card="${g.id}"><div class="group-card-heading"><strong>${summary?'Summary group':'Plain group'} · ${g.table?`Table: ${esc(owner?.name??'(removed)')}`:'Sheet'}</strong><span>${esc(coordinates(g,s))}</span></div>
+        const owner=g.table?tables.get(g.table):undefined;
+        return `<div class="group-card-heading"><strong>${summary?'Summary group':'Plain group'} · ${g.table?`Table: ${esc(owner?.name??'(removed)')}`:'Sheet'}</strong><span>${esc(coordinates(g,s))}</span></div>
           <p>${summary?`Summary ${g.axis} ${g.axis==='row'?rootAt+1:letters(rootAt)} stays visible; ${Math.max(0,count-1)} detail${count===2?'':'s'} ${g.collapsed?'hidden':'shown'}.`:`All ${count} ${g.axis}${count===1?'':'s'} ${g.collapsed?'hidden':'shown'}.${count>g.members.length?` Selected ${esc(coordinates(g,s,false).toLowerCase())} includes a summary and its details.`:''}`}</p>
-          ${preview(g)}<div class="group-card-actions"><button data-locate="${g.id}">Locate on sheet</button><button data-toggle="${g.id}">${g.collapsed?'Show':'Hide'} ${summary?'details':'group'}</button><button data-ungroup="${g.id}">Ungroup</button></div></section>`;
-      }).join(''):'<p>No groups on this sheet. Select rows or columns on the sheet, then choose Summary or Plain above.</p>'}</div>`;
+          ${preview(g)}<div class="group-card-actions"><button data-locate="${g.id}">Locate on sheet</button><button data-toggle="${g.id}">${g.collapsed?'Show':'Hide'} ${summary?'details':'group'}</button><button data-ungroup="${g.id}">Ungroup</button></div>`;
+    };
+    const show=(el:HTMLElement,g:Group)=>{
+      const signature=JSON.stringify([displayedVersion,structureVersion,g]);
+      let prior=cached.get(g.id);
+      const changed=prior?.signature!==signature;
+      if(changed){prior={signature,html:cardHtml(g)};cached.set(g.id,prior);}
+      if(changed||el.dataset.lazy!=='false')el.innerHTML=prior!.html;
+      el.dataset.lazy='false';el.classList.toggle('located',located===g.id);
+    };
+    hydrateFocus=el=>{const g=s.groups.find(g=>g.id===el.dataset.groupCard);if(g)show(el,g);};
+    observer?.disconnect();
+    observer=new IntersectionObserver(entries=>{
+      if(refreshVersion!==refreshNumber)return;
+      for(const entry of entries){
+        const el=entry.target as HTMLElement,g=s.groups.find(g=>g.id===el.dataset.groupCard);if(!g)continue;
+        if(entry.isIntersecting)show(el,g);
+        else if(!el.contains(document.activeElement)&&visibleGroups.length>20){
+          el.style.minHeight=`${entry.boundingClientRect.height}px`;el.replaceChildren();el.dataset.lazy='true';
+        }
+      }
+    },{root:list,rootMargin:'200px'});
+    const ids=new Set(visibleGroups.map(g=>g.id));
+    for(const [id,el]of cards)if(!ids.has(id)){el.remove();cards.delete(id);cached.delete(id);}
+    if(!visibleGroups.length){list.textContent='No groups on this sheet. Select rows or columns on the sheet, then choose Summary or Plain above.';}
+    else{
+      if(!cards.size)list.replaceChildren();
+      visibleGroups.forEach((g,i)=>{
+        let el=cards.get(g.id);
+        if(!el){el=document.createElement('section');el.className='group-card';el.tabIndex=0;el.dataset.groupCard=g.id;el.dataset.lazy='true';el.setAttribute('aria-label',g.label);cards.set(g.id,el);}
+        if(list.children[i]!==el)list.insertBefore(el,list.children[i]??null);
+        if(visibleGroups.length<=20||i<4&&scroll===0||el.dataset.lazy==='false')show(el,g);
+        observer!.observe(el);
+      });
+    }
     panel.querySelector<HTMLButtonElement>('.close')!.onclick=close;
     panel.querySelector<HTMLButtonElement>('#ungroup-all-plain')!.onclick=()=>{void action('ungroup-plain');};
     panel.querySelectorAll<HTMLButtonElement>('[data-create-kind]').forEach(el=>el.onclick=()=>groupSelected(false,el.dataset.createAxis as 'row'|'column',el.dataset.createKind as 'summary'|'range'));
-    panel.querySelectorAll<HTMLButtonElement>('[data-toggle]').forEach(el=>el.onclick=()=>{if(!commitDraft())return;mutate('Toggle group',()=>{const g=sheet().groups.find(g=>g.id===el.dataset.toggle)!;g.collapsed=!g.collapsed;});});
-    panel.querySelectorAll<HTMLButtonElement>('[data-ungroup]').forEach(el=>el.onclick=()=>{if(!commitDraft())return;mutate('Ungroup',()=>{sheet().groups=sheet().groups.filter(g=>g.id!==el.dataset.ungroup);});});
-    panel.querySelectorAll<HTMLButtonElement>('[data-locate]').forEach(el=>el.onclick=()=>{
-      if(!commitDraft())return;located=el.dataset.locate;
+    list.onclick=e=>{
+      const el=(e.target as HTMLElement).closest<HTMLButtonElement>('button');
+      if(!el||!commitDraft())return;
+      if(el.dataset.toggle){const g=sheet().groups.find(g=>g.id===el.dataset.toggle)!;mutateMetadata('Toggle group',()=>{g.collapsed=!g.collapsed;},[[...sheetPath(),'groups',sheet().groups.indexOf(g),'collapsed']]);return;}
+      if(el.dataset.ungroup){mutateMetadata('Ungroup',()=>{sheet().groups=sheet().groups.filter(g=>g.id!==el.dataset.ungroup);},[[...sheetPath(),'groups']]);return;}
+      if(!el.dataset.locate)return;located=el.dataset.locate;
       const g=sheet().groups.find(g=>g.id===located)!,members=affected(g,sheet());
       if(g.axis==='row'){scrollTarget=Math.min(...sheet().rows.map((r,i)=>members.has(r.id)?i:Infinity));render();}
       else{refresh();const positions=sheet().columns.map((c,i)=>members.has(c.id)?i:-1).filter(i=>i>=0),th=root.querySelector<HTMLElement>(`th[data-col="${Math.min(...positions)}"]`)??root.querySelector<HTMLElement>(`.grid [data-group-id="${g.id}"]`);th?.scrollIntoView({block:'nearest',inline:'start'});}
       paint();
-    });
+    };
     panel.querySelector('.group-card-list')!.scrollTop=scroll;
     if(focus){const attr=focus.toggle?'data-toggle':focus.ungroup?'data-ungroup':focus.locate?'data-locate':undefined;if(attr)panel.querySelector<HTMLButtonElement>(`[${attr}="${focus.toggle??focus.ungroup??focus.locate}"]`)?.focus({preventScroll:true});}
     paint();
@@ -1836,7 +1996,7 @@ function groupSelected(remove=false,axis?:'row'|'column',kind:'summary'|'range'=
   }
   const s=sheet(),b=bounds(),{members,targets}=groupingSelection(kind,axis);
   const chosen=new Set(members),groups=s.groups.filter(g=>g.table===selectionScope&&g.axis===axis&&(g.kind??'range')===kind),exact=groups.find(g=>g.members.length===chosen.size&&g.members.every(id=>chosen.has(id)));
-  mutate(remove?'Ungroup selection':'Group selection',()=>{
+  mutateMetadata(remove?'Ungroup selection':'Group selection',()=>{
     if(!members.length)throw Error('Select rows or columns to group.');
     if(!remove){
       if(exact)throw Error('That selection is already grouped.');
@@ -1845,7 +2005,7 @@ function groupSelected(remove=false,axis?:'row'|'column',kind:'summary'|'range'=
     }
     if(!targets.length)throw Error('No complete or containing group matches this selection.');
     const ids=new Set(targets.map(g=>g.id));s.groups=s.groups.filter(g=>!ids.has(g.id));
-  });
+  },[[...sheetPath(s),'groups']]);
 }
 function openBlock():void {
   const s=sheet(),t=tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??allTables(book).find(t=>t.sheet===s.id);
@@ -1980,26 +2140,37 @@ function openDropdownAssignment():void{
     dialog('Dropdowns for selection',`${sourcePickerControlsHtml}<form>${sourcePickerBodyHtml}<div class="dropdown-assignment-footer"><button type="button" id="no-dropdown">No dropdown</button><span id="dropdown-selected-count" role="status"></span><button class="primary">Apply dropdown</button></div><p id="dropdown-assignment-error" class="dropdown-source-error" role="alert" hidden></p></form>`,d=>{
       d.classList.add('dropdown-assignment');
       const cards=d.querySelector<HTMLElement>('#dropdown-source-cards')!,previews=new Map<string,{choices:string[];error?:string}>();
+      let observer:IntersectionObserver|undefined;
+      d.addEventListener('close',()=>observer?.disconnect(),{once:true});
       const sync=()=>{cards.querySelectorAll<HTMLInputElement>('input').forEach(input=>input.checked=selectedSources.has(input.value));d.querySelector('#dropdown-selected-count')!.textContent=`${selectedSources.size} selected`;d.querySelector('#no-dropdown')!.setAttribute('aria-pressed',String(!selectedSources.size));};
-      const setView=(grid:boolean,query:string)=>{
+      const setView=(grid:boolean,query:string,page:SourcePage)=>{
+        observer?.disconnect();
         cards.replaceChildren();
-        const visible=options.filter(o=>o.label.toLowerCase().includes(query)),ordered:typeof options=[];
-        for(const option of visible)if(!ordered.includes(option))ordered.push(...(option.group?visible.filter(o=>o.group?.toLowerCase()===option.group!.toLowerCase()):[option]));
-        let group='';
-        for(const option of ordered){
-          if(!grid&&option.group&&option.group!==group){const heading=document.createElement('div');heading.className='dropdown-source-group';heading.textContent=option.group;cards.append(heading);}group=option.group??'';
-          const card=document.createElement('label');card.className=grid?'dropdown-source-card':'dropdown-source-row';const check=document.createElement('input');check.type='checkbox';check.value=option.value;check.checked=selectedSources.has(option.value);check.setAttribute('aria-label',option.label);
-          const title=document.createElement('strong');title.textContent=grid?option.label:option.displayLabel??option.label;card.append(check,title);
+        const visible=options.filter(o=>o.label.toLowerCase().includes(query)),ordered:typeof options=[],groups=new Map<string,typeof options>(),seen=new Set<string>();
+        for(const option of visible)if(option.group){const key=option.group.toLowerCase();let entries=groups.get(key);if(!entries)groups.set(key,entries=[]);entries.push(option);}
+        for(const option of visible)if(!option.group)ordered.push(option);else if(!seen.has(option.group.toLowerCase())){seen.add(option.group.toLowerCase());ordered.push(...groups.get(option.group.toLowerCase())!);}
+        const hydrate=(card:HTMLElement,check:HTMLInputElement,option:typeof options[number])=>{
           if(!previews.has(option.value))try{
             if(option.error||!option.ast)throw Error(option.error??'This source is unavailable.');
             const preview=validationChoices(book,{id:'preview',rows:scope.rows,columns:scope.columns,sheet:s.id,source:JSON.stringify(option.ast)},scope.rows[0],scope.columns[0],engine).choices.slice(0,4);
             previews.set(option.value,{choices:preview.map(c=>c.value===''?'(Blank)':c.value===' '?'(Space)':c.value)});
           }catch(e){previews.set(option.value,{choices:[],error:String(e)});}
-          const preview=previews.get(option.value)!;
-          if(preview.error){check.disabled=!selectedSources.has(option.value);check.dataset.unavailable='true';const error=document.createElement('span');error.className='dropdown-source-error';error.textContent=preview.error;card.append(error);}
-          else if(grid){const list=document.createElement('ul');for(const value of preview.choices.length?preview.choices:['No available options']){const item=document.createElement('li');item.textContent=value;list.append(item);}card.append(list);}
-          else{const values=document.createElement('span');values.className='dropdown-source-row-preview';values.textContent=preview.choices.join(' · ')||'No available options';card.append(values);}
+          const preview=previews.get(option.value)!;card.querySelector('[data-source-preview]')?.remove();
+          if(preview.error){check.disabled=!selectedSources.has(option.value);check.dataset.unavailable='true';const error=document.createElement('span');error.className='dropdown-source-error';error.textContent=preview.error;error.dataset.sourcePreview='';card.append(error);}
+          else if(grid){const list=document.createElement('ul');list.dataset.sourcePreview='';for(const value of preview.choices.length?preview.choices:['No available options']){const item=document.createElement('li');item.textContent=value;list.append(item);}card.append(list);}
+          else{const values=document.createElement('span');values.className='dropdown-source-row-preview';values.dataset.sourcePreview='';values.textContent=preview.choices.join(' · ')||'No available options';card.append(values);}
+          card.removeAttribute('aria-busy');
+        };
+        const waiting=new Map<Element,()=>void>();
+        observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){waiting.get(entry.target)?.();waiting.delete(entry.target);observer!.unobserve(entry.target);}},{root:cards,rootMargin:'100px'});
+        let group='';
+        for(const option of page(ordered)){
+          if(!grid&&option.group&&option.group!==group){const heading=document.createElement('div');heading.className='dropdown-source-group';heading.textContent=option.group;cards.append(heading);}group=option.group??'';
+          const card=document.createElement('label');card.className=grid?'dropdown-source-card':'dropdown-source-row';const check=document.createElement('input');check.type='checkbox';check.value=option.value;check.checked=selectedSources.has(option.value);check.setAttribute('aria-label',option.label);
+          const title=document.createElement('strong');title.textContent=grid?option.label:option.displayLabel??option.label;card.append(check,title);
           check.onchange=()=>{if(check.checked)selectedSources.add(option.value);else selectedSources.delete(option.value);if(check.dataset.unavailable)check.disabled=!check.checked;sync();};cards.append(card);
+          if(visible.length<=10||previews.has(option.value))hydrate(card,check,option);
+          else{card.setAttribute('aria-busy','true');const pending=document.createElement('span');pending.dataset.sourcePreview='';pending.className='dropdown-source-row-preview';pending.textContent='Loading preview…';card.append(pending);waiting.set(card,()=>hydrate(card,check,option));observer.observe(card);}
         }
         if(!visible.length){const empty=document.createElement('p');empty.className='muted';empty.textContent='No matching sources';cards.append(empty);}sync();
       };
@@ -2040,7 +2211,8 @@ function paintMoving():void{
   if(!movingRows&&!movingColumns)clearMovePreview();else paintMovePreview();
 }
 function clearMovePreview():void{
-  movePreview=undefined;root.querySelector('.move-drop-guide')?.remove();
+  cancelAnimationFrame(movePaintFrame);movePaintFrame=0;
+  movePreview=undefined;boundaryPreview=undefined;root.querySelector('.move-drop-guide')?.remove();
   root.querySelectorAll<HTMLElement>('.group-drop-target').forEach(el=>{el.classList.remove('group-drop-target');delete el.dataset.dropGroup;});
 }
 function bindMoveBoundaryPreview(el:HTMLElement,axis:'row'|'column',boundary:number,index:number,after:boolean):void{
@@ -2049,11 +2221,16 @@ function bindMoveBoundaryPreview(el:HTMLElement,axis:'row'|'column',boundary:num
 }
 function showMovePreview(axis:'row'|'column',boundary:number,index:number,after:boolean):void{
   const ids=axis==='row'?movingRows:movingColumns;if(!ids)return;
+  if(boundaryPreview?.axis===axis&&boundaryPreview.ids===ids&&boundaryPreview.generation===generation&&boundaryPreview.boundary===boundary&&boundaryPreview.index===index&&boundaryPreview.after===after){scheduleMovePaint();return;}
+  boundaryPreview={axis,boundary,index,after,generation,ids};
   try{
     const group=moveTargetGroups(sheet(),axis,ids,boundary,axis==='row'?gridReference()?.table:undefined).filter(g=>g.collapsed).sort((a,b)=>a.members.length-b.members.length)[0];
     if(group){showGroupMovePreview(axis,group.id);return;}
   }catch(error){clearMovePreview();flash(error);return;}
-  movePreview={axis,boundary,index,after};paintMovePreview();
+  movePreview={axis,boundary,index,after};scheduleMovePaint();
+}
+function scheduleMovePaint():void{
+  if(!movePaintFrame)movePaintFrame=requestAnimationFrame(()=>{movePaintFrame=0;paintMovePreview();});
 }
 function moveGroupAt(element:Element,axis:'row'|'column',x:number,y:number):string|undefined{
   const s=sheet(),button=element.closest<HTMLElement>('.group-control[data-group-id]');
@@ -2073,12 +2250,14 @@ function moveGroupAt(element:Element,axis:'row'|'column',x:number,y:number):stri
 }
 function showGroupMovePreview(axis:'row'|'column',groupId:string):void{
   const ids=axis==='row'?movingRows:movingColumns;if(!ids)return;
+  if(movePreview?.axis===axis&&movePreview.groupId===groupId&&previewGeneration===generation){scheduleMovePaint();return;}
+  previewGeneration=generation;
   try{
     const group=sheet().groups.find(group=>group.id===groupId),owner=scopedSelectionTable();
     if(owner&&group?.table!==owner.id)throw Error('Move members within the selected table. Other table and sheet groups remain separate.');
     const scope=owner??allTables(book).find(table=>table.id===group?.table);
     if(scope&&ids.some(id=>!(axis==='row'?scope.rows:scope.columns.map(field=>field.column)).includes(id)))throw Error('Select only members of the destination table.');
-    const target=groupMoveTarget(scope?{...sheet(),groups:sheet().groups.filter(group=>group.table===scope.id)}:sheet(),axis,ids,groupId,scope??(axis==='row'?gridReference()?.table:undefined));movePreview={axis,groupId,boundary:target.boundary,index:0,after:false};paintMovePreview();
+    const target=groupMoveTarget(scope?{...sheet(),groups:sheet().groups.filter(group=>group.table===scope.id)}:sheet(),axis,ids,groupId,scope??(axis==='row'?gridReference()?.table:undefined));movePreview={axis,groupId,boundary:target.boundary,index:0,after:false};scheduleMovePaint();
   }
   catch(error){clearMovePreview();flash(error);}
 }
@@ -2182,20 +2361,25 @@ function insertDimensions(axis:'row'|'column',boundary:number):void{
     });
   }
   function finishResize(commit:boolean):void{
+    cancelAnimationFrame(resizePaintFrame);resizePaintFrame=0;
     const resize=resizing;if(!resize)return;resizing=undefined;
     if(resize.capture.hasPointerCapture(resize.pointer))resize.capture.releasePointerCapture(resize.pointer);
     if(resize.start===resize.size)return;
     if(!commit){render();return;}
     const s=allSheets(book).find(s=>s.id===resize.sheet)!;
-    mutate(`Resize ${resize.axis}`,()=>{
+    mutateMetadata(`Resize ${resize.axis}`,()=>{
       if(resize.axis==='column'){s.columns.find(c=>c.id===resize.id)!.width=resize.size;measuredRowHeights.clear();}
       else{s.rows.find(r=>r.id===resize.id)!.height=resize.size*3/4;measuredRowHeights.delete(resize.id);}
       renderedTarget=`${sheetId}:${selected.r}`;
-    });
+    },[[...sheetPath(s),resize.axis==='column'?'columns':'rows',(resize.axis==='column'?s.columns:s.rows).findIndex(item=>item.id===resize.id),resize.axis==='column'?'width':'height']]);
   }
   root.addEventListener('pointermove',e=>{
     const resize=resizing;if(!resize||resize.pointer!==e.pointerId)return;e.preventDefault();
     resize.size=Math.max(resize.axis==='column'?24:20,Math.round(resize.start+(resize.axis==='column'?e.clientX:e.clientY)-resize.position));
+    if(!resizePaintFrame)resizePaintFrame=requestAnimationFrame(()=>{resizePaintFrame=0;paintResize();});
+  });
+  function paintResize():void{
+    const resize=resizing;if(!resize)return;
     const s=sheet(),at=resize.axis==='column'?s.columns.findIndex(c=>c.id===resize.id):s.rows.findIndex(r=>r.id===resize.id);
     if(resize.axis==='row'){
       const row=root.querySelector<HTMLElement>(`tr[data-row="${at}"]`);row?.style.setProperty('--row-height',resize.size+'px');
@@ -2207,7 +2391,7 @@ function insertDimensions(axis:'row'|'column',boundary:number):void{
         header.style.left=left+'px';root.querySelectorAll<HTMLElement>(`td[data-c="${header.dataset.col}"]`).forEach(td=>td.style.left=left+'px');left+=Number(header.dataset.col)===at?resize.size:s.columns[Number(header.dataset.col)].width??145;
       }
     }
-  });
+  }
   root.addEventListener('pointerup',e=>{if(resizing?.pointer===e.pointerId)finishResize(true);});
   root.addEventListener('pointercancel',e=>{if(resizing?.pointer===e.pointerId)finishResize(false);});
   function autoFit(axis:'column'|'row',index:number):void{
@@ -2217,23 +2401,27 @@ function insertDimensions(axis:'row'|'column',boundary:number):void{
     engine.beginPass();
     const font=(cell:Cell,header:boolean)=>`${cell.format?.italic?'italic ':''}${cell.format?.bold?'700':header?'600':'400'} ${style.fontSize} ${style.fontFamily}`;
     let size=axis==='column'?24:33;
+    const widths=new Map<string,number>(),probes:HTMLElement[]=[];
     const measure=document.createElement('div');measure.style.cssText='position:fixed;left:-100000px;top:0;visibility:hidden;box-sizing:border-box;padding:6px 10px;border:1px solid transparent;overflow-wrap:anywhere;';
     document.body.append(measure);
     try{
-      const rows=axis==='row'?[index]:s.rows.map((r,i)=>!view||view.rows.includes(r.id)?i:-1).filter(i=>i>=0);
-      const columns=axis==='column'?[index]:s.columns.map((c,i)=>!view||view.columns.includes(c.id)?i:-1).filter(i=>i>=0);
+      const visibleRows=view&&new Set(view.rows),visibleColumns=view&&new Set(view.columns);
+      const rows=axis==='row'?[index]:s.rows.map((r,i)=>!visibleRows||visibleRows.has(r.id)?i:-1).filter(i=>i>=0);
+      const columns=axis==='column'?[index]:s.columns.map((c,i)=>!visibleColumns||visibleColumns.has(c.id)?i:-1).filter(i=>i>=0);
+      const headers=new Set(allTables(book).filter(t=>t.sheet===s.id).flatMap(t=>t.columns.map(col=>key(t.header,col.column))));
       for(const r of rows)for(const c of columns){
-        const cell=getCell(s,s.rows[r].id,s.columns[c].id),text=cellText(cell,s,r,c),header=allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[r].id&&t.columns.some(col=>col.column===s.columns[c].id));
+        const cell=getCell(s,s.rows[r].id,s.columns[c].id),text=cellText(cell,s,r,c),header=headers.has(key(s.rows[r].id,s.columns[c].id));
         if(axis==='column'){
           context.font=font(cell,header);
           const lines=cell.format?.wrap?text.split(/\r?\n/):[text.replace(/[ \t\r\n\f]+/g,' ')];
-          for(const line of lines)size=Math.max(size,Math.ceil(context.measureText(line).width+22));
+          for(const line of lines){const k=JSON.stringify([context.font,line]);let width=widths.get(k);if(width===undefined){width=context.measureText(line).width;widths.set(k,width);}size=Math.max(size,Math.ceil(width+22));}
         }else{
-          measure.style.font=font(cell,header);measure.style.whiteSpace=cell.format?.wrap?'pre-wrap':'nowrap';measure.style.width=(s.columns[c].width??145)+'px';measure.textContent=text;size=Math.max(size,Math.ceil(measure.getBoundingClientRect().height));
+          const probe=measure.cloneNode() as HTMLElement;probe.style.font=font(cell,header);probe.style.whiteSpace=cell.format?.wrap?'pre-wrap':'nowrap';probe.style.width=(s.columns[c].width??145)+'px';probe.textContent=text;probes.push(probe);
         }
+        if(probes.length){measure.append(...probes);for(const probe of probes)size=Math.max(size,Math.ceil(probe.getBoundingClientRect().height));}
       }
       if(!Number.isFinite(size))throw Error('The measured size is invalid.');
-      mutate(`Auto-fit ${axis}`,()=>{if(axis==='column'){s.columns[index].width=size;measuredRowHeights.clear();}else{s.rows[index].height=size*3/4;measuredRowHeights.delete(s.rows[index].id);}renderedTarget=`${sheetId}:${selected.r}`;});
+      mutateMetadata(`Auto-fit ${axis}`,()=>{if(axis==='column'){s.columns[index].width=size;measuredRowHeights.clear();}else{s.rows[index].height=size*3/4;measuredRowHeights.delete(s.rows[index].id);}renderedTarget=`${sheetId}:${selected.r}`;},[[...sheetPath(s),axis==='column'?'columns':'rows',index,axis==='column'?'width':'height']]);
     }catch(e){flash(e);}finally{measure.remove();}
   }
 const selectedTabs=new Set<string>();let tabSelectionAnchor:string|undefined;
@@ -2282,7 +2470,7 @@ function bindTabs():void{
       if(!commitDraft())return;const group=button.dataset.sheetGroup!;
       selectedTabs.clear();for(const sheet of book.sheets)if(book.sheetTabGroups?.[sheet.id]===group)selectedTabs.add(sheet.id);
       book.sheetTabCollapsed=book.sheetTabCollapsed?.includes(group)?book.sheetTabCollapsed.filter(name=>name!==group):[...book.sheetTabCollapsed??[],group];
-      changed('Toggle visual sheet group',false);render();
+      changed('Toggle visual sheet group',false,false,capturePatch(book,[['sheetTabCollapsed']]));render();
     };
     button.ondblclick=()=>openSheetTabSettings(book.sheets.filter(sheet=>book.sheetTabGroups?.[sheet.id]===button.dataset.sheetGroup).map(sheet=>sheet.id));
     button.oncontextmenu=e=>{e.preventDefault();openSheetTabSettings(book.sheets.filter(sheet=>book.sheetTabGroups?.[sheet.id]===button.dataset.sheetGroup).map(sheet=>sheet.id));};
@@ -2297,7 +2485,7 @@ function bindTabs():void{
     el.onclick=e=>{if((e.target as HTMLElement).closest('input')||!commitDraft())return;
       if(e.shiftKey){e.preventDefault();const visible=entries.filter(entry=>entry.getClientRects().length>0),at=visible.findIndex(entry=>token(entry)===(tabSelectionAnchor??referenceId??sheetId)),end=visible.indexOf(el);selectedTabs.clear();for(const entry of visible.slice(Math.min(at<0?end:at,end),Math.max(at<0?end:at,end)+1))selectedTabs.add(token(entry));highlight();return;}
       selectedTabs.clear();selectedTabs.add(token(el));tabSelectionAnchor=token(el);highlight();
-      if(group){const key=`dd-group-collapsed:${group.toLowerCase()}`;book.pickerSources[key]=book.pickerSources[key]==='true'?'false':'true';changed('Toggle dropdown group',false);render();}else if(reference){if(referenceId!==id)openReferences(id);}else if(sheetId!==id){
+      if(group){const key=`dd-group-collapsed:${group.toLowerCase()}`;book.pickerSources[key]=book.pickerSources[key]==='true'?'false':'true';changed('Toggle dropdown group',false,false,capturePatch(book,[['pickerSources']]));render();}else if(reference){if(referenceId!==id)openReferences(id);}else if(sheetId!==id){
         rememberView();sheetId=id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';
         let view:{scroll:number;left:number}|undefined;
         try{const saved=sessionStorage.getItem(`fnt-sheet-view:${book.id}:${id}`);if(saved)view=restoreView(undefined,saved);}catch(e){flash(e);}
@@ -2399,21 +2587,31 @@ function openFind():void {
     const within=mountSelectDropdown(field<HTMLSelectElement>('find-within'));
     mountSelectDropdown(field<HTMLSelectElement>('find-direction'));
     type Match={sid:string;row:string;column:string;r:number;c:number;value:string};
-    let matches:Match[]=[],active:string|undefined,resultPage=0,replacement='';
+    let matches:Match[]=[],active:string|undefined,resultPage=0,replacement='',searchVersion=0,searching=false;
+    let previewObserver:IntersectionObserver|undefined,painted='';
+    const searchTasks=new MessageChannel(),searchYields:(()=>void)[]=[];
+    searchTasks.port1.onmessage=()=>searchYields.shift()?.();
+    const yieldSearch=()=>new Promise<void>(resolve=>{searchYields.push(resolve);searchTasks.port2.postMessage(null);});
+    d.addEventListener('close',()=>{searchVersion++;previewObserver?.disconnect();searchYields.splice(0).forEach(resolve=>resolve());searchTasks.port1.close();searchTasks.port2.close();},{once:true});
     const identity=(m:Match)=>`${m.sid}:${m.row}:${m.column}`;
     const source=(m:Match)=>allSheets(book).find(s=>s.id===m.sid)!;
     const literal=(m:Match)=>{const cell=getCell(source(m),m.row,m.column);return !cell.formula&&!cell.binding&&typeof cell.value==='string';};
     const matcher=()=>createTextSearch(input.value,{matchCase:field<HTMLInputElement>('find-case').checked,entire:field<HTMLInputElement>('find-entire').checked});
     const feedback=(text:string,bad=false)=>{const el=field('find-feedback');el.textContent=text;el.classList.toggle('bad',bad);el.setAttribute('role',bad?'alert':'status');};
     const buttons=()=>{
-      field<HTMLButtonElement>('find-next').disabled=!matches.length;
+      field<HTMLButtonElement>('find-next').disabled=searching||!matches.length;
       field<HTMLButtonElement>('find-all').disabled=!input.value||!scopes.some(s=>s.checked);
       const current=matches.find(m=>identity(m)===active);
       const single=d.querySelector<HTMLButtonElement>('#replace-one'),multiple=d.querySelector<HTMLButtonElement>('#replace-all');
-      if(single){single.disabled=current?!literal(current):!matches.some(literal);single.title='Replaces literal text only';}
-      if(multiple)multiple.disabled=!matches.some(literal);
+      if(single){single.disabled=searching||(current?!literal(current):!matches.some(literal));single.title='Replaces literal text only';}
+      if(multiple)multiple.disabled=searching||!matches.some(literal);
     };
     const paint=()=>{
+      const signature=`${searchVersion}:${resultPage}:${displayedVersion}`;
+      if(painted===signature){
+        field('find-results').querySelectorAll<HTMLElement>('[data-find-match]').forEach(row=>row.setAttribute('aria-selected',String(identity(matches[Number(row.dataset.findMatch)])===active)));buttons();return;
+      }
+      painted=signature;previewObserver?.disconnect();
       const search=matcher(),highlight=(value:string)=>{
         let end=0,html='';
         for(const range of search.ranges(value)){html+=esc(value.slice(end,range.start))+`<span class="find-match-text">${esc(value.slice(range.start,range.end))}</span>`;end=range.end;}
@@ -2421,8 +2619,9 @@ function openFind():void {
       };
       type Preview={sheet:ReturnType<typeof source>;table:ReturnType<typeof tableAt>;start:number;items:{match:Match;index:number}[]};
       const previews=new Map<string,Preview>();
+      const owners=allTables(book).map(table=>({table,rows:new Set([table.header,...table.rows]),columns:new Set(table.columns.map(c=>c.column))}));
       matches.slice(resultPage*200,resultPage*200+200).forEach((m,j)=>{
-        const s=source(m),table=tableAt(book,s.id,m.row,m.column),start=Math.max(0,Math.min(m.c-3,s.columns.length-8)),id=`${s.id}:${table?.id??'sheet'}:${start}`;
+        const s=source(m),table=owners.find(owner=>owner.table.sheet===m.sid&&owner.rows.has(m.row)&&owner.columns.has(m.column))?.table,start=Math.max(0,Math.min(m.c-3,s.columns.length-8)),id=`${s.id}:${table?.id??'sheet'}:${start}`;
         if(!previews.has(id))previews.set(id,{sheet:s,table,start,items:[]});
         previews.get(id)!.items.push({match:m,index:resultPage*200+j});
       });
@@ -2433,40 +2632,74 @@ function openFind():void {
         const matchedColumns=new Set(items.map(({match})=>match.column)),widths=columns.map(column=>matchedColumns.has(column.id)?160:110),width=50+widths.reduce((sum,width)=>sum+width,0);
         const rows=items.map(({match:m,index})=>{
           const preview=columns.map((column,offset)=>{
-            const c=start+offset,address=`${letters(c)}${m.r+1}`,value=cellText(getCell(s,m.row,column.id),s,m.r,c),matched=column.id===m.column;
-            return`<td data-find-context="${address}" class="${matched?'find-context-match':''}" aria-label="${address}${matched?', matched cell':''}" title="${esc(value)}">${matched?highlight(value):esc(value)}</td>`;
+            const c=start+offset,address=`${letters(c)}${m.r+1}`,matched=column.id===m.column;
+            return`<td data-find-context="${address}" data-find-column="${c}" class="${matched?'find-context-match':''}" aria-label="${address}${matched?', matched cell':''}">${matched?highlight(m.value):''}</td>`;
           }).join('');
           return`<tr data-find-match="${index}" tabindex="0" aria-label="Match ${letters(m.c)}${m.r+1}" aria-selected="${identity(m)===active}"><th scope="row">${letters(m.c)}${m.r+1}</th>${preview}</tr>`;
         }).join('');
         return`${sheetHeading}${table?`<div class="find-table-header">Table: ${esc(table.name)}</div>`:''}<table class="spreadsheet-grid find-results-table find-row-results" style="--find-preview-width:${width}px" ${table?`data-find-table="${esc(table.id)}"`:''} aria-label="${esc(table?.name??s.name)} result previews"><colgroup><col style="width:50px">${widths.map(width=>`<col style="width:${width}px">`).join('')}</colgroup><thead><tr><th scope="col">Cell</th>${headers}</tr></thead><tbody>${rows}</tbody></table>`;
       }).join('');
       field('find-results').innerHTML=results;
-      field('find-count').textContent=`Results found (${matches.length})`;
+      const paintedVersion=searchVersion;
+      previewObserver=new IntersectionObserver(entries=>{
+        if(paintedVersion!==searchVersion)return;
+        for(const entry of entries)if(entry.isIntersecting){
+          const row=entry.target as HTMLElement,m=matches[Number(row.dataset.findMatch)],s=source(m);
+          row.querySelectorAll<HTMLElement>('[data-find-column]').forEach(cell=>{
+            const c=Number(cell.dataset.findColumn),value=cellText(getCell(s,m.row,s.columns[c].id),s,m.r,c);
+            cell.title=value;cell.innerHTML=s.columns[c].id===m.column?highlight(value):esc(value);
+          });previewObserver!.unobserve(row);
+        }
+      },{root:field('find-results'),rootMargin:'150px'});
+      field('find-results').querySelectorAll('[data-find-match]').forEach(row=>previewObserver!.observe(row));
+      field('find-count').textContent=searching?'Searching…':`Results found (${matches.length})`;
       d.querySelector<HTMLElement>('.find-pagination')!.hidden=matches.length<=200;
       field('find-page-count').textContent=`${resultPage*200+1}-${Math.min(matches.length,resultPage*200+200)} of ${matches.length}`;
       field<HTMLButtonElement>('find-previous-page').disabled=resultPage===0;
       field<HTMLButtonElement>('find-next-page').disabled=(resultPage+1)*200>=matches.length;
       buttons();
     };
-    const draw=(reset=true)=>{
+    const draw=async(reset=true):Promise<boolean>=>{
+      const version=++searchVersion,startedGeneration=generation;
       if(reset){active=undefined;resultPage=0;feedback('');}
-      const chosen=new Set(scopes.filter(s=>s.checked).map(s=>s.value)),search=matcher();matches=[];engine.beginPass();
+      const chosen=new Set(scopes.filter(s=>s.checked).map(s=>s.value)),search=matcher(),found:Match[]=[];
+      matches=[];searching=!!input.value;engine.beginPass();paint();
+      let slice=performance.now();
       if(input.value)for(const s of allSheets(book).filter(s=>chosen.has(s.id))){
-        const rows=new Map(s.rows.map((r,i)=>[r.id,i])),columns=new Map(s.columns.map((c,i)=>[c.id,i])),found:Match[]=[];
-        for(const [k,cell]of Object.entries(s.cells)){
+        const rows=new Map(s.rows.map((r,i)=>[r.id,i])),columns=new Map(s.columns.map((c,i)=>[c.id,i]));
+        for(const k of Object.keys(s.cells)){
+          const cell=s.cells[k];
           const [row,column]=k.split(':'),r=rows.get(row),c=columns.get(column);if(r===undefined||c===undefined)continue;
           const value=cellText(cell,s,r,c);if(value&&search.matches(value))found.push({sid:s.id,row,column,r,c,value});
+          if(performance.now()-slice>=6){
+            field('find-count').textContent=`Searching… ${found.length} matches so far`;
+            await yieldSearch();
+            if(version!==searchVersion||!d.open)return false;
+            if(startedGeneration!==generation)return draw(reset);
+            engine.beginPass();slice=performance.now();
+          }
         }
-        matches=matches.concat(found.sort((a,b)=>a.r-b.r||a.c-b.c));
       }
+      if(version!==searchVersion)return false;
+      if(input.value)for(const [address]of engine.spills){
+        const [sid,row,column]=address.split(':');if(!chosen.has(sid))continue;
+        const s=allSheets(book).find(s=>s.id===sid);if(!s||key(row,column) in s.cells)continue;
+        const r=s.rows.findIndex(r=>r.id===row),c=s.columns.findIndex(c=>c.id===column);if(r<0||c<0)continue;
+        const value=cellText(getCell(s,row,column),s,r,c);
+        if(value&&search.matches(value))found.push({sid,row,column,r,c,value});
+      }
+      const order=new Map(allSheets(book).map((s,i)=>[s.id,i]));
+      matches=found.sort((a,b)=>order.get(a.sid)!-order.get(b.sid)!||a.r-b.r||a.c-b.c);
+      searching=false;painted='';
       if(active&&!matches.some(m=>identity(m)===active))active=undefined;
       resultPage=Math.min(resultPage,Math.max(0,Math.ceil(matches.length/200)-1));paint();
       if(input.value&&!chosen.size)feedback('Select at least one sheet to search.',true);
+      return true;
     };
     const reveal=(s:ReturnType<typeof source>,rowId:string,columnId:string)=>{
       const row=s.rows.find(r=>r.id===rowId)!,column=s.columns.find(c=>c.id===columnId)!;
-      const hidden=s.groups.filter(g=>g.collapsed&&outlineMembers(g,s.groups).includes(g.axis==='row'?rowId:columnId));
-      return !row.hidden&&!column.hidden&&!hidden.length||mutate('Reveal search result',()=>{if(row.hidden)row.hidden=false;if(column.hidden)column.hidden=false;hidden.forEach(g=>g.collapsed=false);});
+      const hidden=s.groups.filter(g=>g.collapsed&&outlineMembers(g,s.groups).includes(g.axis==='row'?rowId:columnId)&&(!g.table||groupContainsCell(book,s,g,rowId,columnId)));
+      return !row.hidden&&!column.hidden&&!hidden.length||mutateMetadata('Reveal search result',()=>{if(row.hidden)row.hidden=false;if(column.hidden)column.hidden=false;hidden.forEach(g=>g.collapsed=false);},[[...sheetPath(s),'rows',s.rows.indexOf(row),'hidden'],[...sheetPath(s),'columns',s.columns.indexOf(column),'hidden'],...hidden.map(g=>[...sheetPath(s),'groups',s.groups.indexOf(g),'collapsed'])]);
     };
     const go=(index:number)=>{
       const m=matches[index];if(!m)return;
@@ -2475,14 +2708,15 @@ function openFind():void {
       d.querySelector<HTMLElement>(`[data-find-match="${index}"]`)?.scrollIntoView({block:'nearest'});
     };
     const next=()=>{
+      if(searching){feedback('Searching… wait for the complete results.');return;}
       if(!matches.length)return;
       const up=field<HTMLSelectElement>('find-direction').value==='up',current=matches.findIndex(m=>identity(m)===active);
       if(current>=0){go((current+(up?-1:1)+matches.length)%matches.length);return;}
       const order=allSheets(book).findIndex(s=>s.id===sheetId),after=(m:Match)=>allSheets(book).findIndex(s=>s.id===m.sid)-order||m.r-selected.r||m.c-selected.c;
       const index=up?matches.reduce((last,m,i)=>after(m)<0?i:last,-1):matches.findIndex(m=>after(m)>0);go(index<0?(up?matches.length-1:0):index);
     };
-    const replace=(every:boolean)=>{
-      draw(false);if(!every&&!active)next();
+    const replace=async(every:boolean)=>{
+      if(!await draw(false))return;if(!every&&!active)next();
       const targets=every?matches:matches.filter(m=>identity(m)===active),editable=targets.filter(literal),search=matcher();let changed=0;
       if(!editable.length){feedback('Only literal text can be replaced. Formula and linked cells are unchanged.',true);return;}
       if(!mutate('Replace literal text',()=>{for(const m of editable){
@@ -2492,7 +2726,7 @@ function openFind():void {
         if(table)renameColumn(book,table,table.columns.find(c=>c.column===m.column)!.id,value);
         else s.cells[key(m.row,m.column)]={...cell,value};changed++;
       }})){feedback(error,true);return;}
-      draw(false);feedback(`${changed} literal cell${changed===1?'':'s'} replaced.${targets.length>editable.length?` ${targets.length-editable.length} other results left unchanged.`:''}`);
+      if(await draw(false))feedback(`${changed} literal cell${changed===1?'':'s'} replaced.${targets.length>editable.length?` ${targets.length-editable.length} other results left unchanged.`:''}`);
     };
     field('replace-fields').innerHTML=`<label id="replace-label">Replace with<input id="replace-text"></label>`;
     field('replace-actions').innerHTML='<button id="replace-one">Replace</button><button id="replace-all">Replace all</button>';

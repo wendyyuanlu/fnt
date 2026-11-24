@@ -75,6 +75,42 @@ Set `FNT_CPU_RATE=4` in the environment for a CPU-throttled comparison.
 These synchronous calculations can still exceed interactive frame budgets;
 the measurement script does not assert that latency targets have been met.
 
+Spreadsheet-action comparisons use separate production build directories and
+fresh disposable profiles, not an existing edited workbook:
+
+```powershell
+npm run build -- --outDir C:\temp\fnt-after
+npx vite preview --host 127.0.0.1 --port 4289 --strictPort --outDir C:\temp\fnt-after
+# Run serially, with no concurrent browser tests or profiling:
+node scripts\measure-actions.mjs http://127.0.0.1:4289/ C:\temp\fnt-actions.json
+npx playwright test --config playwright.actions.config.ts action-performance.spec.ts
+```
+
+The action script records served bundle/snapshot hashes, settled paint and save
+times, long tasks and formula/cell fingerprints. Its optional fourth argument
+is `manager`, `find`, or `columns` for an isolated subset. Compare preserved
+before/after builds with the same script, snapshot and viewport; these samples
+are observations, not statistical latency guarantees. The action test
+configuration uses 5388/5389/4289. `FNT_ACTION_BASELINE_ROOT` selects preserved
+baseline source instead, on 5398/5399/4288.
+
+Group-manager cards and source previews hydrate near the viewport. Find scans
+current calculated/formatted values in cancellable slices; its complete
+200-result pages include collapsed and off-screen matches, and choosing one
+reveals the source cell. Source and option paging never truncates the list.
+Known layout-only commands and Undo use scoped metadata records; cell-only
+repaints retain the existing toolbar and headers. Structural edits still take
+the conservative reference/conflict path when unrelatedness is not proven.
+
+Content autosave keeps the existing 350ms delay and writes transactional change
+records with persistent Undo. Complete recoverable states are materialized on
+load, backup, recovery and sync; journal compaction runs after 10 seconds or
+32 writes, and explicit Save compacts and checkpoints before reporting success.
+Existing complete states migrate without discarding cells, visits or history.
+Full-save fallback remains for unscoped changes. Compaction, full checkpoints
+and inherently expensive calculations can still block; heavy-job workers and
+chunked calculation/import/export are not part of these action optimizations.
+
 The self-contained `dialog-audit.html` preserves Audit 1 and the pre-deletion
 Audit 2 with all 50 dialogs. Current contains 47; the three unused N/A dialogs
 remain viewable only in history.

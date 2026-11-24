@@ -246,7 +246,8 @@ dialog .picker-results{max-height:none}
 .group-create-controls>div{display:flex;gap:5px;align-items:center}.group-create-controls strong{width:57px;font-size:11px;font-weight:500}
 .group-create-controls button,.group-card-actions button{font-size:10px;padding:5px 7px;min-height:24px}
 .group-card-list{overflow:auto;min-height:0;display:flex;flex-direction:column;gap:9px}
-.group-card{padding:9px;border:1px solid #dce3d8;border-radius:4px}.group-card.located{border-color:#597b64}
+.group-card{padding:9px;border:1px solid #dce3d8;border-radius:4px;flex-shrink:0}.group-card.located{border-color:#597b64}
+.group-card[data-lazy=true]{min-height:180px;flex-shrink:0}
 .group-card-heading{display:flex;justify-content:space-between;gap:8px;font-size:11px}.group-card-heading strong{font-weight:600}
 .group-card p{font-size:10px;line-height:1.4;margin:5px 0 7px}
 .group-cell-preview{overflow:auto;margin-bottom:7px}.group-cell-preview table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:10px}

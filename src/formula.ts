@@ -279,6 +279,16 @@ export class Engine {
     let deps=this.dependents.get(key);if(!deps){deps=new Set();this.dependents.set(key,deps);}deps.add(parent);
   }
   beginPass():void {this.remaining=500_000;}
+  rebindLayout(book:Workbook):boolean{
+    if(book.tables!==this.book.tables||book.names!==this.book.names||book.references!==this.book.references||book.dropdownData?.tables!==this.book.dropdownData?.tables)return false;
+    const sheets=allSheets(book);
+    if(sheets.length!==this.sheets.size||sheets.some(s=>{
+      const old=this.sheets.get(s.id);
+      return !old||s.cells!==old.cells||s.rows.length!==old.rows.length||s.columns.length!==old.columns.length||
+        s.rows.some((r,i)=>this.rowPositions.get(s.id)?.get(r.id)!==i)||s.columns.some((c,i)=>this.columnPositions.get(s.id)?.get(c.id)!==i);
+    }))return false;
+    this.book=book;this.sheets=new Map(sheets.map(s=>[s.id,s]));return true;
+  }
   constructor(public book: Workbook) {
     this.sheets=new Map(allSheets(book).map(s=>[s.id,s]));
     this.rowSets=new Map(allSheets(book).map(s=>[s.id,new Set(s.rows.map(r=>r.id))]));

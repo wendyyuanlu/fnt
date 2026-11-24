@@ -1,7 +1,7 @@
 import { clone, uid, type Workbook } from './model';
 import { compressArchive, decompressArchive, stringifyArchive } from './archive';
 import {validateHypotheticalStyle} from './hypothetical';
-import type {UndoHistory} from './undo-history';
+import {applyUndo,type History,type UndoHistory} from './undo-history';
 
 export interface Pending { id: string; label: string; time: string }
 export interface SyncConfig { owner: string; repo: string; branch: string; path: string }
@@ -23,6 +23,66 @@ export function validateBackup(backup:Backup):void {
 }
 type Original=Backup['originals'][number];
 interface Navigation {visits:Record<string,number>;pending:Pending[]}
+interface JournalHead {
+  state:Omit<LocalState,'book'>;book:string;revision:number;baseVersion:number;count:number;
+}
+interface JournalEntry {version:number;book:string;revision:number;forward:History[]}
+const journalHeadKey='journal:head';
+const journalRange=()=>IDBKeyRange.bound('journal:entry:','journal:entry:\uffff');
+const journalKey=(version:number)=>`journal:entry:${String(version).padStart(16,'0')}`;
+const journalError=()=>Error('Saved change journal is damaged. Restore from recovery before continuing.');
+function validateForward(forward:History[]):void{
+  if(!Array.isArray(forward)||!forward.length)throw journalError();
+  for(const entry of forward){
+    if(!entry||typeof entry!=='object'||'book'in entry)throw Error('Full workbook changes require a complete save.');
+    if('cells'in entry){
+      if(!Array.isArray(entry.cells)||entry.cells.some(c=>!c||typeof c.sheet!=='string'||typeof c.key!=='string'||c.key.split(':').length!==2||[c.sheet,...c.key.split(':')].some(key=>!/^[a-zA-Z0-9_.-]{1,128}$/.test(key))||c.value!==undefined&&(!c.value||typeof c.value!=='object'||Array.isArray(c.value))))throw journalError();
+    }else if('patch'in entry){
+      if(!Array.isArray(entry.patch)||entry.patch.some(c=>!c||!Array.isArray(c.path)||!c.path.length||typeof c.exists!=='boolean'||c.path.some(key=>typeof key!=='string'&&!(typeof key==='number'&&Number.isSafeInteger(key)&&key>=0)||['__proto__','constructor','prototype'].includes(String(key)))||['id','schema'].includes(String(c.path[0]))))throw journalError();
+    }else throw journalError();
+  }
+}
+function validateHead(head:JournalHead):void{
+  if(!head||typeof head.book!=='string'||!Number.isSafeInteger(head.revision)||!Number.isSafeInteger(head.baseVersion)||head.baseVersion<0||!Number.isSafeInteger(head.count)||head.count<0||!head.state||!Number.isSafeInteger(head.state.version)||head.state.version!==head.baseVersion+head.count||typeof head.state.updated!=='string'||!Array.isArray(head.state.pending)||head.state.pending.some(p=>!p||typeof p.id!=='string'||!p.id||typeof p.label!=='string'||typeof p.time!=='string')||new Set(head.state.pending.map(p=>p.id)).size!==head.state.pending.length)throw journalError();
+}
+// Keep all reads in the caller's transaction: no tab can replace the base while it is replayed.
+function readState(store:IDBObjectStore,success:(state:LocalState|undefined,head:JournalHead|undefined)=>void,fail:(error:unknown)=>void):void{
+  const current=store.get('current'),headRequest=store.get(journalHeadKey),entries=store.getAll(journalRange());
+  let remaining=3;
+  const ready=()=>{
+    if(--remaining)return;
+    try{
+      let state=current.result as LocalState|undefined;
+      const head=headRequest.result as JournalHead|undefined,records=entries.result as JournalEntry[];
+      if(head){
+        validateHead(head);
+        if(!state||state.version!==head.baseVersion||state.book.id!==head.book||records.length!==head.count)throw journalError();
+        let book=state.book;
+        for(let i=0;i<records.length;i++){
+          const entry=records[i];
+          if(!entry||entry.version!==head.baseVersion+i+1||entry.book!==head.book||!Number.isSafeInteger(entry.revision))throw journalError();
+          validateForward(entry.forward);
+          for(const change of entry.forward)book=applyUndo(book,change).book;
+          book.revision=entry.revision;
+        }
+        if(book.id!==head.book||book.revision!==head.revision)throw journalError();
+        state={...head.state,book};
+      }else if(records.length)throw journalError();
+      if(!state){success(undefined,head);return;}
+      const navigation=store.get(navigationKey(state.book.id));
+      navigation.onsuccess=()=>{
+        try{const result=withNavigation(state!,navigation.result);validateBook(result.book);success(result,head);}
+        catch(e){fail(e);}
+      };
+    }catch(e){fail(e);}
+  };
+  current.onsuccess=ready;headRequest.onsuccess=ready;entries.onsuccess=ready;
+}
+function resetJournal(store:IDBObjectStore,state:LocalState):void{
+  const {book,...metadata}=state;
+  store.delete(journalRange());
+  store.put({state:metadata,book:book.id,revision:book.revision,baseVersion:state.version,count:0} satisfies JournalHead,journalHeadKey);
+}
 const navigationKey=(book:string)=>`navigation:${book}`;
 function withNavigation(state:LocalState,navigation?:Navigation):LocalState{
   if(!navigation)return state;
@@ -39,9 +99,19 @@ export const request = <T>(r: IDBRequest<T>): Promise<T> => new Promise((resolve
   r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error);
 });
 const complete = (tx: IDBTransaction): Promise<void> => new Promise((resolve,reject) => {
-  tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error ?? Error('Storage transaction aborted. The record may exceed browser storage limits.')); tx.onerror = () => reject(tx.error ?? Error('Storage transaction failed. Local edits have not been saved.'));
+  let requestError:DOMException|null= null;
+  tx.oncomplete = () => resolve();
+  tx.onerror = event => {if(!event.defaultPrevented&&!requestError)requestError=(event.target as IDBRequest).error??tx.error;};
+  tx.onabort = () => reject(requestError??tx.error??Error('Storage transaction aborted. The record may exceed browser storage limits.'));
 });
 export function validateBook(value: unknown): asserts value is Workbook {
+  validateWorkbook(value,true);
+}
+/** Only for proven metadata-only edits to an already validated workbook with untouched cells. */
+export function validateBookMetadata(book:Workbook):void{
+  validateWorkbook(book,false);
+}
+function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook{
   if (!value || typeof value !== 'object') throw Error('Not a workbook.');
   const b = value as Partial<Workbook>;
   if (b.schema !== 1 || typeof b.id !== 'string' || typeof b.title !== 'string' || !Number.isInteger(b.revision) || !Array.isArray(b.sheets) || !b.sheets.length || !Array.isArray(b.tables) || !Array.isArray(b.names) || !b.pickerSources) throw Error('Invalid or unsupported workbook format.');
@@ -96,7 +166,7 @@ export function validateBook(value: unknown): asserts value is Workbook {
     for(const c of s.columns)if(typeof c.label!=='string'||(c.width!==undefined&&(!Number.isFinite(c.width)||c.width<40||c.width>1000)))throw Error('Invalid column layout.');
     const rows = new Set(s.rows.map(r => r.id)), columns = new Set(s.columns.map(c => c.id));
     for(const g of s.groups)if(g.kind==='summary'&&(new Set(g.members).size!==g.members.length||g.members.some(id=>!(g.axis==='row'?rows:columns).has(id))))throw Error('A summary group has missing or duplicate members.');
-    for (const [k,c] of Object.entries(s.cells)) {
+    if(cells)for (const [k,c] of Object.entries(s.cells)) {
       const [r,col] = k.split(':'); if (!rows.has(r) || !columns.has(col) || !c || typeof c !== 'object') throw Error('Invalid cell address.');
       if(c.formula)ast(c.formula);
       if(c.calculation)ast(c.calculation);
@@ -139,10 +209,63 @@ export class Store {
     return new Store(await request(r));
   }
   async load(): Promise<LocalState | undefined> {
-    const state = await request(this.db.transaction('state').objectStore('state').get('current')) as LocalState | undefined;
-    if (!state)return;
-    const navigation=await request(this.db.transaction('state').objectStore('state').get(navigationKey(state.book.id))) as Navigation|undefined;
-    const result=withNavigation(state,navigation);validateBook(result.book);return result;
+    const tx=this.db.transaction('state'),done=complete(tx);
+    let result:LocalState|undefined,failure:unknown;
+    readState(tx.objectStore('state'),state=>{result=state;},e=>{failure=e;tx.abort();});
+    try{await done;}catch(e){throw failure??e;}return result;
+  }
+  /** Append forward patches and independent undo/redo together; complete replacements use save(). */
+  async saveChanges(bookId:string,revision:number,expected:number,label:string,forward:History[],undoHistory:UndoHistory):Promise<{version:number;pending:Pending[];updated:string}>{
+    validateForward(forward);
+    if(!Number.isSafeInteger(revision)||!Number.isSafeInteger(expected)||expected<0||typeof label!=='string'||!undoHistory||!Array.isArray(undoHistory.undo)||!Array.isArray(undoHistory.redo))throw journalError();
+    const changes=clone(forward),history=undoHistory;
+    const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
+    let result:{version:number;pending:Pending[];updated:string}|undefined,failure:unknown;
+    const fail=(e:unknown)=>{failure=e;tx.abort();};
+    const append=(head:JournalHead)=>{
+      try{
+        if(head.book!==bookId||head.state.version!==expected)throw Error('Another tab changed this workbook. Your edits are still in memory. Download a backup before reloading.');
+        const navigation=store.get(navigationKey(bookId));
+        navigation.onsuccess=()=>{
+          try{
+            const updated=new Date().toISOString(),pending=[...new Map([...head.state.pending,...(navigation.result as Navigation|undefined)?.pending??[]].map(p=>[p.id,p])).values(),{id:uid(),label,time:updated}];
+            result={version:expected+1,pending,updated};
+            store.put({version:result.version,book:bookId,revision,forward:changes} satisfies JournalEntry,journalKey(result.version));
+            store.put({...head,state:{...head.state,...result},revision,count:head.count+1} satisfies JournalHead,journalHeadKey);
+            store.put({version:result.version,book:bookId,history},'undo');
+          }catch(e){fail(e);}
+        };
+      }catch(e){fail(e);}
+    };
+    const r=store.get(journalHeadKey);
+    r.onsuccess=()=>{
+      try{
+        if(r.result){validateHead(r.result);append(r.result);}
+        else readState(store,state=>{
+          try{
+            if(!state||state.book.id!==bookId||state.version!==expected)throw Error('Another tab changed this workbook. Your edits are still in memory. Download a backup before reloading.');
+            let book=state.book;
+            for(const change of changes)book=applyUndo(book,change).book;
+            book.revision=revision;validateBook(book);
+            const {book:base,...metadata}=state;
+            append({state:metadata,book:base.id,revision:base.revision,baseVersion:expected,count:0});
+          }catch(e){fail(e);}
+        },fail);
+      }catch(e){fail(e);}
+    };
+    try{await done;}catch(e){throw failure??e;}return result!;
+  }
+  /** Materialize a bounded batch without creating another logical edit or discarding its pending IDs. */
+  async compact(expected:number):Promise<void>{
+    const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
+    let failure:unknown;
+    readState(store,(state,head)=>{
+      try{
+        if((state?.version??0)!==expected)throw Error('Workbook changed during this operation. Retry after saving.');
+        if(state){if(head?.count)store.put(state,'current');resetJournal(store,state);}
+      }catch(e){failure=e;tx.abort();}
+    },e=>{failure=e;tx.abort();});
+    try{await done;}catch(e){throw failure??e;}
   }
   async visit(book:string,table:string,previous:number):Promise<number>{
     const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
@@ -173,44 +296,40 @@ export class Store {
     const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx);
     const store = tx.objectStore('state');
     let result: LocalState | undefined, conflict = false, failure:unknown;
-    const r = store.get('current');
     const navigation=store.get(navigationKey(snapshot.id));
-    r.onsuccess=()=>{
-    const previousState=r.result as LocalState|undefined;
-    const priorNavigation=store.get(navigationKey(previousState?.book.id??snapshot.id));
-    priorNavigation.onsuccess = () => {
+    readState(store,previous=>{
       try{
-      const previous = previousState&&withNavigation(previousState,priorNavigation.result);
       if ((previous?.version ?? 0) !== expected) { conflict = true; tx.abort(); return; }
       result = { ...previous, book: snapshot, version: expected+1,
         pending: [...previous?.pending ?? [], {id:uid(),label,time:new Date().toISOString()}], updated:new Date().toISOString() };
       result=withNavigation(result,navigation.result);
-      if(previous&&priorNavigation.result)store.put({...priorNavigation.result,pending:[]},navigationKey(previous.book.id));
+      if(previous){
+        const priorNavigation=store.get(navigationKey(previous.book.id));
+        priorNavigation.onsuccess=()=>{try{if(priorNavigation.result)store.put({...priorNavigation.result,pending:[]},navigationKey(previous.book.id));}catch(e){failure=e;tx.abort();}};
+      }
       if(navigation.result)store.put({...navigation.result,pending:[]},navigationKey(snapshot.id));
       if(options?.localOnly){delete result.sync;delete result.remoteSha;}
       if(options?.publishedSnapshot)result.publishedSnapshot=options.publishedSnapshot;
       if (checkpoint && previous) tx.objectStore('history').put({id:uid(),label:`Before ${label}`,time:new Date().toISOString(),book:previous.book,...(options?.recoveryArchive?{backup:options.recoveryArchive}:{})} satisfies Checkpoint);
       if (original) tx.objectStore('originals').put(original);
       store.put(result,'current');
+      resetJournal(store,result);
       if(options?.undoHistory)store.put({version:result.version,book:result.book.id,history:clone(options.undoHistory)},'undo');else store.delete('undo');
       }catch(e){failure=e;tx.abort();}
-    };
-    };
+    },e=>{failure=e;tx.abort();});
     try { await done; } catch (e) { if (conflict) throw Error('Another tab changed this workbook. Your edits are still in memory. Download a backup before reloading.'); throw failure??e; }
     return result!;
   }
   async metadata(expected: number, change: (state: LocalState) => LocalState): Promise<LocalState> {
     const tx = this.db.transaction('state','readwrite'), done = complete(tx), store = tx.objectStore('state');
     let result: LocalState, conflict = false,failure:unknown;
-    const r = store.get('current');
-    r.onsuccess = () => {
-      const previous = r.result as LocalState;
-      if (previous.version !== expected) { conflict = true; tx.abort(); return; }
+    readState(store,previous=>{
+      if (!previous||previous.version !== expected) { conflict = true; tx.abort(); return; }
       const navigation=store.get(navigationKey(previous.book.id));
       navigation.onsuccess=()=>{
       try{
-      const state=withNavigation(previous,navigation.result);
-      result = { ...change(state), version:expected+1 }; store.put(result,'current');
+      const state=previous;
+      result = { ...change(state), version:expected+1 };validateBook(result.book);store.put(result,'current');resetJournal(store,result);
       if(navigation.result)store.put({...navigation.result,pending:[]},navigationKey(previous.book.id));
       const history=store.get('undo');
       history.onsuccess=()=>{
@@ -222,36 +341,53 @@ export class Store {
       };
       }catch(e){failure=e;tx.abort();}
       };
-    };
+    },e=>{failure=e;tx.abort();});
     try { await done; } catch (e) { if (conflict) throw Error('Workbook changed during this operation. Retry after saving.'); throw failure??e; }
     return result!;
   }
   async checkpoint(label: string, book: Workbook, originals:Original[]=[]): Promise<void> {
-    const navigation=await request(this.db.transaction('state').objectStore('state').get(navigationKey(book.id))) as Navigation|undefined;
-    book=withNavigation({book,pending:[],version:0,updated:''},navigation).book;
-    const tx = this.db.transaction(['history','originals'],'readwrite'), done = complete(tx);
-    tx.objectStore('history').put({ id:uid(), label, time:new Date().toISOString(), book:clone(book) } satisfies Checkpoint);
-    for(const original of originals)tx.objectStore('originals').put(original);
-    await done;
+    book=clone(book);originals=clone(originals);
+    const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx),store=tx.objectStore('state');
+    let failure:unknown;
+    readState(store,(state,head)=>{
+      const navigation=store.get(navigationKey(book.id));
+      navigation.onsuccess=()=>{
+        try{
+          const current=head?.count&&state?.book.id===book.id&&book.revision<=head.revision?state.book:book;
+          const snapshot=withNavigation({book:current,pending:[],version:0,updated:''},navigation.result).book;
+          tx.objectStore('history').put({ id:uid(), label, time:new Date().toISOString(), book:clone(snapshot) } satisfies Checkpoint);
+          for(const original of originals)tx.objectStore('originals').put(original);
+        }catch(e){failure=e;tx.abort();}
+      };
+    },e=>{failure=e;tx.abort();});
+    try{await done;}catch(e){throw failure??e;}
   }
   async history(): Promise<Checkpoint[]> {
     return (await request(this.db.transaction('history').objectStore('history').getAll()) as Checkpoint[]).sort((a,b) => b.time.localeCompare(a.time));
   }
   async backup(state: LocalState): Promise<Backup> {
-    const navigation=await request(this.db.transaction('state').objectStore('state').get(navigationKey(state.book.id))) as Navigation|undefined;
-    return { format:'fnt-backup',version:1,state:clone(withNavigation(state,navigation)),originals:await request(this.db.transaction('originals').objectStore('originals').getAll()) };
+    const tx=this.db.transaction(['state','originals']),done=complete(tx),store=tx.objectStore('state'),originals=tx.objectStore('originals').getAll();
+    let result:Backup|undefined,failure:unknown;
+    readState(store,(current,head)=>{
+      const navigation=store.get(navigationKey(state.book.id));
+      navigation.onsuccess=()=>{
+        try{
+          // Historical and unsaved snapshots remain independent of the durable current view.
+          const snapshot=head?.count&&current?.book.id===state.book.id&&current.version===state.version&&state.book.revision<=head.revision?current:state;
+          result={format:'fnt-backup',version:1,state:clone(withNavigation(snapshot,navigation.result)),originals:originals.result};
+        }catch(e){failure=e;tx.abort();}
+      };
+    },e=>{failure=e;tx.abort();});
+    try{await done;}catch(e){throw failure??e;}return result!;
   }
   async restore(backup: Backup, expected: number): Promise<LocalState> {
     validateBackup(backup);
     const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx), store = tx.objectStore('state');
     let result: LocalState, conflict = false,failure:unknown;
-    const r = store.get('current'),originals=tx.objectStore('originals').getAll();
-    r.onsuccess=()=>{
-    const navigation=store.get(navigationKey((r.result as LocalState).book.id));
-    navigation.onsuccess = () => {
+    const originals=tx.objectStore('originals').getAll();
+    readState(store,previous=>{
       try{
-      const previous = withNavigation(r.result as LocalState,navigation.result);
-      if (previous.version !== expected) { conflict = true; tx.abort(); return; }
+      if (!previous||previous.version !== expected) { conflict = true; tx.abort(); return; }
       const recovery=stringifyArchive({format:'fnt-backup',version:1,state:previous,originals:originals.result} satisfies Backup);
       tx.objectStore('history').put({id:uid(),label:'Before backup restore',time:new Date().toISOString(),book:previous.book,backup:recovery} satisfies Checkpoint);
       for (const original of backup.originals) tx.objectStore('originals').put(original);
@@ -259,11 +395,11 @@ export class Store {
         pending:[...new Map([...previous.pending,...backup.state.pending].map(p=>[p.id,p])).values(), {id:uid(),label:'Restore backup',time:new Date().toISOString()}] };
       delete result.sync;delete result.remoteSha;
       store.put(result,'current');
+      resetJournal(store,result);
       store.delete(navigationKey(previous.book.id));store.delete(navigationKey(result.book.id));
       store.delete('undo');
       }catch(e){failure=e;tx.abort();}
-    };
-    };
+    },e=>{failure=e;tx.abort();});
     try { await done; } catch (e) { if (conflict) throw Error('Another tab changed the workbook. Restore cancelled.'); throw failure??e; }
     return result!;
   }

@@ -17,7 +17,7 @@ async function seed(page:Page,edited:boolean){
   const value:LocalState={book,version:100,pending,updated:''};
   await page.evaluate(async value=>{
     const open=indexedDB.open('fnt-workbook-v1',1),db=await new Promise<IDBDatabase>((resolve,reject)=>{open.onsuccess=()=>resolve(open.result);open.onerror=()=>reject(open.error);});
-    try{const tx=db.transaction('state','readwrite');tx.objectStore('state').put(value,'current');await new Promise<void>((resolve,reject)=>{tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);});}finally{db.close();}
+    try{const tx=db.transaction('state','readwrite'),store=tx.objectStore('state');store.clear();store.put(value,'current');await new Promise<void>((resolve,reject)=>{tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);});}finally{db.close();}
   },value);
   return book;
 }

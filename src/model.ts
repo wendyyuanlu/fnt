@@ -220,10 +220,12 @@ export function inheritInsertedGroups(sheet:Sheet,axis:Group['axis'],insertions:
     }
   }
 }
-export function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string,at:number,preserve=false,templates?:ReadonlySet<string>):void {
+export function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string,at:number,preserve=false,templates?:ReadonlySet<string>,context?:{translation?:TranslationContext;engine?:Engine}):void {
   const candidates=[...table.rows.slice(0,at).reverse(),...table.rows.slice(at+1)].filter(id=>!templates||templates.has(id));
   const marker=table.columns.find(c=>['ismeal','isday'].includes(c.name.toLowerCase())),label=table.columns.find(c=>['meal','weight'].includes(c.name.toLowerCase()));
-  const engine=marker||label?new Engine(book):undefined;
+  const engine=marker||label?context?.engine??new Engine(book):undefined;
+  engine?.beginPass();
+  const translation=context?.translation??createTranslationContext(book);
   const isHeader=(id:string)=>{
     if(!engine)return false;
     let value=scalar(engine.cell(sheet.id,id,(marker??label)!.column));
@@ -241,12 +243,13 @@ export function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string
     if(!template)continue;
     const source=getCell(sheet,template,col.column);
     const formula=source.formula??source.calculation;
-    const inherited=formula?translate(formula,book,sheet.id,template,col.column,row,col.column):undefined;
+    const inherited=formula?translate(formula,book,sheet.id,template,col.column,row,col.column,sheet.id,translation):undefined;
     sheet.cells[key(row,col.column)]=preserve?{
       ...current,format:current.format??((current.value==null||current.value==='')&&!current.note&&!current.link&&source.format?clone(source.format):undefined),
       ...(inherited?current.value!=null&&current.value!==''?{calculation:inherited}:{formula:inherited,spillHint:maySpill(formula!)}:{})
     }:{format:source.format?clone(source.format):undefined,...(inherited?{formula:inherited,spillHint:maySpill(formula!)}:{})};
   }
+  context?.engine?.invalidate(table.columns.map(col=>`${sheet.id}:${key(row,col.column)}`));
   for(const validation of [...sheet.validations]){
     const columns=validation.columns.filter(c=>table.columns.some(col=>col.column===c)&&(!preserve||!sheet.validations.some(v=>v.rows.includes(row)&&v.columns.includes(c))));
     if(columns.length&&validation.rows.includes(candidates[0])&&!validation.rows.includes(row)){
@@ -426,34 +429,69 @@ export function moveColumns(book:Workbook,sheet:Sheet,ids:string[],boundary:numb
   for(const t of allTables(book).filter(t=>t.sheet===sheet.id))t.columns.sort((a,b)=>sheet.columns.findIndex(c=>c.id===a.column)-sheet.columns.findIndex(c=>c.id===b.column));
   return at;
 }
-export function translate(ast: Ast, book: Workbook, sheetId: string, fromRow: string, fromCol: string, toRow: string, toCol: string, targetSheetId=sheetId): Ast {
-  const sheet = allSheets(book).find(s => s.id === sheetId)!;
-  const destination=allSheets(book).find(s=>s.id===targetSheetId)!;
-  const dr = destination.rows.findIndex(r => r.id === toRow) - sheet.rows.findIndex(r => r.id === fromRow);
-  const dc = destination.columns.findIndex(c => c.id === toCol) - sheet.columns.findIndex(c => c.id === fromCol);
+export interface TranslationContext {
+  book:Workbook;
+  sheets:Map<string,{sheet:Sheet;rows:Map<string,number>;columns:Map<string,number>}>;
+  tables:Map<string,Table>;
+  tableAt:(sheet:string,row:string,column:string)=>Table|undefined;
+  fields:Map<string,{names:Map<string,string>;ids:Map<string,string>}>;
+}
+/** Operation-scoped indexes: recreate after changing sheet/table membership, order or field names. */
+export function createTranslationContext(book:Workbook):TranslationContext {
+  const sheets=new Map(allSheets(book).map(sheet=>[sheet.id,{sheet,rows:new Map(sheet.rows.map((row,i)=>[row.id,i])),columns:new Map(sheet.columns.map((column,i)=>[column.id,i]))}]));
+  const tables=new Map(allTables(book).map(table=>[table.id,table]));
+  const bySheet=new Map<string,{table:Table;rows:Set<string>;columns:Set<string>}[]>();
+  const fields=new Map<string,{names:Map<string,string>;ids:Map<string,string>}>();
+  for(const table of tables.values()){
+    const entries=bySheet.get(table.sheet)??[];
+    entries.push({table,rows:new Set([table.header,...table.rows]),columns:new Set(table.columns.map(field=>field.column))});bySheet.set(table.sheet,entries);
+    const names=new Map<string,string>(),ids=new Map<string,string>();
+    for(const field of table.columns){names.set(field.id,field.name);if(!ids.has(field.name.toLowerCase()))ids.set(field.name.toLowerCase(),field.id);}
+    fields.set(table.id,{names,ids});
+  }
+  return{book,sheets,tables,fields,tableAt:(sheet,row,column)=>bySheet.get(sheet)?.find(entry=>entry.rows.has(row)&&entry.columns.has(column))?.table};
+}
+export function translate(ast: Ast, book: Workbook, sheetId: string, fromRow: string, fromCol: string, toRow: string, toCol: string, targetSheetId=sheetId,context?:TranslationContext): Ast {
+  if(context&&context.book!==book)throw Error('Translation context belongs to a different workbook.');
+  const sheets=context?undefined:allSheets(book);
+  const sheet=context?context.sheets.get(sheetId)?.sheet:sheets!.find(s=>s.id===sheetId);
+  const destination=context?context.sheets.get(targetSheetId)?.sheet:sheets!.find(s=>s.id===targetSheetId);
+  if(!sheet||!destination)throw Error('The translation sheet no longer exists.');
+  const rowPosition=(sheet:Sheet,row:string)=>context?context.sheets.get(sheet.id)!.rows.get(row)??-1:sheet.rows.findIndex(r=>r.id===row);
+  const columnPosition=(sheet:Sheet,column:string)=>context?context.sheets.get(sheet.id)!.columns.get(column)??-1:sheet.columns.findIndex(c=>c.id===column);
+  let dr:number|undefined,dc:number|undefined;
+  let destinationTable:Table|undefined,checkedTable=false;
   return mapAst(ast, node => {
     if(node.kind==='structured'&&node.implicit){
-      const source=allTables(book).find(t=>t.id===node.table),target=tableAt(book,targetSheetId,toRow,toCol);
+      const source=context?context.tables.get(node.table):allTables(book).find(t=>t.id===node.table);
+      if(!checkedTable){destinationTable=context?context.tableAt(targetSheetId,toRow,toCol):tableAt(book,targetSheetId,toRow,toCol);checkedTable=true;}
+      const target=destinationTable;
       if(source&&target&&source.id!==target.id)return{...node,table:target.id,columns:node.columns.map(id=>{
-        const name=source.columns.find(c=>c.id===id)?.name;
-        return target.columns.find(c=>c.name.toLowerCase()===name?.toLowerCase())?.id??'deleted';
+        const name=context?context.fields.get(source.id)!.names.get(id):source.columns.find(c=>c.id===id)?.name;
+        return name===undefined?'deleted':context?context.fields.get(target.id)!.ids.get(name.toLowerCase())??'deleted':target.columns.find(c=>c.name.toLowerCase()===name.toLowerCase())?.id??'deleted';
       })};
     }
     if (node.kind !== 'ref') return node;
-    const target = allSheets(book).find(s => s.id === node.sheet);
+    const target = context?context.sheets.get(node.sheet)?.sheet:sheets!.find(s=>s.id===node.sheet);
     if (!target) return node;
+    dr??=rowPosition(destination,toRow)-rowPosition(sheet,fromRow);
+    dc??=columnPosition(destination,toCol)-columnPosition(sheet,fromCol);
     const newTarget=!node.explicit&&node.sheet===sheetId?destination:target;
     return { ...node,sheet:newTarget.id,
-      row: newTarget.rows[target.rows.findIndex(r=>r.id===node.row)+(node.absRow?0:dr)]?.id??'deleted',
-      column: newTarget.columns[target.columns.findIndex(c=>c.id===node.column)+(node.absCol?0:dc)]?.id??'deleted' };
+      row: newTarget.rows[rowPosition(target,node.row)+(node.absRow?0:dr)]?.id??'deleted',
+      column: newTarget.columns[columnPosition(target,node.column)+(node.absCol?0:dc)]?.id??'deleted' };
   });
 }
 export function mapAst(ast: Ast, fn: (node: Ast) => Ast): Ast {
-  let node = clone(ast);
-  if (node.kind === 'binary') node = { ...node, left: mapAst(node.left, fn), right: mapAst(node.right, fn) };
-  if (node.kind === 'unary' || node.kind === 'spill') node = { ...node, child: mapAst(node.child, fn) };
-  if (node.kind === 'range') node = { ...node, start: mapAst(node.start, fn), end: mapAst(node.end, fn) };
-  if (node.kind === 'call') node = { ...node, args: node.args.map(x => mapAst(x, fn)) };
+  let node:Ast;
+  if (ast.kind === 'binary') node = { ...ast, left: mapAst(ast.left, fn), right: mapAst(ast.right, fn) };
+  else if (ast.kind === 'unary' || ast.kind === 'spill') node = { ...ast, child: mapAst(ast.child, fn) };
+  else if (ast.kind === 'range') node = { ...ast, start: mapAst(ast.start, fn), end: mapAst(ast.end, fn) };
+  else if (ast.kind === 'call') node = { ...ast, args: ast.args.map(x => mapAst(x, fn)) };
+  else if (ast.kind === 'structured') node = { ...ast, columns: [...ast.columns] };
+  else if (ast.kind === 'error') node = { ...ast, value: {...ast.value} };
+  else if (ast.kind === 'literal') node = { ...ast, value: isFault(ast.value)?{...ast.value}:ast.value };
+  else node = {...ast};
   return fn(node);
 }
 export function fillCells(book:Workbook,sheet:Sheet,source:{r1:number;r2:number;c1:number;c2:number},target:{r1:number;r2:number;c1:number;c2:number}):void {

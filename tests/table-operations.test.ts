@@ -122,6 +122,28 @@ it('plans an atomic sheet-space shift only when expansion collides, preserving a
   expect(plan.book.tables.find(other=>other.id==='below')!.header).toBe(before.tables[2].header);
   expect(plan.book.tables[0].rows).toHaveLength(5);
 });
+it('consumes an explicitly owned plan candidate with the same result and without aliasing mutable source cells',()=>{
+  const {book,s,table,rows,formula}=fixture();
+  formula(1,2,'=LEN([@Item])');s.cells[key(rows[0],table.columns[0].column)].format={bold:true};
+  const before=clone(book),candidate=clone(book),edit={kind:'move' as const,ids:[rows[1]],boundary:1};
+  const plan=planTableAxisEdit(book,table.id,'row',edit,{candidate}),ordinary=planTableAxisEdit(book,table.id,'row',edit);
+  expect(plan.book).toBe(candidate);expect(plan).toEqual(ordinary);expect(book).toEqual(before);
+  const moved=getCell(plan.book.sheets[0],rows[1],table.columns[0].column);
+  moved.value='changed';moved.format!.bold=false;
+  expect(book).toEqual(before);
+  expect(()=>planTableAxisEdit(book,table.id,'row',edit,{candidate:book})).toThrow(/independent/);
+});
+it('does not partially append sheet space before retrying an owned candidate expansion conflict',()=>{
+  const {book,s,table,put}=fixture();
+  table.rows=s.rows.slice(12,15).map(row=>row.id);table.header=s.rows[11].id;
+  put(15,1,'protected end note');
+  const before=clone(book),candidate=clone(book),plan=planTableAxisEdit(book,table.id,'row',{kind:'insert',boundary:13,count:2},{candidate});
+  expect(plan.book).toBe(candidate);expect(book).toEqual(before);
+  expect(plan.shift).toMatchObject({axis:'row',boundary:15,count:2});
+  expect(candidate.sheets[0].rows).toHaveLength(s.rows.length+2);
+  expect(candidate.sheets[0].rows[17].id).toBe(s.rows[15].id);
+  expect(getCell(candidate.sheets[0],s.rows[15].id,s.columns[1].id).value).toBe('protected end note');
+});
 it('grows into empty cells with formatting or validation without shifting the sheet',()=>{
   for(const axis of ['row','column'] as const){
     const {book,s,table}=fixture(),row=s.rows[axis==='row'?4:1].id,column=s.columns[axis==='row'?1:3].id;

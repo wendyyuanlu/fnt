@@ -2,8 +2,61 @@ import { expect,it } from 'vitest';
 import { applyTableColumnFormula,columnCalculations,quantityDiagnostic,restoreCalculation,tableColumnFormulas } from '../src/calculation';
 import { compile,displayFormula,Engine } from '../src/formula';
 import { cutCells } from '../src/cell-operations';
-import { createDemo,fillCells,getCell,key,move,renameColumn,setInput } from '../src/model';
+import { blankSheet,createDemo,createTranslationContext,fillCells,getCell,key,move,renameColumn,setInput,type Workbook } from '../src/model';
 import { validateBook } from '../src/storage';
+
+function columnFixture(){
+  const sheet=blankSheet('Generic',8,6),book:Workbook={schema:1,id:'generic',title:'Generic',revision:0,sheets:[sheet],tables:[],names:[],pickerSources:{}};
+  const table={id:'records',name:'Records',sheet:sheet.id,header:sheet.rows[0].id,rows:sheet.rows.slice(1,5).map(row=>row.id),columns:sheet.columns.slice(1,4).map((column,i)=>({id:'field-'+i,column:column.id,name:['Input','Result','IsMeal'][i]}))};
+  book.tables.push(table);
+  const column=table.columns[1].column,marker=table.columns[2].column;
+  table.rows.forEach((row,i)=>{sheet.cells[key(row,table.columns[0].column)]={value:i+2};sheet.cells[key(row,marker)]={value:i>=2};});
+  return{book,sheet,table,column,marker};
+}
+it('normalizes relative formulas, updates only a selected pattern and preserves independently restorable overrides',()=>{
+  const {book,sheet,table,column}=columnFixture();
+  table.rows.forEach((row,i)=>setInput(book,sheet,row,column,i===2?'=[@Input]*3':`=B${i+2}+$B$1`));
+  setInput(book,sheet,table.rows[3],column,'99');
+  const context=createTranslationContext(book),patterns=tableColumnFormulas(book,table,column,context);
+  expect(patterns.map(item=>displayFormula(item.formula,book))).toEqual(['=(B2+$B$1)','=([@[Input]]*3)']);
+  const replacement=compile('=B2*5',book,sheet.id,table.rows[0],column);
+  applyTableColumnFormula(book,table,column,replacement,'matching',patterns[0].formula,context);
+  const engine=new Engine(book);
+  expect(table.rows.map(row=>engine.cell(sheet.id,row,column))).toEqual([10,15,12,99]);
+  const saved=getCell(sheet,table.rows[3],column).calculation!;
+  expect(displayFormula(saved,book)).toBe('=(B5*5)');
+  restoreCalculation(book,sheet,table.rows[3],column,saved);
+  expect(new Engine(book).cell(sheet.id,table.rows[3],column)).toBe(25);
+  if(replacement.kind==='binary')replacement.op='+';
+  expect(displayFormula(getCell(sheet,table.rows[0],column).formula!,book)).toBe('=(B2*5)');
+  renameColumn(book,table,table.columns[0].id,'New input');
+  expect(tableColumnFormulas(book,table,column).map(item=>displayFormula(item.formula,book))).toContain('=([@[New input]]*3)');
+  move(sheet.rows,1,2);
+  const refreshed=tableColumnFormulas(book,table,column);
+  expect(displayFormula(refreshed[0].formula,book)).toBe('=(B3*5)');
+});
+it('refreshes calculation options after formula, override, marker, metadata and structural edits without revision changes',()=>{
+  const {book,sheet,table,column,marker}=columnFixture(),target=table.rows[3];
+  table.rows.slice(0,3).forEach((row,i)=>setInput(book,sheet,row,column,`=[@Input]*${i===2?3:2}`));
+  let context=createTranslationContext(book);
+  const engine=new Engine(book),options=(current=engine)=>columnCalculations(book,sheet,target,column,current,context).map(item=>displayFormula(item.formula,book));
+  expect(options()).toEqual(options(new Engine(book)));
+  expect(options()).toEqual(['=([@[Input]]*3)']);
+  sheet.cells[key(table.rows[2],marker)]={value:false};engine.invalidate([`${sheet.id}:${key(table.rows[2],marker)}`]);
+  expect(options()).toEqual([]);
+  sheet.cells[key(table.rows[1],marker)]={value:true};engine.invalidate([`${sheet.id}:${key(table.rows[1],marker)}`]);
+  setInput(book,sheet,table.rows[1],column,'=7');engine.invalidate([`${sheet.id}:${key(table.rows[1],column)}`]);
+  expect(options()).toEqual(['=7']);
+  setInput(book,sheet,table.rows[1],column,'99');engine.invalidate([`${sheet.id}:${key(table.rows[1],column)}`]);
+  expect(options()).toEqual(['=7']);
+  const saved=getCell(sheet,table.rows[1],column).calculation!;if(saved.kind==='literal')saved.value=8;
+  expect(options()).toEqual(['=8']);
+  renameColumn(book,table,table.columns[2].id,'Flag');renameColumn(book,table,table.columns[0].id,'New input');
+  table.rows.splice(2,1);move(sheet.columns,1,4);
+  context=createTranslationContext(book);
+  expect(options(new Engine(book))).toEqual(['=([@[New input]]*2)','=8']);
+  expect(book.revision).toBe(0);
+});
 
 it('edits a column formula pattern without replacing overrides or unrelated formulas',()=>{
   const b=createDemo(),s=b.sheets[1],t=b.tables[0],column=t.columns[5].column,source=getCell(s,t.rows[0],column).formula!;

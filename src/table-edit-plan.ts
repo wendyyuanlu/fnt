@@ -51,9 +51,11 @@ export function formulaImpacts(before:Workbook,after:Workbook,trace=new Map<stri
   }
   return impacts.sort((a,b)=>['broken','review','changed','updated'].indexOf(a.reason)-['broken','review','changed','updated'].indexOf(b.reason));
 }
-export function planTableAxisEdit(book:Workbook,tableId:string,axis:'row'|'column',edit:TableAxisEdit):TableEditPlan{
-  const next=clone(book);
-  try{return{book:next,ids:editTableAxis(next,tableId,axis,edit)};}
+/** candidate must be an independent snapshot of book; it is consumed even if planning fails. */
+export function planTableAxisEdit(book:Workbook,tableId:string,axis:'row'|'column',edit:TableAxisEdit,options:{candidate?:Workbook}={}):TableEditPlan{
+  if(options.candidate===book)throw Error('Table planning requires an independent candidate workbook.');
+  const next=options.candidate??clone(book);
+  try{return{book:next,ids:editTableAxis(next,tableId,axis,edit,undefined,{ownedCandidate:true})};}
   catch(error){
     if(!(error instanceof TableExpansionConflict))throw error;
     const table=allTables(next).find(t=>t.id===tableId)!,sheet=allSheets(next).find(s=>s.id===table.sheet)!,{boundary,count}=error;
@@ -69,7 +71,7 @@ export function planTableAxisEdit(book:Workbook,tableId:string,axis:'row'|'colum
     inheritInsertedGroups(sheet,axis,insertions.map(item=>({at:boundary,id:item.id})),new Set(crossing.map(other=>other.id)));
     if(axis==='row')sheet.rows.splice(boundary,0,...insertions.map(({id})=>({id})));else sheet.columns.splice(boundary,0,...insertions);
     for(const other of crossing)if(axis==='row')addTableRows(next,sheet,other,insertions.map(item=>item.id));else addTableColumns(next,sheet,other,insertions.map(item=>item.id));
-    const trace=new Map<string,{sheet:string;row:string;column:string}|null>(),ids=editTableAxis(next,tableId,axis,edit,trace);
+    const trace=new Map<string,{sheet:string;row:string;column:string}|null>(),ids=editTableAxis(next,tableId,axis,edit,trace,{ownedCandidate:true});
     return{book:next,ids,shift:{axis,count,boundary,impacts:formulaImpacts(book,next,trace)}};
   }
 }

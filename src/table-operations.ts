@@ -1,5 +1,6 @@
-import { allTables,allSheets,clone,getCell,groupMoveTarget,inheritTableRow,key,summaryMoveMembers,translate,uid,uniqueName,type Cell,type Workbook} from './model';
+import { allTables,allSheets,clone,createTranslationContext,getCell,groupMoveTarget,inheritTableRow,key,summaryMoveMembers,translate,uid,uniqueName,type Cell,type TranslationContext,type Workbook} from './model';
 import {relocate} from './cell-operations';
+import {Engine} from './formula';
 
 type Axis='row'|'column';
 export type TableAxisEdit={kind:'insert';boundary:number;count:number}|{kind:'delete';ids:string[]}|{kind:'duplicate';ids:string[]}|{kind:'move';ids:string[];boundary:number;group?:string};
@@ -10,8 +11,9 @@ export class TableExpansionConflict extends Error{
   }
 }
 
-export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableAxisEdit,trace?:Map<string,{sheet:string;row:string;column:string}|null>):string[]{
-  const next=clone(book),table=allTables(next).find(t=>t.id===tableId);
+/** ownedCandidate opts out of rollback: book must be an independent, disposable snapshot. */
+export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableAxisEdit,trace?:Map<string,{sheet:string;row:string;column:string}|null>,options:{ownedCandidate?:boolean}={}):string[]{
+  const next=options.ownedCandidate?book:clone(book),table=allTables(next).find(t=>t.id===tableId);
   if(!table)throw Error('The selected table no longer exists.');
   const sheet=allSheets(next).find(s=>s.id===table.sheet)!;
   const items=axis==='row'?sheet.rows:sheet.columns,positions=new Map(items.map((item,i)=>[item.id,i]));
@@ -45,25 +47,27 @@ export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableA
   const slots=[...old],extra=Math.max(0,entries.length-old.length);
   const last=positions.get(old.at(-1)??table.header)!;
   if((axis==='row'?last+extra>=100_000:last+extra>=512))throw Error('Table expansion exceeds the sheet size limit.');
-  while(items.length<=last+extra){
-    if(axis==='row')sheet.rows.push({id:uid()});
-    else sheet.columns.push({id:uid(),label:'New column',width:145});
-  }
-  for(let i=1;i<=extra;i++)slots.push((axis==='row'?sheet.rows:sheet.columns)[last+i].id);
+  const additions=Array.from({length:Math.max(0,last+extra+1-items.length)},()=>({id:uid(),label:'New column',width:145}));
+  for(let i=1;i<=extra;i++)slots.push((items[last+i]??additions[last+i-items.length]).id);
   const across=axis==='row'?table.columns.map(field=>field.column):[table.header,...table.rows];
   if(slots.length*across.length>200_000)throw Error('This table edit exceeds the safe cell-operation limit.');
   const address=(member:string,cross:string)=>({sheet:sheet.id,row:axis==='row'?member:cross,column:axis==='row'?cross:member});
+  const neighbors=allTables(next).filter(other=>other.id!==table.id&&other.sheet===sheet.id).map(other=>({rows:new Set([other.header,...other.rows]),columns:new Set(other.columns.map(field=>field.column))}));
   for(const slot of slots.slice(old.length))for(const cross of across){
     const target=address(slot,cross),cell=sheet.cells[key(target.row,target.column)];
     if(cell&&(cell.value!==undefined&&cell.value!==null&&cell.value!==''||cell.formula||cell.calculation||cell.binding||cell.note||cell.link||cell.spillHint))throw new TableExpansionConflict(axis,last+1,extra);
-    if(allTables(next).some(other=>other.id!==table.id&&other.sheet===sheet.id&&(other.header===target.row||other.rows.includes(target.row))&&other.columns.some(field=>field.column===target.column)))throw new TableExpansionConflict(axis,last+1,extra);
+    if(neighbors.some(other=>other.rows.has(target.row)&&other.columns.has(target.column)))throw new TableExpansionConflict(axis,last+1,extra);
   }
+  if(axis==='row')sheet.rows.push(...additions.map(({id})=>({id})));else sheet.columns.push(...additions);
+  const itemById=new Map(items.map(item=>[item.id,item]));
   const snapshots=new Map<string,Cell[]>();
-  for(const source of old)snapshots.set(source,across.map(cross=>clone(getCell(sheet,address(source,cross).row,address(source,cross).column))));
+  if(edit.kind==='duplicate')for(const source of selected)snapshots.set(source,across.map(cross=>clone(getCell(sheet,address(source,cross).row,address(source,cross).column))));
   const oldFields=clone(table.columns),oldGroups=clone(sheet.groups),oldFlags=new Map(items.map(item=>[item.id,item.hypotheticalTables?.[table.id]]));
+  const fieldByColumn=new Map(oldFields.map(field=>[field.column,field]));
   const mapping=new Map<string,ReturnType<typeof address>|null>(),axisMap=new Map<string,string>();
+  const destinations=new Map(entries.flatMap((entry,i)=>entry.source?[[entry.source,slots[i]] as const]:[]));
   for(const source of old){
-    const at=entries.findIndex(entry=>entry.source===source),destination=at<0?undefined:slots[at];
+    const destination=destinations.get(source);
     if(destination)axisMap.set(source,destination);
     for(const cross of across){const from=address(source,cross);mapping.set(`${sheet.id}:${key(from.row,from.column)}`,destination?address(destination,cross):null);}
   }
@@ -75,15 +79,15 @@ export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableA
   else{
     const names=oldFields.map(field=>field.name);
     table.columns=entries.map((entry,i)=>{
-      if(entry.source)return{...oldFields.find(field=>field.column===entry.source)!,column:slots[i]};
-      const source=oldFields.find(field=>field.column===entry.copy),name=uniqueName(names,source?source.name+' copy':'New column');names.push(name);
+      if(entry.source)return{...fieldByColumn.get(entry.source)!,column:slots[i]};
+      const source=entry.copy?fieldByColumn.get(entry.copy):undefined,name=uniqueName(names,source?source.name+' copy':'New column');names.push(name);
       return{id:uid(),column:slots[i],name};
     });
   }
-  for(const slot of slots){const item=(axis==='row'?sheet.rows:sheet.columns).find(item=>item.id===slot)!;if(item.hypotheticalTables)delete item.hypotheticalTables[table.id];}
+  for(const slot of slots){const item=itemById.get(slot)!;if(item.hypotheticalTables)delete item.hypotheticalTables[table.id];}
   entries.forEach((entry,i)=>{
     const flag=oldFlags.get(entry.source??entry.copy??'');
-    if(flag!==undefined){const item=(axis==='row'?sheet.rows:sheet.columns).find(item=>item.id===slots[i])!;item.hypotheticalTables??={};item.hypotheticalTables[table.id]=flag;}
+    if(flag!==undefined){const item=itemById.get(slots[i])!;item.hypotheticalTables??={};item.hypotheticalTables[table.id]=flag;}
   });
   sheet.groups=oldGroups.flatMap(group=>{
     if(group.table!==table.id||group.axis!==axis)return[group];
@@ -110,17 +114,23 @@ export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableA
     reference.archivedRows=reference.archivedRows.flatMap(id=>axisMap.has(id)?[axisMap.get(id)!]:[]);
     if(reference.catalog?.rows)reference.catalog.rows=reference.catalog.rows.flatMap(id=>axisMap.has(id)?[axisMap.get(id)!]:[]);
   }
+  let translation:TranslationContext|undefined;
+  let inheritanceEngine:Engine|undefined;
   for(let i=0;i<entries.length;i++){
     const entry=entries[i];if(entry.source)continue;
+    translation??=createTranslationContext(next);
     if(entry.copy){
       const moved=axisMap.get(entry.copy)!;
       across.forEach((cross,j)=>{
         const from=address(moved,cross),target=address(slots[i],cross),source=sheet.cells[key(from.row,from.column)]??snapshots.get(entry.copy!)![j],cell=clone(source);
-        if(cell.formula)cell.formula=translate(cell.formula,next,sheet.id,from.row,from.column,target.row,target.column);
-        if(cell.calculation)cell.calculation=translate(cell.calculation,next,sheet.id,from.row,from.column,target.row,target.column);
+        if(cell.formula)cell.formula=translate(cell.formula,next,sheet.id,from.row,from.column,target.row,target.column,sheet.id,translation);
+        if(cell.calculation)cell.calculation=translate(cell.calculation,next,sheet.id,from.row,from.column,target.row,target.column,sheet.id,translation);
         sheet.cells[key(target.row,target.column)]=cell;
       });
-    }else if(axis==='row')inheritTableRow(next,sheet,table,slots[i],i);
+    }else if(axis==='row'){
+      if(table.columns.some(c=>['ismeal','isday','meal','weight'].includes(c.name.toLowerCase())))inheritanceEngine??=new Engine(next);
+      inheritTableRow(next,sheet,table,slots[i],i,false,undefined,{translation,engine:inheritanceEngine});
+    }
     else sheet.cells[key(table.header,slots[i])]={value:table.columns[i].name};
     const template=entry.copy??old[Math.min(addedAt,old.length-1)];
     const mappedTemplate=template?axisMap.get(template):undefined;
@@ -131,7 +141,7 @@ export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableA
     }
   }
   if(axis==='column')for(const field of table.columns)sheet.cells[key(table.header,field.column)]={...getCell(sheet,table.header,field.column),value:field.name};
-  Object.assign(book,next);
+  if(next!==book)Object.assign(book,next);
   if(trace)for(const [source,target] of mapping)trace.set(source,target);
   return entries.flatMap((entry,i)=>edit.kind==='delete'?[]:edit.kind==='move'?entry.source&&selected.has(entry.source)?[members[i]]:[]:!entry.source?[members[i]]:[]);
 }

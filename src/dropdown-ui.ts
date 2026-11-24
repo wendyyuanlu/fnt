@@ -2,23 +2,34 @@ export const dropdownManualActionHtml='<button type="button" class="dropdown-man
 export const dropdownArrowHtml='<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1"><path vector-effect="non-scaling-stroke" d="m3 4 3 3 3-3"/></svg>';
 export const sourcePickerControlsHtml='<div class="button-row dropdown-view-controls"><button type="button" id="dropdown-list-view">List view</button><button type="button" id="dropdown-grid-view">Grid view</button></div>';
 export const sourcePickerBodyHtml='<input class="dropdown-source-search" type="search" aria-label="Search dropdown sources" placeholder="Search sources…"><div id="dropdown-source-cards" class="dropdown-source-cards"></div>';
+export type SourcePage=<T>(items:T[])=>T[];
+const optionNavigation=new WeakMap<HTMLElement,(key:string,focused:Element|null)=>void>();
 
 export function mountSourcePicker(dialog:HTMLDialogElement,options:{
-  grid:boolean;viewControls?:boolean;searchLabel?:string;placeholder?:string;changeView?:(grid:boolean)=>void;render:(grid:boolean,query:string)=>void;
+  grid:boolean;viewControls?:boolean;searchLabel?:string;placeholder?:string;changeView?:(grid:boolean)=>void;render:(grid:boolean,query:string,page:SourcePage)=>void;
 }):{refresh:()=>void}{
   const cards=dialog.querySelector<HTMLElement>('#dropdown-source-cards')!,search=dialog.querySelector<HTMLInputElement>('.dropdown-source-search')!;
   if(options.searchLabel)search.setAttribute('aria-label',options.searchLabel);
   if(options.placeholder)search.placeholder=options.placeholder;
-  let grid=options.grid;
+  let grid=options.grid,page=0,total=0;
+  const pagination=document.createElement('div'),previous=document.createElement('button'),next=document.createElement('button'),count=document.createElement('span');
+  pagination.className='find-pagination';previous.type=next.type='button';previous.textContent='Previous';next.textContent='Next';
+  previous.setAttribute('aria-label','Previous sources page');next.setAttribute('aria-label','Next sources page');pagination.append(previous,count,next);cards.after(pagination);
   const refresh=()=>{
     cards.classList.toggle('dropdown-source-checklist',!grid);
     if(options.viewControls!==false){
       dialog.querySelector('#dropdown-grid-view')!.setAttribute('aria-pressed',String(grid));
       dialog.querySelector('#dropdown-list-view')!.setAttribute('aria-pressed',String(!grid));
     }
-    options.render(grid,search.value.toLowerCase());
+    total=0;
+    options.render(grid,search.value.toLowerCase(),items=>{
+      total=items.length;page=Math.min(page,Math.max(0,Math.ceil(total/40)-1));return items.slice(page*40,page*40+40);
+    });
+    pagination.hidden=total<=40;count.textContent=`${page*40+1}-${Math.min(total,page*40+40)} of ${total}`;
+    previous.disabled=page===0;next.disabled=(page+1)*40>=total;
   };
-  search.oninput=refresh;
+  search.oninput=()=>{page=0;refresh();};
+  previous.onclick=()=>{page--;refresh();cards.scrollTop=0;};next.onclick=()=>{page++;refresh();cards.scrollTop=0;};
   if(options.viewControls!==false)for(const [id,value]of [['dropdown-grid-view',true],['dropdown-list-view',false]] as const)dialog.querySelector<HTMLButtonElement>('#'+id)!.onclick=()=>{grid=value;options.changeView?.(grid);refresh();};
   refresh();return{refresh};
 }
@@ -63,21 +74,44 @@ export function mountDropdownOptions<T>(panel:HTMLElement,options:{
   const search=document.createElement('input'),list=document.createElement('div');
   search.type='search';search.setAttribute('aria-label',options.searchLabel??'Search dropdown options');search.placeholder='Search options…';search.autocomplete='off';
   list.className='cell-dropdown-options';list.setAttribute('role','listbox');list.setAttribute('aria-label',options.name+' options');panel.replaceChildren(search,list);
-  const filter=()=>{
-    const matches=options.choices.filter(choice=>options.value(choice).toLowerCase().includes(search.value.toLowerCase()));list.replaceChildren();
-    for(const choice of matches){
-      const value=options.value(choice),button=document.createElement('button');button.type='button';button.setAttribute('role','option');button.tabIndex=-1;
+  const normalized=options.choices.map(choice=>({choice,value:options.value(choice),lower:options.value(choice).toLowerCase()}));
+  let matches=normalized,page=0,active=0;
+  const pagination=document.createElement('div'),previous=document.createElement('button'),next=document.createElement('button'),count=document.createElement('span');
+  pagination.className='find-pagination';previous.type=next.type='button';previous.textContent='Previous';next.textContent='Next';
+  previous.setAttribute('aria-label','Previous dropdown options');next.setAttribute('aria-label','Next dropdown options');pagination.append(previous,count,next);panel.append(pagination);
+  const draw=()=>{
+    list.replaceChildren();
+    for(let i=page*80;i<Math.min(matches.length,page*80+80);i++){
+      const {choice,value}=matches[i],button=document.createElement('button');button.type='button';button.setAttribute('role','option');button.tabIndex=i===active?0:-1;button.dataset.optionIndex=String(i);
       button.textContent=value===''?'(Blank)':value===' '?'(Space)':value;button.title=value;button.setAttribute('aria-selected',String(options.selected(choice)));button.onclick=()=>options.choose(choice);list.append(button);
     }
-    const entry=list.querySelector<HTMLButtonElement>('[aria-selected="true"]')??list.querySelector<HTMLButtonElement>('button');if(entry)entry.tabIndex=0;
     if(!matches.length)list.textContent=options.choices.length?'No matching options.':options.empty??'No available options.';
+    pagination.hidden=matches.length<=80;count.textContent=`${page*80+1}-${Math.min(matches.length,page*80+80)} of ${matches.length}`;
+    previous.disabled=page===0;next.disabled=(page+1)*80>=matches.length;
     options.position();
+  };
+  const focus=(index:number)=>{
+    if(!matches.length)return;
+    active=index;const targetPage=Math.floor(index/80);
+    if(page!==targetPage){page=targetPage;draw();}
+    list.querySelectorAll<HTMLButtonElement>('[role=option]').forEach(button=>button.tabIndex=Number(button.dataset.optionIndex)===index?0:-1);
+    const button=list.querySelector<HTMLButtonElement>(`[data-option-index="${index}"]`)!;button.focus({preventScroll:true});button.scrollIntoView({block:'nearest'});
+  };
+  previous.onclick=()=>{page--;active=page*80;draw();list.scrollTop=0;};next.onclick=()=>{page++;active=page*80;draw();list.scrollTop=0;};
+  optionNavigation.set(list,(key,focused)=>{
+    const at=focused===search?-1:Number((focused as HTMLElement)?.dataset.optionIndex??active);
+    focus(key==='Home'?0:key==='End'?matches.length-1:key==='ArrowDown'?(at+1)%matches.length:at<0?matches.length-1:(at-1+matches.length)%matches.length);
+  });
+  const filter=()=>{
+    const query=search.value.toLowerCase();matches=normalized.filter(choice=>choice.lower.includes(query));
+    active=Math.max(0,matches.findIndex(entry=>options.selected(entry.choice)));page=Math.floor(active/80);draw();
   };
   search.oninput=filter;filter();return{search,list};
 }
 export function dropdownOptionsKey(e:KeyboardEvent,search:HTMLInputElement,list:HTMLElement):void{
   const focused=document.activeElement;
   if((focused===search&&['ArrowDown','ArrowUp'].includes(e.key))||(focused?.getAttribute('role')==='option'&&['ArrowDown','ArrowUp','Home','End'].includes(e.key))){
+    const navigate=optionNavigation.get(list);if(navigate){e.preventDefault();navigate(e.key,focused);return;}
     e.preventDefault();const entries=[...list.querySelectorAll<HTMLButtonElement>('[role="option"]')],at=entries.indexOf(focused as HTMLButtonElement);
     const next=e.key==='Home'?0:e.key==='End'?entries.length-1:(at+(e.key==='ArrowDown'?1:at<0?0:-1)+entries.length)%entries.length;
     if(entries.length){entries.forEach((entry,i)=>entry.tabIndex=i===next?0:-1);entries[next].focus({preventScroll:true});entries[next].scrollIntoView({block:'nearest'});}

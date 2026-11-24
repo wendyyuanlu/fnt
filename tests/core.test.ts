@@ -1,6 +1,63 @@
 import { describe, expect, it } from 'vitest';
-import { compile, displayFormula, Engine, flatten } from '../src/formula';
-import { addRow, addTableRows, addTableColumns, tableMembershipGaps, clone, createDemo, deleteColumn, deleteRows, duplicateSheet, fillCells, getCell, insertColumn, key, move, moveColumns, moveRows, outlineMembers, renameColumn, setInput, translate } from '../src/model';
+import { compile, displayFormula, Engine, flatten, type Ast } from '../src/formula';
+import { addRow, addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, createDemo, createTranslationContext, deleteColumn, deleteRows, duplicateSheet, fillCells, getCell, inheritTableRow, insertColumn, isFault, key, mapAst, move, moveColumns, moveRows, outlineMembers, renameColumn, setInput, translate, type Workbook } from '../src/model';
+
+it('maps independently mutable AST occurrences without changing shared source subtrees',()=>{
+  const field:Ast={kind:'structured',table:'table',columns:['field'],mode:'row'};
+  const error:Ast={kind:'error',value:{error:'#REF!',detail:'original'}};
+  const literal:Ast={kind:'literal',value:{error:'#VALUE!',detail:'original'}};
+  const ast:Ast={kind:'call',name:'SUM',args:[field,{kind:'unary',op:'-',child:field},{kind:'binary',op:'+',left:error,right:literal},{kind:'range',start:error,end:{kind:'spill',child:literal}}]};
+  const before=clone(ast);
+  let n=0;
+  const mapped=mapAst(ast,node=>{
+    if(node.kind==='structured')node.columns.push(String(++n));
+    if(node.kind==='error')node.value.detail='mapped';
+    if(node.kind==='literal'&&isFault(node.value))node.value.detail='mapped';
+    return node;
+  });
+  expect(ast).toEqual(before);
+  expect(mapped.kind).toBe('call');if(mapped.kind!=='call')throw Error('Expected call');
+  expect(mapped.args[0]).toMatchObject({columns:['field','1']});
+  expect(mapped.args[1]).toMatchObject({child:{columns:['field','2']}});
+  const first=mapped.args[0];if(first.kind==='structured')first.columns.push('later');
+  expect(mapped.args[1]).toMatchObject({child:{columns:['field','2']}});
+  expect(mapped.args[2]).toMatchObject({left:{value:{detail:'mapped'}},right:{value:{detail:'mapped'}}});
+  expect(ast).toEqual(before);
+});
+
+it('reuses translation indexes equivalently and recreates them for in-place structural and metadata edits',()=>{
+  const book=createDemo(),source=book.sheets[1],target=book.sheets[2],table=book.tables[0],destination=book.tables[1];
+  const ast=compile("=SUM(A2:$B$4)+[@Ingredient]+Ingredients[Ingredient]+'Notebook'!C3",book,source.id,source.rows[1].id,source.columns[1].id);
+  const compare=(context=createTranslationContext(book))=>{
+    for(const sheet of [source,target])for(const row of sheet.rows.slice(1,4)){
+      const args=[ast,book,source.id,source.rows[1].id,source.columns[1].id,row.id,sheet.columns[1].id,sheet.id] as const;
+      expect(translate(...args,context)).toEqual(translate(...args));
+    }
+  };
+  compare();
+  move(source.rows,1,3);move(target.columns,1,4);
+  renameColumn(book,table,table.columns[0].id,'Renamed input');renameColumn(book,destination,destination.columns[1].id,'Renamed input');
+  compare();
+  const context=createTranslationContext(book),translated=translate(ast,book,source.id,source.rows[1].id,source.columns[1].id,target.rows[1].id,destination.columns[1].column,target.id,context);
+  expect(displayFormula(translated,book)).toContain('[@[Renamed input]]');
+});
+
+it('invalidates inherited marker calculations and their dependents when reusing an operation engine',()=>{
+  const sheet=blankSheet('Inheritance',8,6),book:Workbook={schema:1,id:'inherit',title:'Inheritance',revision:0,sheets:[sheet],tables:[],names:[],pickerSources:{}};
+  const table={id:'records',name:'Records',sheet:sheet.id,header:sheet.rows[0].id,rows:sheet.rows.slice(1,5).map(row=>row.id),columns:sheet.columns.slice(1,3).map((column,i)=>({id:'field-'+i,column:column.id,name:['IsMeal','Result'][i]}))};
+  book.tables.push(table);
+  setInput(book,sheet,table.rows[0],table.columns[0].column,'=TRUE');setInput(book,sheet,table.rows[0],table.columns[1].column,'=10');
+  setInput(book,sheet,table.rows[3],table.columns[0].column,'FALSE');setInput(book,sheet,table.rows[3],table.columns[1].column,'=20');
+  const row=table.rows[1],dependentRow=sheet.rows[6].id,dependentColumn=sheet.columns[3].id;
+  setInput(book,sheet,dependentRow,dependentColumn,'=IF(B3,9,2)');
+  const engine=new Engine(book),translation=createTranslationContext(book);
+  expect(engine.cell(sheet.id,dependentRow,dependentColumn)).toBe(2);
+  inheritTableRow(book,sheet,table,row,1,false,undefined,{engine,translation});
+  expect(engine.cell(sheet.id,dependentRow,dependentColumn)).toBe(9);
+  expect(engine.cell(sheet.id,row,table.columns[1].column)).toBe(20);
+  inheritTableRow(book,sheet,table,table.rows[2],2,false,undefined,{engine,translation});
+  expect(engine.cell(sheet.id,table.rows[2],table.columns[1].column)).toEqual(new Engine(book).cell(sheet.id,table.rows[2],table.columns[1].column));
+});
 
 it('summary identities stay visible, move with their details and do not reanchor after deletion',()=>{
   const b=createDemo(),s=b.sheets[3],rows=s.rows.slice(1,4).map(r=>r.id),columns=s.columns.slice(1,4).map(c=>c.id),cells=clone(s.cells);
