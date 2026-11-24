@@ -100,6 +100,43 @@ test('scoped title changes repaint the heading and persist with Undo',async({pag
   await page.locator('[data-action="undo"]').click();await expect(page.locator('#title')).toHaveText(before);
 });
 
+test('paged DD choices retain explicit source identity for duplicate labels and Custom through search, Undo and reload',async({page})=>{
+  await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
+  const sources=await page.evaluate(async()=>{
+    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{allTables}=await import(p+'model.ts') as typeof import('../../src/model'),{addReferenceValue,referenceLabel}=await import(p+'references.ts') as typeof import('../../src/references'),store=await Store.open();
+    try{
+      const state=(await store.load())!,book=state.book,result=[];
+      for(const name of ['Country','Category']){
+        const source=book.references!.find(source=>referenceLabel(source)===name&&source.group==='Snack');
+        if(!source)throw Error(`Missing synthetic ${name} dropdown source.`);
+        for(let i=0;i<85;i++)addReferenceValue(book,source,`${name} synthetic ${i}`);
+        const row=addReferenceValue(book,source,'Shared food'),table=allTables(book).find(table=>table.id===source.table)!;
+        result.push({table:table.id,row,column:source.column!});
+      }
+      await store.save(book,state.version,'Synthetic duplicate DD labels');return result;
+    }finally{store.close();}
+  });
+  await page.reload();await page.getByRole('button',{name:'Notebook',exact:true}).click();
+  const cell=page.locator('td[data-r="2"][data-c="2"]');
+  await cell.click();await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();
+  await page.getByRole('checkbox',{name:'Snack / Country',exact:true}).check();await page.getByRole('checkbox',{name:'Snack / Category',exact:true}).check();await page.getByRole('button',{name:'Apply dropdown',exact:true}).click();
+  const binding=async()=>page.evaluate(async()=>{
+    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{key}=await import(p+'model.ts') as typeof import('../../src/model'),store=await Store.open();
+    try{const book=(await store.load())!.book,s=book.sheets.find(s=>s.name==='Notebook')!;return s.cells[key(s.rows[2].id,s.columns[2].id)].binding;}finally{store.close();}
+  });
+  await cell.click();await page.getByRole('button',{name:'Next dropdown options',exact:true}).click();await page.getByRole('option',{name:'Shared food',exact:true}).click();
+  await expect(page.locator('#save-state')).toContainText('Saved');expect(await binding()).toEqual(sources[0]);
+  await cell.click();await page.getByRole('tab',{name:'Snack / Category',exact:true}).click();await page.getByRole('searchbox',{name:'Search dropdown options'}).fill('Shared food');await page.getByRole('option',{name:'Shared food',exact:true}).click();
+  await expect(page.locator('#save-state')).toContainText('Saved');expect(await binding()).toEqual(sources[1]);
+  await page.locator('[data-action="undo"]').click();await expect(page.locator('#save-state')).toContainText('Saved');expect(await binding()).toEqual(sources[0]);
+  await page.locator('[data-action="redo"]').click();await expect(page.locator('#save-state')).toContainText('Saved');expect(await binding()).toEqual(sources[1]);
+  await cell.click();await page.getByRole('button',{name:'Custom',exact:true}).click();await page.getByRole('textbox',{name:'Edit selected cell',exact:true}).fill('Shared food');await page.keyboard.press('Enter');
+  await expect(cell).not.toHaveClass(/linked/);await expect(page.locator('#save-state')).toContainText('Saved');await page.reload();
+  await expect(cell).toHaveText('Shared food');expect(await binding()).toBeUndefined();
+  await page.locator('[data-action="undo"]').click();await expect(page.locator('#save-state')).toContainText('Saved');await page.reload();
+  await expect(cell).toHaveClass(/linked/);expect(await binding()).toEqual(sources[1]);
+});
+
 test('touch group actions retain real pointer coordinates',async({browser})=>{
   const context=await browser.newContext({baseURL:'http://127.0.0.1:5388/',viewport:{width:390,height:844},isMobile:true,hasTouch:true});
   try{
