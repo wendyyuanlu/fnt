@@ -172,7 +172,7 @@ for(const axis of ['row','column'] as const)test(`summary ${axis} changes previe
   const tagged=page.locator(axis==='row'?'td[data-c="0"] .hypothetical-badge':'td[data-r="0"] .hypothetical-badge');
   await select(2);await page.keyboard.press('Control+h');await select(3);await page.keyboard.press('Control+Shift+h');
   const before=await snapshot(page);await select(1);await page.keyboard.press('Control+h');
-  const dialog=page.getByRole('dialog');await expect(dialog.locator('h2')).toHaveText('Overwrite manual tagging?');
+  const dialog=page.getByRole('dialog');await expect(dialog.getByRole('heading',{level:1})).toHaveText('Overwrite manual tagging?');
   await expect(dialog.getByRole('button',{name:'Keep manual tags',exact:true})).toHaveCount(0);
   await expect(dialog.getByRole('table')).toHaveCount(1);await expect(dialog.locator('thead tr')).toHaveCount(1);
   if(axis==='row'){
@@ -260,7 +260,7 @@ test('saves independently customizable treatments, colors and names, with row pr
   await page.locator('th[data-col="1"] .column-index').click();await page.keyboard.press('Control+h');const before=await snapshot(page);
   await page.getByRole('button',{name:'Hypo tag styling',exact:true}).click();
   await expect(page.locator('.treatment-axis + #hypothetical-preview')).toHaveCount(1);
-  await expect(page.locator('.hypothetical-dialog h2')).toHaveText('Hypo styling');
+  await expect(page.locator('.hypothetical-dialog').getByRole('heading',{level:1})).toHaveText('Hypo styling');
   await expect(page.locator('.treatment-axis')).toBeHidden();
   const fields=page.locator('.treatment-fields'),sections=page.locator('.treatment-section');
   expect(await sections.locator('legend').allTextContents()).toEqual(['Pattern','Text','Fill','Badge']);
@@ -285,7 +285,8 @@ test('saves independently customizable treatments, colors and names, with row pr
   for(const portion of [0,.5,1]){
     await dialog.evaluate((el,portion)=>{el.scrollTop=(el.scrollHeight-el.clientHeight)*portion;},portion);
     const bottom=(await dialog.boundingBox())!,buttons=(await footer.boundingBox())!;
-    expect(Math.abs(buttons.y+buttons.height-(bottom.y+bottom.height-1))).toBeLessThan(1);
+    const inset=await dialog.evaluate(el=>{const style=getComputedStyle(el);return parseFloat(style.borderBottomWidth)+parseFloat(style.paddingBottom);});
+    expect(Math.abs(buttons.y+buttons.height-(bottom.y+bottom.height-inset))).toBeLessThan(1);
   }
   expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
   await expect(page.locator('#hyp-badgeDashSize')).toBeDisabled();

@@ -53,7 +53,9 @@ Excel packages, recovery histories, tokens and subsequent browser edits are not
 automatically bundled or published.
 
 Browser tests run their synthetic starter on a separate development server at
-`http://127.0.0.1:5174`, with `VITE_FNT_SYNTHETIC_STARTER=true`. Normal development
+`http://127.0.0.1:5184`, with `VITE_FNT_SYNTHETIC_STARTER=true`, public development
+on port 5185, and production on port 4184. The runner owns these test-only servers
+and refuses to reuse an existing server; user previews on 4173/5173 stay separate. Normal development
 does not enable that test-only setting. Merely visiting demo tables or migrating
 their supporting dropdown records does not prevent an untouched demo upgrade;
 actual user edits, sync configuration and attached originals still do.
@@ -179,6 +181,10 @@ remain viewable only in history.
   in-cell editing; double-click or **Expand** opens a multiline textarea over the
   cell, not a dialog. It adapts to the visible viewport on mobile. Clicking outside
   applies changes; Escape cancels and Ctrl/Cmd+Enter applies from the keyboard.
+  Rejected edits, such as duplicate table headers, retain their draft and focused
+  editor for correction or cancellation without navigating away.
+  Autosave reports **Saved** only when its acknowledged edit generation is still
+  current; completion of an older save cannot mark newer pending edits as saved.
   Cells never show horizontal or vertical scrollbars, including while typing.
   Long in-cell drafts still scroll to the caret; double-click opens the full editor.
   Editing notes does not change wrapping. Formula-column cells can be manually overridden.

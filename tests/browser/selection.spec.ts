@@ -69,7 +69,7 @@ test('arrow keys commit in-cell drafts and immediately select the surrounding ce
   await expect(cell(page,4,4)).toHaveCSS('white-space','nowrap');
   await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.reload();await expect(cell(page,4,4)).toHaveText('5');
 });
-test('a rejected header rename prevents arrow navigation and preserves its draft',async({page})=>{
+for(const mode of ['inline','formula','expanded'] as const)test(`a rejected header rename preserves the ${mode} draft and allows cancellation or correction`,async({page})=>{
   await fixture(page);
   await page.evaluate(async()=>{
     const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
@@ -79,10 +79,20 @@ test('a rejected header rename prevents arrow navigation and preserves its draft
       await store.save(state.book,state.version,'Synthetic header guard');
     }finally{store.close();}
   });
-  await page.reload();await cell(page,2,2).click();await page.keyboard.press('F2');
-  const editor=page.getByRole('textbox',{name:'Edit selected cell',exact:true});await editor.fill('r2c3');await editor.press('ArrowRight');
-  await expect(cell(page,2,2)).toHaveClass(/active/);await expect(editor).toHaveValue('r2c3');await expect(page.locator('#error')).toBeVisible();
+  await page.reload();
+  const open=async()=>{
+    await cell(page,2,2).click();
+    if(mode==='inline')await page.keyboard.press('F2');else if(mode==='expanded')await cell(page,2,2).dblclick();
+    return mode==='formula'?page.locator('#formula'):page.getByRole('textbox',{name:mode==='inline'?'Edit selected cell':'Expanded cell editor',exact:true});
+  };
+  const editor=await open(),commit=mode==='expanded'?'Tab':'ArrowRight';await editor.fill('r2c3');await editor.press(commit);
+  await expect(cell(page,2,2)).toHaveClass(/active/);await expect(editor).toHaveValue('r2c3');await expect(editor).toBeFocused();await expect(page.locator('#error')).toBeVisible();
   await page.keyboard.press('Escape');await expect(cell(page,2,2)).toHaveText('r2c2');
+  await open();await editor.fill('r2c3');await editor.press(commit);await editor.fill('Corrected header');await editor.press(commit);
+  await expect(cell(page,2,2)).toHaveText('Corrected header');await expect(cell(page,2,3)).toHaveClass(/active/);
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(cell(page,2,2)).toHaveText('r2c2');
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.reload();
+  await expect(cell(page,2,2)).toHaveText('Corrected header');
 });
 test('disjoint copying reports an explicit error instead of including unselected cells',async({page})=>{
   await fixture(page);await cell(page,2,2).click();await cell(page,4,7).click({modifiers:['Control']});

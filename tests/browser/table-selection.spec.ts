@@ -575,7 +575,7 @@ test('copying a compacted sheet row uses displayed cells and actual formula orig
   await page.getByRole('button',{name:'Redo',exact:true}).click();await snapshot(page);await page.reload();
   await expect(page.locator('td[data-r="17"][data-c="3"]')).toHaveText('26');
 });
-test('native single-cell copy from an empty dropdown search replaces the old row clipboard and preserves linked identity',async({page})=>{
+test('native single-cell copy from an empty dropdown search replaces the old row clipboard and preserves linked identity',async({page,isMobile})=>{
   await fixture(page);
   await page.evaluate(async()=>{
     const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
@@ -588,11 +588,15 @@ test('native single-cell copy from an empty dropdown search replaces the old row
   });await page.reload();
   const original=(await snapshot(page)).sheets[0],binding=original.cells[`${original.rows[10].id}:${original.columns[1].id}`].binding;
   await page.locator('[data-row-select="10"] .row-index').click();await page.getByRole('button',{name:'Copy',exact:true}).click();
-  await page.locator('td[data-r="10"][data-c="1"]').click();await expect(page.locator('.cell-dropdown input')).toBeFocused();
+  await page.locator('td[data-r="10"][data-c="1"]').click();
+  if(isMobile){await expect(page.locator('.cell-dropdown input')).not.toBeFocused();await page.locator('.cell-dropdown input').tap();}
+  await expect(page.locator('.cell-dropdown input')).toBeFocused();
   const clipboard=await page.evaluateHandle(()=>{
     const data=new DataTransfer();document.activeElement!.dispatchEvent(new ClipboardEvent('copy',{clipboardData:data,bubbles:true,cancelable:true}));return data;
   });
-  await page.locator('td[data-r="11"][data-c="1"]').click();await expect(page.locator('.cell-dropdown input')).toBeFocused();
+  await page.locator('td[data-r="11"][data-c="1"]').click();
+  if(isMobile)await page.locator('.cell-dropdown input').tap();
+  await expect(page.locator('.cell-dropdown input')).toBeFocused();
   await page.locator('.cell-dropdown input').evaluate((input,data)=>input.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true})),clipboard);
   await expect(page.locator('#error')).toBeHidden();await expect(page.locator('td[data-r="11"][data-c="1"]')).toHaveText('Right 1 Name');
   await expect.poll(async()=>{const s=(await snapshot(page)).sheets[0];return s.cells[`${s.rows[11].id}:${s.columns[1].id}`].binding;}).toEqual(binding);
@@ -931,7 +935,7 @@ test('native table headers anchor before redraw with scoped compaction, wrapped 
   expect(restored.sheets[0].groups.find(g=>g.id==='native-summary')).toMatchObject({table:'scope-top',collapsed:true});
 });
 test('native sticky header remains the touch target after vertical and pinned horizontal scrolling',async({browser})=>{
-  const context=await browser.newContext({baseURL:'http://127.0.0.1:5388/',viewport:{width:390,height:844},hasTouch:true,isMobile:true});
+  const context=await browser.newContext({baseURL:test.info().project.use.baseURL,viewport:{width:390,height:844},hasTouch:true,isMobile:true});
   try{
     const page=await context.newPage();await fixture(page,90);
     await page.locator('th[data-col="1"] .column-index').tap();await page.locator('[data-action="pin"]').tap();

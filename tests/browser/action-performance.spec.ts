@@ -165,7 +165,7 @@ test('paged DD choices retain explicit source identity for duplicate labels and 
 });
 
 test('touch group actions retain real pointer coordinates',async({browser})=>{
-  const context=await browser.newContext({baseURL:'http://127.0.0.1:5388/',viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+  const context=await browser.newContext({baseURL:test.info().project.use.baseURL,viewport:{width:390,height:844},isMobile:true,hasTouch:true});
   try{
     const page=await context.newPage();await meals(page);
     await page.getByRole('button',{name:'Group controls',exact:true}).tap();

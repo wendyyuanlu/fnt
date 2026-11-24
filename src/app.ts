@@ -545,7 +545,7 @@ async function flush(label = 'Edit workbook',preservedStatus?:string): Promise<v
       }
       navigationError=undefined;
       savedGeneration = g;
-      status = state.sync ? `Saved locally - ${state.pending.length} pending changes` : preservedStatus??'Saved in this browser';
+      status = g!==generation?'Unsaved changes - saving locally...':state.sync ? `Saved locally - ${state.pending.length} pending changes` : preservedStatus??'Saved in this browser';
       channel?.postMessage({version:state.version});
     } catch(e) { scopedChanges.unshift(...records);fullSaveRequired||=full;status = 'NOT SAVED - download a backup'; flash(e); throw e; }
     finally { renderStatus(); }
@@ -1318,17 +1318,21 @@ function navigateSelection(key:string,extend=false):void{
 function applyInput(text:string): boolean {
   if(busy){flash('Wait for the current save or sync to finish.');return false;}
   if(!editableReference()||gridReference()?.error){flash('This list is read-only or unavailable. Edit its original source instead.');return false;}
-  const previousDraft=draft,literal=draft!==undefined&&draftLiteral;draft=undefined;draftLiteral=false;
-  if(!literal&&text===inputText(current())){render();return true;}
+  const previousDraft=draft,literal=draft!==undefined&&draftLiteral,formulaFocused=document.activeElement?.id==='formula';
+  if(!literal&&text===inputText(current())){draft=undefined;draftLiteral=false;render();return true;}
   const s=sheet(),row=s.rows[selected.r].id,column=s.columns[selected.c].id,owner=tableAt(book,s.id,row,column);
   const write=()=>{
     const t=allTables(book).find(t=>t.sheet===s.id&&t.header===row&&t.columns.some(c=>c.column===column));
     if(t) renameColumn(book,t,t.columns.find(c=>c.column===s.columns[selected.c].id)!.id,text);
     else writeGridCell(book,s,row,column,text,literal);
+    draft=undefined;draftLiteral=false;
   };
   const scoped=owner&&owner.header!==row&&!book.references?.some(source=>source.kind==='conversions'&&source.table===owner.id);
   const ok=scoped?mutateCell(s,row,column,write):mutate('Edit cell',write);
-  if(!ok&&!awaitingMutationConfirmation){draft=previousDraft??text;draftLiteral=literal;}
+  if(!ok&&!awaitingMutationConfirmation){
+    syncDraft(previousDraft??text,!formulaFocused,literal);
+    if(formulaFocused)root.querySelector<HTMLInputElement>('#formula')?.focus({preventScroll:true});
+  }
   return ok;
 }
 function commitDraft():boolean{

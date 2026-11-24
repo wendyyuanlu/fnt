@@ -5,7 +5,7 @@ async function snapshot(page:Page){
   await expect(page.locator('#save-state')).toContainText('Saved');
   return page.evaluate(async()=>{
     const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();
-    try{const{revision,...book}=(await store.load()).book;return book;}finally{store.close();}
+    try{const{revision,tableActivity,...book}=(await store.load()).book;return book;}finally{store.close();}
   });
 }
 async function fixture(page:Page){
