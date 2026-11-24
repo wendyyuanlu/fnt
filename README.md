@@ -233,7 +233,12 @@ remain viewable only in history.
   permit grid Copy and internal linked-cell Paste; selected search text stays native.
   Copied outlines follow stable cell identities and table relocations through Undo.
   A header insertion keeps the selected record count when another boundary in the
-  same table is chosen.
+  same table or whole-sheet selection is chosen. Whole-sheet row insertion inside
+  a table's record span registers the new rows in every crossing table before
+  inheriting editable formulas, validations and scoped groups. Inheritance reuses
+  calculation and translation indexes across the batch. Whole-sheet record paste
+  also rejoins interior membership gaps when the copied cells belong to that same
+  table; it does not absorb unrelated rows outside the table.
   Insertion, deletion, duplication, movement,
   clipboard operations, fill, grouping and hiding stay within the selected table.
   Table record moves relocate owned cells and follow exact references, DD links

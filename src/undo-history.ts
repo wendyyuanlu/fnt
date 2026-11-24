@@ -95,7 +95,7 @@ export function applyUndo(current:Workbook,entry:History):{book:Workbook;inverse
 }
 
 export function capturePatch(book:Workbook,paths:Patch['path'][]):Extract<History,{patch:unknown}>{
-  return{patch:paths.map(path=>{
+  return{patch:clone(paths.map(path=>{
     if(!path.length||path.some(key=>['__proto__','constructor','prototype'].includes(String(key))))throw Error('Invalid change path.');
     let target:unknown=book;
     for(const key of path.slice(0,-1)){
@@ -105,8 +105,8 @@ export function capturePatch(book:Workbook,paths:Patch['path'][]):Extract<Histor
 
     if(!target||typeof target!=='object')throw Error('Change target no longer exists.');
     const container=target as Record<string|number,unknown>,key=path.at(-1)!;
-    return{path,exists:own(container,key),value:clone(container[key])};
-  })};
+    return{path,exists:own(container,key),value:container[key]};
+  }))};
 }
 
 export function patchDifference(before:Extract<History,{patch:unknown}>,after:Extract<History,{patch:unknown}>):Extract<History,{patch:unknown}>{

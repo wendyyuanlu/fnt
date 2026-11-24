@@ -93,11 +93,12 @@ export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableA
     const flag=oldFlags.get(entry.source??entry.copy??'');
     if(flag!==undefined){const item=itemById.get(slots[i])!;item.hypotheticalTables??={};item.hypotheticalTables[table.id]=flag;}
   });
+  const oldPositions=new Map(old.map((id,index)=>[id,index])),memberPositions=new Map(members.map((id,index)=>[id,index]));
   sheet.groups=oldGroups.flatMap(group=>{
     if(group.table!==table.id||group.axis!==axis)return[group];
     if(group.kind==='summary'&&!axisMap.has(group.members[0]))return[];
     let original=group.members;
-    const indices=group.members.map(id=>old.indexOf(id)).filter(i=>i>=0);
+    const indices=group.members.map(id=>oldPositions.get(id)??-1).filter(i=>i>=0);
     if(edit.kind==='move'&&!group.members.every(id=>selected.has(id))){
       const inside=joining.has(group.id)||indices.length>0&&before>Math.min(...indices)&&before<=Math.max(...indices);
       original=inside?[...new Set([...group.members,...selected])]:group.members.filter(id=>!selected.has(id));
@@ -106,7 +107,7 @@ export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableA
     if(addedAt>=0){
       if(indices.length&&addedAt>Math.min(...indices)&&addedAt<=Math.max(...indices))mapped.push(...members.slice(addedAt,addedAt+addedCount));
     }
-    const ordered=members.filter(id=>mapped.includes(id));
+    const ordered=[...new Set(mapped)].sort((a,b)=>memberPositions.get(a)!-memberPositions.get(b)!);
     if(group.kind==='summary'){const anchor=axisMap.get(group.members[0])!;ordered.splice(ordered.indexOf(anchor),1);ordered.unshift(anchor);}
     return ordered.length>=(group.kind==='summary'?2:1)?[{...group,members:ordered}]:[];
   });

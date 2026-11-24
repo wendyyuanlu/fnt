@@ -1,5 +1,5 @@
 import './style.css';
-import { allSheets,allTables,addRow,addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
+import { allSheets,allTables,addRow,addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
 import { Store, SyncConflict, syncGitHub, validateBook,validateBookMetadata,validateCellChanges, type Backup, type LocalState } from './storage';
 import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch} from './undo-history';
@@ -305,7 +305,7 @@ function requestInsert(axis:'row'|'column',boundary:number,index?:number):void{
       const count=previousOwner===owner.id?previousCount:selectionMode()===(axis==='row'?'rows':'columns')?selectedAxisIndices(axis).length:1;
       const at=axis==='row'?Math.max(boundary,sheet().rows.findIndex(row=>row.id===owner.header)+1):boundary;
       runTableEdit(owner.id,axis,{kind:'insert',boundary:at,count},`Insert table ${axis==='row'?'rows':'columns'}`);
-    }else mutate(`Insert ${axis==='row'?'rows':'columns'}`,()=>insertDimensions(axis,boundary));
+    }else mutate(`Insert ${axis==='row'?'rows':'columns'}`,()=>insertDimensions(axis,boundary,!referenceId&&previousOwner===undefined?previousCount:undefined));
   }catch(error){flash(error);}
 }
 function rememberView():void{
@@ -432,10 +432,16 @@ function mutate(label: string, fn: () => void,confirmed=false,renderOptions?:{pr
     if(!changes.length){copied=priorCopy;render(renderOptions);return true;}undo.push({cells:changes});
   }else{
     const entry=structuralUndo(before,book,true);
-    if('patch'in entry)for(const change of changes){
-      const s=allSheets(before).find(s=>s.id===change.sheet)!;
-      const path:Patch['path']=[...(before.sheets.includes(s)?['sheets',before.sheets.indexOf(s)]:['dropdownData','sheets',before.dropdownData!.sheets.indexOf(s)]),'cells',change.key];
-      if(!entry.patch.some(p=>p.path.length<path.length&&p.path.every((key,i)=>key===path[i])))entry.patch.push({path,exists:change.value!==undefined,value:clone(change.value)});
+    if('patch'in entry){
+      const parents=new Set(entry.patch.map(p=>JSON.stringify(p.path))),paths=new Map(allSheets(before).map(s=>[s.id,before.sheets.includes(s)?['sheets',before.sheets.indexOf(s)]:['dropdownData','sheets',before.dropdownData!.sheets.indexOf(s)]]));
+      const additions:Patch[]=[];
+      for(const change of changes){
+        const path:Patch['path']=[...paths.get(change.sheet)!,'cells',change.key];
+        let covered=false;
+        for(let length=1;length<path.length&&!covered;length++)covered=parents.has(JSON.stringify(path.slice(0,length)));
+        if(!covered)additions.push({path,exists:change.value!==undefined,value:change.value});
+      }
+      for(const patch of clone(additions))entry.patch.push(patch);
     }
     if('patch'in entry&&!entry.patch.length){copied=priorCopy;render(renderOptions);return true;}undo.push(entry);
   }
@@ -1428,18 +1434,39 @@ function pasteCells():void {
     return;
   }
   mutate('Paste cells',()=>{
+    let positionAt=pastePositions(source),translations=createTranslationContext(book);
+    const originAt=(i:number,j:number)=>source.origins?.[i][j]??{row:source.rows[i],column:source.columns[j]};
+    const sourceIndex=translations.sheets.get(from.id)!;
+    for(const [i,row]of source.cells.entries())for(const [j]of row.entries()){
+      const origin=originAt(i,j);
+      if(!sourceIndex.rows.has(origin.row)||!sourceIndex.columns.has(origin.column))throw Error('Copied source was deleted. Copy again before pasting.');
+    }
+    if(source.kind==='rows'&&!source.table){
+      const gaps=new Map<string,string[]>();
+      for(const gap of tableMembershipGaps(book))if(gap.sheet===s.id&&gap.axis==='row')gaps.set(gap.member,[...gaps.get(gap.member)??[],gap.table]);
+      const joining=new Map<string,Set<string>>();
+      source.cells.forEach((row,i)=>row.forEach((_,j)=>{
+        const position=positionAt(i,j);if(!position)return;
+        const origin=originAt(i,j),owner=translations.tableAt(from.id,origin.row,origin.column);
+        if(owner&&owner.header!==origin.row&&gaps.get(s.rows[position.r].id)?.includes(owner.id)&&owner.columns.some(field=>field.column===s.columns[position.c].id)){
+          let rows=joining.get(owner.id);if(!rows)joining.set(owner.id,rows=new Set());rows.add(s.rows[position.r].id);
+        }
+      }));
+      for(const [id,rows]of joining)addTableRows(book,s,translations.tables.get(id)!,[...rows]);
+      if(joining.size){translations=createTranslationContext(book);positionAt=pastePositions(source);}
+    }
     source.cells.forEach((row,i)=>row.forEach((cell,j)=>{
-      const position=pastePosition(i,j,source);
+      const position=positionAt(i,j);
       if(!position)throw Error('Paste exceeds this sheet or list. Add rows or columns first.');
       const row=position.r,column=position.c;
       const target=clone(cell);
-      const origin=source.origins?.[i][j]??{row:source.rows[i],column:source.columns[j]};
-      if(!from.rows.some(r=>r.id===origin.row)||!from.columns.some(c=>c.id===origin.column))throw Error('Copied source was deleted. Copy again before pasting.');
-      if(target.formula||target.binding||target.value!=null&&target.value!=='')expandAdjacentTable(book,s,s.rows[row].id,s.columns[column].id);
-      if(target.formula)target.formula=translate(target.formula,book,from.id,origin.row,origin.column,s.rows[row].id,s.columns[column].id,s.id);
-      if(target.calculation)target.calculation=translate(target.calculation,book,from.id,origin.row,origin.column,s.rows[row].id,s.columns[column].id,s.id);
-      const targetTable=allTables(book).find(t=>t.sheet===s.id&&t.header===s.rows[row].id&&t.columns.some(c=>c.column===s.columns[column].id));
-      if(targetTable)throw Error('Paste into table headers is disabled. Rename headers explicitly to protect table integrity.');
+      const origin=originAt(i,j);
+      if(!translations.tableAt(s.id,s.rows[row].id,s.columns[column].id)&&(target.formula||target.binding||target.value!=null&&target.value!=='')&&expandAdjacentTable(book,s,s.rows[row].id,s.columns[column].id)){
+        translations=createTranslationContext(book);positionAt=pastePositions(source);
+      }
+      if(target.formula)target.formula=translate(target.formula,book,from.id,origin.row,origin.column,s.rows[row].id,s.columns[column].id,s.id,translations);
+      if(target.calculation)target.calculation=translate(target.calculation,book,from.id,origin.row,origin.column,s.rows[row].id,s.columns[column].id,s.id,translations);
+      if(translations.tableAt(s.id,s.rows[row].id,s.columns[column].id)?.header===s.rows[row].id)throw Error('Paste into table headers is disabled. Rename headers explicitly to protect table integrity.');
       s.cells[key(s.rows[row].id,s.columns[column].id)]=target;
     }));
   });
@@ -1451,7 +1478,7 @@ function copiedText(source:NonNullable<typeof copied>):string{
     return cellText(cell,s,s.rows.findIndex(r=>r.id===origin.row),s.columns.findIndex(c=>c.id===origin.column));
   })));
 }
-function pastePosition(i:number,j:number,source?:NonNullable<typeof copied>):typeof selected|undefined{
+function pastePositions(source?:NonNullable<typeof copied>):(i:number,j:number)=>typeof selected|undefined{
   const s=sheet(),view=gridReference(),owner=scopedSelectionTable(),mode=selectionMode(),start=mode==='cells'?{...selected}:{r:bounds().r1,c:bounds().c1};
   const sheetAxis=!owner&&(mode==='rows'||mode==='columns'||!source?.table&&(source?.kind==='rows'||source?.kind==='columns'));
   if(source?.kind==='rows'){
@@ -1462,14 +1489,18 @@ function pastePosition(i:number,j:number,source?:NonNullable<typeof copied>):typ
     if(!source.table){const display=mode==='cells'?groupProjection?.display(s.rows[start.r].id,s.columns[start.c].id):undefined;if(display)start.c=s.columns.findIndex(column=>column.id===display.column);start.r=0;}
     else if(owner)start.r=s.rows.findIndex(row=>row.id===owner.header);
   }
-  const rows=s.rows.map((_,r)=>r).filter(r=>r>=start.r&&(!view||view.rows.includes(s.rows[r].id))&&(!owner||owner.header===s.rows[r].id||owner.rows.includes(s.rows[r].id))),cols=s.columns.map((_,c)=>c).filter(c=>c>=start.c&&(!view||view.columns.includes(s.columns[c].id))&&(!owner||owner.columns.some(field=>field.column===s.columns[c].id)));
-  if(rows[i]===undefined||cols[j]===undefined)return;
-  if(sheetAxis){
-    const position=groupProjection?.source(s.rows[rows[i]].id,s.columns[cols[j]].id);
-    if(!position)throw Error('This displayed table slot is empty because members are hidden. Show or expand them before pasting here.');
-    return{r:s.rows.findIndex(row=>row.id===position.row),c:s.columns.findIndex(column=>column.id===position.column)};
-  }
-  return{r:rows[i],c:cols[j]};
+  const rowIndices=new Map(s.rows.map((row,index)=>[row.id,index])),columnIndices=new Map(s.columns.map((column,index)=>[column.id,index]));
+  const viewRows=view?new Set(view.rows):undefined,viewColumns=view?new Set(view.columns):undefined,ownerRows=owner?new Set([owner.header,...owner.rows]):undefined,ownerColumns=owner?new Set(owner.columns.map(field=>field.column)):undefined;
+  const rows=s.rows.map((_,r)=>r).filter(r=>r>=start.r&&(!viewRows||viewRows.has(s.rows[r].id))&&(!ownerRows||ownerRows.has(s.rows[r].id))),cols=s.columns.map((_,c)=>c).filter(c=>c>=start.c&&(!viewColumns||viewColumns.has(s.columns[c].id))&&(!ownerColumns||ownerColumns.has(s.columns[c].id)));
+  return(i,j)=>{
+    if(rows[i]===undefined||cols[j]===undefined)return;
+    if(sheetAxis){
+      const position=groupProjection?.source(s.rows[rows[i]].id,s.columns[cols[j]].id);
+      if(!position)throw Error('This displayed table slot is empty because members are hidden. Show or expand them before pasting here.');
+      return{r:rowIndices.get(position.row)!,c:columnIndices.get(position.column)!};
+    }
+    return{r:rows[i],c:cols[j]};
+  };
 }
 async function action(name:string):Promise<void> {
   if(busy){flash('Wait for the current save or sync to finish.');return;}
@@ -2434,10 +2465,10 @@ function highlightMoveGroup(grid:HTMLElement,table:HTMLElement,axis:'row'|'colum
   const cell=grid.querySelector<HTMLElement>(`td[data-r="${row}"][data-c="${column}"]`);
   if(cell){cell.classList.add('group-drop-target');cell.dataset.dropGroup=group.id;}
 }
-function insertDimensions(axis:'row'|'column',boundary:number):void{
+function insertDimensions(axis:'row'|'column',boundary:number,requestedCount?:number):void{
   if(!referenceId&&(selectionScope||extraSelections.some(area=>area.table)))throw Error('Insertion changes whole sheet axes. Turn off Table selection and select sheet headers first.');
   const s=sheet(),b=bounds(),view=gridReference();
-  const count=axis==='row'&&selectionMode()==='rows'?selectedAxisIndices('row').filter(i=>!view||view.rows.includes(s.rows[i].id)).length:axis==='column'&&selectionMode()==='columns'?selectedAxisIndices('column').filter(i=>!view||view.columns.includes(s.columns[i].id)).length:1;
+  const count=requestedCount??(axis==='row'&&selectionMode()==='rows'?selectedAxisIndices('row').filter(i=>!view||view.rows.includes(s.rows[i].id)).length:axis==='column'&&selectionMode()==='columns'?selectedAxisIndices('column').filter(i=>!view||view.columns.includes(s.columns[i].id)).length:1);
   extraSelections=[];
   if(axis==='column'){
     for(let i=0;i<count;i++)insertColumn(book,s,boundary+i,view?.table);
@@ -2447,7 +2478,8 @@ function insertDimensions(axis:'row'|'column',boundary:number):void{
     const at=view?.table?Math.max(boundary,s.rows.findIndex(r=>r.id===view.table!.header)+1):boundary;
     let table=view?.table??tableAt(book,s.id,s.rows[Math.max(0,at-1)]?.id,s.columns[selected.c].id)??tableAt(book,s.id,s.rows[at]?.id,s.columns[selected.c].id);
     if(!view&&table?.header===s.rows[at]?.id)table=undefined;
-    for(let i=0;i<count;i++)addRow(book,s,at+i,table);
+    if(view)for(let i=0;i<count;i++)addRow(book,s,at+i,table);
+    else insertSheetRows(book,s,at,count,table);
     selected.r=at+count-1;anchor={...selected};
     if(count>1){anchor={r:at,c:0};selected.c=s.columns.length-1;selectionKind='rows';}else selectionKind='cells';
     page=Math.floor(at/60);
@@ -3205,7 +3237,7 @@ document.addEventListener('paste',e=>{
   if(!requireRectangle('Paste'))return;
   if(own){closeCellDropdown?.();pasteCells();return;}
   if(!editableReference()){flash('Edit the live list source instead.');return;}
-  mutate('Paste text',()=>{const rows=parseTsv(text),s=sheet();rows.forEach((row,i)=>row.forEach((v,j)=>{const p=pastePosition(i,j);if(!p)throw Error('Paste exceeds this sheet or list.');if(allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[p.r].id&&t.columns.some(c=>c.column===s.columns[p.c].id)))throw Error('Rename table headers explicitly.');writeGridCell(book,s,s.rows[p.r].id,s.columns[p.c].id,v);}));});
+  mutate('Paste text',()=>{const rows=parseTsv(text),s=sheet();let positionAt=pastePositions();rows.forEach((row,i)=>row.forEach((v,j)=>{const p=positionAt(i,j);if(!p)throw Error('Paste exceeds this sheet or list.');if(allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[p.r].id&&t.columns.some(c=>c.column===s.columns[p.c].id)))throw Error('Rename table headers explicitly.');const count=s.rows.length;writeGridCell(book,s,s.rows[p.r].id,s.columns[p.c].id,v);if(count!==s.rows.length)positionAt=pastePositions();}));});
 });
 document.addEventListener('cut',e=>{
   if(!book||['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)||document.querySelector('dialog[open]'))return;

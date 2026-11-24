@@ -187,16 +187,27 @@ export function deleteColumn(book: Workbook, sheet: Sheet, id: string): void {
   sheet.validations=sheet.validations.map(v=>({...v,columns:v.columns.filter(c=>c!==id)})).filter(v=>v.columns.length);
 }
 export function addRow(book: Workbook, sheet: Sheet, at: number, table?: Table): Row {
+  return insertRows(book,sheet,at,1,table?[table]:[])[0];
+}
+export function insertSheetRows(book:Workbook,sheet:Sheet,at:number,count:number,table?:Table):Row[]{
+  const positions=new Map(sheet.rows.map((row,index)=>[row.id,index]));
+  const owners=allTables(book).filter(owner=>owner.sheet===sheet.id&&(positions.get(owner.header)??Infinity)<at&&owner.rows.some(id=>(positions.get(id)??-1)>=at));
+  if(table&&!owners.includes(table))owners.push(table);
+  return insertRows(book,sheet,at,count,owners);
+}
+function insertRows(book:Workbook,sheet:Sheet,at:number,count:number,owners:Table[]):Row[]{
   if(at<0||at>sheet.rows.length)throw Error('Row insertion is outside the sheet.');
-  const row: Row = { id: uid() };
-  inheritInsertedGroups(sheet,'row',[{at,id:row.id}],new Set(table?[table.id]:[]));
-  sheet.rows.splice(at, 0, row);
-  if (table) {
-    const before = sheet.rows.slice(0, at).filter(r => table.rows.includes(r.id)).length;
-    table.rows.splice(before, 0, row.id);
-    inheritTableRow(book,sheet,table,row.id,before);
+  if(!Number.isInteger(count)||count<1)throw Error('Insert at least one whole row.');
+  const rows:Row[]=Array.from({length:count},()=>({id:uid()})),positions=new Map(sheet.rows.map((row,index)=>[row.id,index]));
+  const insertions=owners.map(table=>({table,before:table.rows.filter(id=>{const index=positions.get(id);return index!==undefined&&index<at;}).length}));
+  inheritInsertedGroups(sheet,'row',rows.map(row=>({at,id:row.id})),new Set(owners.map(table=>table.id)));
+  sheet.rows.splice(at,0,...rows);
+  for(const {table,before}of insertions)table.rows.splice(before,0,...rows.map(row=>row.id));
+  if(owners.length){
+    const translation=createTranslationContext(book),engine=owners.some(table=>table.columns.some(column=>['ismeal','isday','meal','weight'].includes(column.name.toLowerCase())))?new Engine(book):undefined;
+    for(const {table,before}of insertions)for(const [index,row]of rows.entries())inheritTableRow(book,sheet,table,row.id,before+index,false,undefined,{translation,engine});
   }
-  return row;
+  return rows;
 }
 function stationaryGroupBounds(group:Group,positions:ReadonlyMap<string,number>,moving:ReadonlySet<string>):{first:number;last:number} {
   let first=Infinity,last=-1;
@@ -234,7 +245,7 @@ export function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string
     if(marker&&label){value=scalar(engine.cell(sheet.id,id,label.column));if(isFault(value))throw Error('Fix the meal/day header label error before adding records.');}
     return value!==null&&value!=='';
   };
-  const sameKind=candidates.filter(id=>isHeader(id)===isHeader(row));
+  const header=candidates.length?isHeader(row):false,sameKind=candidates.filter(id=>isHeader(id)===header);
   for(const col of table.columns){
     const current=getCell(sheet,row,col.column);
     if(preserve&&(current.formula||current.calculation||current.binding))continue;
@@ -271,7 +282,9 @@ export function addTableRows(book:Workbook,sheet:Sheet,table:Table,ids:string[])
   if(!added.length)throw Error('The selected rows already belong to this table.');
   const templates=new Set(table.rows),members=new Set([...table.rows,...added]);
   table.rows=sheet.rows.filter(r=>members.has(r.id)).map(r=>r.id);
-  for(const id of added)inheritTableRow(book,sheet,table,id,table.rows.indexOf(id),true,templates);
+  const translation=createTranslationContext(book),engine=table.columns.some(column=>['ismeal','isday','meal','weight'].includes(column.name.toLowerCase()))?new Engine(book):undefined;
+  const positions=new Map(table.rows.map((id,index)=>[id,index]));
+  for(const id of added)inheritTableRow(book,sheet,table,id,positions.get(id)!,true,templates,{translation,engine});
 }
 export function addTableColumns(book:Workbook,sheet:Sheet,table:Table,ids:string[]):void{
   if(!allTables(book).includes(table)||table.sheet!==sheet.id||!ids.length||new Set(ids).size!==ids.length||ids.some(id=>!sheet.columns.some(c=>c.id===id)))throw Error('Select existing columns and a table on their sheet.');

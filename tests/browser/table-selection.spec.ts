@@ -598,6 +598,84 @@ test('native single-cell copy from an empty dropdown search replaces the old row
   await expect.poll(async()=>{const s=(await snapshot(page)).sheets[0];return s.cells[`${s.rows[11].id}:${s.columns[1].id}`].binding;}).toEqual(binding);
   await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('td[data-r="11"][data-c="1"]')).toHaveText('Middle 2 Name');
 });
+for(const grouped of [false,true])test(`whole-sheet row insertion and paste preserve both shared tables and summaries ${grouped?'with groups':'without groups'}`,async({page})=>{
+  await fixture(page);
+  await page.evaluate(async grouped=>{
+    const storage='/src/storage.ts',model='/src/model.ts';
+    const [{Store},{setInput}]=await Promise.all([import(/* @vite-ignore */storage) as Promise<typeof import('../../src/storage')>,import(/* @vite-ignore */model) as Promise<typeof import('../../src/model')>]),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0];
+      for(const name of ['Middle','Right']){
+        const table=state.book.tables.find(t=>t.name===name)!;
+        for(const [i,row]of table.rows.entries()){
+          setInput(state.book,s,row,table.columns[1].column,String(i+(name==='Middle'?3:7)));
+          setInput(state.book,s,row,table.columns[2].column,`=${name}[@Qty]*2`);
+        }
+        if(grouped)s.groups.push({id:name+'-paste-group',axis:'row',kind:'summary',table:table.id,members:[...table.rows],collapsed:false,label:name});
+      }
+      setInput(state.book,s,s.rows[0].id,s.columns[0].id,'=SUM(D10:D14)');
+      await store.save(state.book,state.version,'Disposable whole-sheet insertion');
+    }finally{store.close();}
+  },grouped);await page.reload();
+  const before=await snapshot(page);
+  await page.locator('[data-row-select="10"] .row-index').click();
+  await page.locator('[data-row-select="12"] .row-index').click({modifiers:['Shift']});
+  await expect(page.locator('.selection-count')).toHaveText(`${before.sheets[0].columns.length*3} cells`);
+  await page.getByRole('button',{name:'Copy',exact:true}).click();
+  if(grouped)await page.locator('[data-row-select="9"] [data-insert-row="10"]').click();
+  else{await page.getByRole('button',{name:'Rows & columns',exact:true}).click();await page.locator('dialog [data-op="0"]').click();}
+  const inserted=await snapshot(page);
+  for(const name of ['Middle','Right'])expect(inserted.tables.find(t=>t.name===name)!.rows).toHaveLength(7);
+  await page.getByRole('button',{name:'Paste',exact:true}).click();
+  await expect(page.locator('#error')).toBeHidden();
+  await expect(page.locator('td[data-r="10"][data-c="3"]')).toHaveText('6');
+  await expect(page.locator('td[data-r="10"][data-c="7"]')).toHaveText('14');
+  await expect(page.locator('td[data-r="0"][data-c="0"]')).toHaveText('60');
+  const pasted=await snapshot(page),s=pasted.sheets[0],original=before.sheets[0];
+  expect(s.cells[`${s.rows[10].id}:${s.columns[3].id}`].formula).toEqual(original.cells[`${original.rows[10].id}:${original.columns[3].id}`].formula);
+  await page.locator('td[data-r="10"][data-c="2"]').click();await page.locator('#formula').fill('7');await page.locator('#formula').press('Enter');
+  await expect(page.locator('td[data-r="10"][data-c="3"]')).toHaveText('14');
+  await expect(page.locator('td[data-r="0"][data-c="0"]')).toHaveText('68');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(page.locator('td[data-r="0"][data-c="0"]')).toHaveText('60');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await expect(page.locator('td[data-r="0"][data-c="0"]')).toHaveText('36');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  expect((await snapshot(page)).sheets).toEqual(before.sheets);
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await page.getByRole('button',{name:'Redo',exact:true}).click();
+  await snapshot(page);await page.reload();
+  await expect(page.locator('td[data-r="10"][data-c="3"]')).toHaveText('6');
+  await expect(page.locator('td[data-r="0"][data-c="0"]')).toHaveText('60');
+});
+test('whole-sheet record paste repairs an interior ownership gap and an earlier dependent summary, with durable Undo',async({page})=>{
+  await fixture(page);
+  await page.evaluate(async()=>{
+    const storage='/src/storage.ts',model='/src/model.ts';
+    const [{Store},{addRow,setInput,clone}]=await Promise.all([import(/* @vite-ignore */storage) as Promise<typeof import('../../src/storage')>,import(/* @vite-ignore */model) as Promise<typeof import('../../src/model')>]),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0],table=state.book.tables.find(t=>t.name==='Middle')!;
+      for(const [i,row]of table.rows.entries()){setInput(state.book,s,row,table.columns[1].column,String(i+3));setInput(state.book,s,row,table.columns[2].column,'=Middle[@Qty]*2');}
+      setInput(state.book,s,s.rows[0].id,s.columns[0].id,'=SUM(D10:D14)');
+      const source=s.rows[10].id,row=addRow(state.book,s,11);
+      for(const column of s.columns)s.cells[`${row.id}:${column.id}`]=clone(s.cells[`${source}:${column.id}`]??{});
+      await store.save(state.book,state.version,'Disposable legacy sheet-row membership gap');
+    }finally{store.close();}
+  });await page.reload();
+  await expect(page.locator('td[data-r="11"][data-c="3"]')).toHaveText('#VALUE!');
+  await expect(page.locator('td[data-r="0"][data-c="0"]')).toHaveText('#VALUE!');
+  const before=await snapshot(page);
+  await page.locator('[data-row-select="10"] .row-index').click();await page.getByRole('button',{name:'Copy',exact:true}).click();
+  await page.locator('[data-row-select="11"] .row-index').click();await page.getByRole('button',{name:'Paste',exact:true}).click();
+  await expect(page.locator('#error')).toBeHidden();
+  await expect(page.locator('td[data-r="11"][data-c="3"]')).toHaveText('6');
+  await expect(page.locator('td[data-r="0"][data-c="0"]')).toHaveText('42');
+  for(const name of ['Middle','Right'])expect((await snapshot(page)).tables.find(t=>t.name===name)!.rows).toHaveLength(5);
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  expect((await snapshot(page)).sheets).toEqual(before.sheets);
+  await expect(page.locator('td[data-r="0"][data-c="0"]')).toHaveText('#VALUE!');
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await snapshot(page);await page.reload();
+  await expect(page.locator('td[data-r="0"][data-c="0"]')).toHaveText('42');
+});
 for(const axis of ['row','column'] as const)test(`sheet ${axis} selection remains visible over compacted tables and custom fills`,async({page})=>{
   await groupFixture(page,axis,true);
   const source=axis==='row'?{r:13,c:1}:{r:9,c:4},slot=axis==='row'?12:3;

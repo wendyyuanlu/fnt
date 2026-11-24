@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compile, displayFormula, Engine, flatten, type Ast } from '../src/formula';
-import { addRow, addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, createDemo, createTranslationContext, deleteColumn, deleteRows, duplicateSheet, fillCells, getCell, inheritTableRow, insertColumn, isFault, key, mapAst, move, moveColumns, moveRows, outlineMembers, renameColumn, setInput, translate, type Workbook } from '../src/model';
+import { addRow, addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, createDemo, createTranslationContext, deleteColumn, deleteRows, duplicateSheet, fillCells, getCell, inheritTableRow, insertColumn, insertSheetRows, isFault, key, mapAst, move, moveColumns, moveRows, outlineMembers, renameColumn, setInput, translate, type Workbook } from '../src/model';
 
 it('maps independently mutable AST occurrences without changing shared source subtrees',()=>{
   const field:Ast={kind:'structured',table:'table',columns:['field'],mode:'row'};
@@ -57,6 +57,44 @@ it('invalidates inherited marker calculations and their dependents when reusing 
   expect(engine.cell(sheet.id,row,table.columns[1].column)).toBe(20);
   inheritTableRow(book,sheet,table,table.rows[2],2,false,undefined,{engine,translation});
   expect(engine.cell(sheet.id,table.rows[2],table.columns[1].column)).toEqual(new Engine(book).cell(sheet.id,table.rows[2],table.columns[1].column));
+});
+
+it('registers all crossing table owners before inheriting a batch of sheet rows',()=>{
+  const sheet=blankSheet('Shared rows',10,8),book:Workbook={schema:1,id:'shared-insert',title:'Insertion',revision:0,sheets:[sheet],tables:[],names:[],pickerSources:{}};
+  for(const [name,column]of [['Left',1],['Right',4]] as const){
+    const table={id:name,name,sheet:sheet.id,header:sheet.rows[1].id,rows:sheet.rows.slice(2,7).map(row=>row.id),columns:sheet.columns.slice(column,column+2).map((field,i)=>({id:name+i,column:field.id,name:['Qty','Result'][i]}))};
+    book.tables.push(table);
+    for(const row of table.rows){setInput(book,sheet,row,table.columns[0].column,'3');setInput(book,sheet,row,table.columns[1].column,`=${name}[@Qty]*2`);}
+    sheet.groups.push({id:name+'-group',table:table.id,axis:'row',kind:'summary',members:[...table.rows],collapsed:false,label:name});
+  }
+  const rows=insertSheetRows(book,sheet,4,3);
+  for(const table of book.tables){
+    expect(table.rows).toEqual(sheet.rows.slice(2,10).map(row=>row.id));
+    expect(sheet.groups.find(group=>group.table===table.id)!.members).toEqual(table.rows);
+    for(const row of rows){
+      setInput(book,sheet,row.id,table.columns[0].column,'7');
+      expect(new Engine(book).cell(sheet.id,row.id,table.columns[1].column)).toBe(14);
+    }
+  }
+  const before=clone(book.tables.map(table=>table.rows));
+  insertSheetRows(book,sheet,1,2);
+  expect(book.tables.map(table=>table.rows)).toEqual(before);
+  expect(tableMembershipGaps(book)).toEqual([]);
+});
+
+it('batch insertion immediately below a table header keeps editable marker formulas and external summaries valid',()=>{
+  const sheet=blankSheet('Markers',10,5),book:Workbook={schema:1,id:'marker-insert',title:'Markers',revision:0,sheets:[sheet],tables:[],names:[],pickerSources:{}};
+  const table={id:'meals',name:'Meals',sheet:sheet.id,header:sheet.rows[1].id,rows:sheet.rows.slice(2,7).map(row=>row.id),columns:sheet.columns.slice(0,3).map((column,i)=>({id:'field'+i,column:column.id,name:['Meal','isMeal','Result'][i]}))};
+  book.tables.push(table);
+  for(const row of table.rows){setInput(book,sheet,row,table.columns[1].column,'=Meals[@Meal]<>""');setInput(book,sheet,row,table.columns[2].column,'=IF(Meals[@isMeal],10,2)');}
+  setInput(book,sheet,sheet.rows[0].id,sheet.columns[4].id,'=SUM(C2:C7)');
+  const rows=insertSheetRows(book,sheet,2,3);
+  for(const row of rows)expect(new Engine(book).cell(sheet.id,row.id,table.columns[1].column)).toBe(false);
+  setInput(book,sheet,rows[1].id,table.columns[0].column,'New meal');
+  const engine=new Engine(book);
+  expect(engine.cell(sheet.id,rows[1].id,table.columns[2].column)).toBe(10);
+  expect(engine.cell(sheet.id,sheet.rows[0].id,sheet.columns[4].id)).toBe(24);
+  expect(getCell(sheet,rows[1].id,table.columns[1].column).formula).toMatchObject({kind:'binary'});
 });
 
 it('summary identities stay visible, move with their details and do not reanchor after deletion',()=>{

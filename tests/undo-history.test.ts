@@ -1,6 +1,23 @@
 import {expect,it} from 'vitest';
 import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo} from '../src/undo-history';
 import {clone,createDemo,getCell,insertColumn,key,renameColumn,setInput} from '../src/model';
+import {Engine} from '../src/formula';
+
+it('captures shared formula graphs independently and replays independently editable cells',()=>{
+  const book=createDemo(),s=book.sheets[0],first=s.rows[1].id,second=s.rows[2].id,column=s.columns[0].id;
+  setInput(book,s,first,column,'=2*3');
+  s.cells[key(second,column)]={...getCell(s,first,column)};
+  const paths=[first,second].map(row=>['sheets',0,'cells',key(row,column)]),history=capturePatch(book,paths);
+  const ast=getCell(s,first,column).formula!;
+  if(ast.kind!=='binary'||ast.left.kind!=='literal')throw Error('Expected binary formula');
+  ast.left.value=9;
+  const restored=applyUndo(book,history).book,engine=new Engine(restored);
+  expect(engine.cell(s.id,first,column)).toBe(6);expect(engine.cell(s.id,second,column)).toBe(6);
+  setInput(restored,restored.sheets[0],first,column,'=7');
+  expect(new Engine(restored).cell(s.id,second,column)).toBe(6);
+  expect(new Engine(applyUndo(restored,history).book).cell(s.id,first,column)).toBe(6);
+  expect(new Engine(book).cell(s.id,first,column)).toBe(27);
+});
 
 it('roundtrips structural edits without snapshotting unchanged formula cells',()=>{
   const before=createDemo(),after=clone(before),table=after.tables[0],sheet=after.sheets.find(sheet=>sheet.id===table.sheet)!;
