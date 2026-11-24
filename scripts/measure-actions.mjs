@@ -4,7 +4,7 @@ import {writeFile} from 'node:fs/promises';
 
 const url=process.argv[2],output=process.argv[3];
 const phase=process.argv[4]??'all';
-if(!['all','manager','find','columns'].includes(phase))throw Error('Unknown measurement phase.');
+if(!['all','manager','find','columns','followup'].includes(phase))throw Error('Unknown measurement phase.');
 if(!url||!output)throw Error('Usage: node scripts\\measure-actions.mjs URL OUTPUT.json');
 const html=await(await fetch(url)).text(),asset=html.match(/src="([^"]+\.js)"/)?.[1];
 if(!asset)throw Error('No production entry script found.');
@@ -13,7 +13,7 @@ const fixture=await(await fetch(new URL('testing-workbook.json',url))).arrayBuff
 const result={url,phase,asset,bundleSHA256:createHash('sha256').update(bundle).digest('hex'),fixtureSHA256:createHash('sha256').update(Buffer.from(fixture)).digest('hex'),viewport:{width:1440,height:950},samples:[],errors:[]};
 const browser=await chromium.launch({channel:process.env.FNT_BROWSER_CHANNEL??'msedge',headless:true});
 let context,page;
-async function fresh(sheet='Meals'){
+async function fresh(sheet='Meals',quietMs=1500){
   await context?.close();
   context=await browser.newContext({viewport:result.viewport,serviceWorkers:'block'});
   page=await context.newPage();page.setDefaultTimeout(180000);
@@ -22,7 +22,7 @@ async function fresh(sheet='Meals'){
     window.actionTasks=[];
     new PerformanceObserver(list=>window.actionTasks.push(...list.getEntries().map(e=>({start:e.startTime,duration:e.duration})))).observe({type:'longtask',buffered:true});
   });
-  await page.goto(url);await page.locator('.grid').waitFor();await page.waitForTimeout(1500);
+  await page.goto(url);await page.locator('.grid').waitFor();if(quietMs)await page.waitForTimeout(quietMs);
   await page.getByRole('button',{name:sheet,exact:true}).click();await saved();
 }
 async function saved(){
@@ -84,6 +84,39 @@ async function openManager(){
   result.managerPreviews=await page.locator('.group-cell-preview').count();
 }
 try{
+  if(phase==='followup'){
+    await fresh('Meals',0);await page.locator('[data-action="find"]').click();
+    await sample('immediate-cold-find-a',async()=>{
+      await page.locator('#find-text').fill('a');
+      await page.waitForFunction(()=>document.querySelector('#find-count')?.textContent==='Results found (9962)');
+    });
+    await fresh();
+    await page.getByRole('button',{name:'Group controls',exact:true}).click();await page.getByRole('button',{name:'Manage groups',exact:true}).click();
+    await sample('summary-expand-manager',()=>page.locator('[data-group-card]').first().locator('[data-toggle]').click());
+    await page.getByRole('button',{name:'Close group manager'}).click();
+    await sample('table-selection-mode',()=>page.getByRole('button',{name:'Table-constrained header selection',exact:true}).click());
+    await select('F3');await page.locator('#formula').fill('3');
+    await sample('Meals-F3-cell-edit',()=>page.locator('#formula').press('Enter'));
+    await sample('Meals-F3-undo',()=>page.locator('[data-action="undo"]').click());
+    await sample('Meals-F3-redo',()=>page.locator('[data-action="redo"]').click());
+    await fresh('Daily log');
+    await sample('sheet-row-insert',()=>page.locator('[data-insert-row="2"]').first().click());
+    await sample('sheet-row-insert-undo',()=>page.locator('[data-action="undo"]').click());
+    await fresh('Meals',0);await page.locator('#grid-scroll').evaluate(el=>el.scrollTop=900);
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await page.evaluate(()=>{
+      window.stickySamples=[];
+      const grid=document.querySelector('#grid-scroll');
+      grid.addEventListener('scroll',()=>{
+        const header=grid.querySelector('.sticky-table-header');if(!header)return;
+        window.stickySamples.push({scroll:grid.scrollTop,mismatch:header.getBoundingClientRect().top-grid.querySelector('thead').getBoundingClientRect().bottom});
+      },{passive:true});
+    });
+    await page.mouse.move(800,500);
+    await sample('native-sticky-wheel-sequence',async()=>{for(const delta of [240,240,-120,240,-240,-120]){await page.mouse.wheel(0,delta);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));}});
+    result.stickySamples=await page.evaluate(()=>window.stickySamples);
+    await page.screenshot({path:output.replace(/\.json$/,'-sticky.png')});
+  }
   if(phase==='all'||phase==='manager'){
   await fresh();result.groupBefore=await fingerprint();await select('A1:A2');await openManager();
   await sample('plain-group-create-manager-open',()=>page.locator('[data-create-kind="range"][data-create-axis="row"]').click());

@@ -1,6 +1,7 @@
 import { allTables,allSheets,clone,createTranslationContext,getCell,groupMoveTarget,inheritTableRow,key,summaryMoveMembers,translate,uid,uniqueName,type Cell,type TranslationContext,type Workbook} from './model';
 import {relocate} from './cell-operations';
 import {Engine} from './formula';
+import {editSnapshot} from './undo-history';
 
 type Axis='row'|'column';
 export type TableAxisEdit={kind:'insert';boundary:number;count:number}|{kind:'delete';ids:string[]}|{kind:'duplicate';ids:string[]}|{kind:'move';ids:string[];boundary:number;group?:string};
@@ -13,7 +14,9 @@ export class TableExpansionConflict extends Error{
 
 /** ownedCandidate opts out of rollback: book must be an independent, disposable snapshot. */
 export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableAxisEdit,trace?:Map<string,{sheet:string;row:string;column:string}|null>,options:{ownedCandidate?:boolean}={}):string[]{
-  const next=options.ownedCandidate?book:clone(book),table=allTables(next).find(t=>t.id===tableId);
+  const owner=allTables(book).find(table=>table.id===tableId);
+  if(!owner)throw Error('The selected table no longer exists.');
+  const next=options.ownedCandidate?book:editSnapshot(book,new Set([owner.sheet])),table=allTables(next).find(t=>t.id===tableId);
   if(!table)throw Error('The selected table no longer exists.');
   const sheet=allSheets(next).find(s=>s.id===table.sheet)!;
   const items=axis==='row'?sheet.rows:sheet.columns,positions=new Map(items.map((item,i)=>[item.id,i]));

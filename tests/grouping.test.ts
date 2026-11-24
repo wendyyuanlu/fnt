@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import {addRow,blankSheet,clone,duplicateSheet,getCell,groupMoveTarget,hypotheticalTagDescendants,insertColumn,moveColumns,moveRows,moveIntoGroup,moveTargetGroups,outlineMembers,setInput,setHypotheticalTag,summaryMoveMembers,type Group,type Table,type Workbook} from '../src/model';
 import {Engine} from '../src/formula';
-import {groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,tableGroupProjection,ungroupPlainGroups} from '../src/grouping';
+import {groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,summaryRowLayout,tableGroupMembership,tableGroupProjection,ungroupPlainGroups} from '../src/grouping';
 import {validateBook} from '../src/storage';
 import {createDemo} from '../src/model';
 import {exportXlsx} from '../src/xlsx-export';
@@ -18,6 +18,18 @@ function scopedFixture(){
   const book:Workbook={schema:1,id:'scope-book',title:'Synthetic scopes',revision:0,sheets:[sheet],tables,names:[],pickerSources:{}};
   return{book,sheet,left:tables[0],right:tables[1],below:tables[2]};
 }
+it('reuses table masks across unrelated edits and refreshes only relevant membership or collapsed groups',()=>{
+  const {book,sheet,left,right}=scopedFixture(),group:Group={id:'mask-summary',table:left.id,axis:'row',kind:'summary',members:left.rows.slice(0,3),collapsed:true,label:'Mask'};
+  sheet.groups.push(group);
+  const first=tableGroupMembership(book,sheet),mask=first.find(m=>m.owner===left)!;
+  expect(mask.hiddenRows.has(group.members[0])).toBe(false);expect(mask.hiddenRows.has(group.members[1])).toBe(true);
+  right.name='Unrelated rename';group.label='Cosmetic rename';
+  expect(tableGroupMembership(book,sheet).find(m=>m.owner===left)).toBe(mask);
+  group.collapsed=false;
+  const expanded=tableGroupMembership(book,sheet);expect(expanded.find(m=>m.owner===left)?.hiddenRows.size).toBe(0);
+  expect(expanded.find(m=>m.owner===right)).toBe(first.find(m=>m.owner===right));
+  left.rows.push(sheet.rows[10].id);expect(tableGroupMembership(book,sheet).find(m=>m.owner===left)?.rows.has(sheet.rows[10].id)).toBe(true);
+});
 it('projects nested row and column groups into owned slots without moving sparse neighbors or changing workbook data',()=>{
   const {book,sheet,left,right}=scopedFixture(),rows=sheet.rows.map(row=>row.id),columns=sheet.columns.map(column=>column.id);
   sheet.groups=[

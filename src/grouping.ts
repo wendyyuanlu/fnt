@@ -1,5 +1,16 @@
 import { allSheets,allTables,outlineMembers,summaryMoveMembers,type Group,type Sheet,type Workbook} from './model';
 
+const memberships=new WeakMap<ReturnType<typeof allTables>[number],{signature:string;value:{owner:ReturnType<typeof allTables>[number];rows:Set<string>;columns:Set<string>;hiddenRows:Set<string>;hiddenColumns:Set<string>}}>();
+export function tableGroupMembership(book:Workbook,sheet:Sheet){
+  return allTables(book).filter(owner=>owner.sheet===sheet.id).map(owner=>{
+    const groups=sheet.groups.filter(group=>group.table===owner.id);
+    const signature=JSON.stringify([owner.header,owner.rows,owner.columns.map(c=>c.column),groups.map(g=>[g.axis,g.kind,g.members,g.collapsed])]);
+    const previous=memberships.get(owner);if(previous?.signature===signature)return previous.value;
+    const hidden=(axis:Group['axis'])=>new Set(groups.filter(g=>g.axis===axis&&g.collapsed).flatMap(g=>outlineMembers(g,groups)));
+    const value={owner,rows:new Set([owner.header,...owner.rows]),columns:new Set(owner.columns.map(c=>c.column)),hiddenRows:hidden('row'),hiddenColumns:hidden('column')};
+    memberships.set(owner,{signature,value});return value;
+  });
+}
 const projectionCache=new WeakMap<Workbook,Map<string,{signature:string;projection:ReturnType<typeof buildTableGroupProjection>}>>();
 export function tableGroupProjection(book:Workbook,sheet:Sheet,rows:string[],columns:string[]){
   const tables=allTables(book).filter(table=>table.sheet===sheet.id);
@@ -10,13 +21,9 @@ export function tableGroupProjection(book:Workbook,sheet:Sheet,rows:string[],col
   cache.set(sheet.id,{signature,projection});return projection;
 }
 function buildTableGroupProjection(book:Workbook,sheet:Sheet,rows:string[],columns:string[]){
-  const entries=allTables(book).filter(table=>table.sheet===sheet.id).flatMap(table=>{
-    const groups=sheet.groups.filter(group=>group.table===table.id&&group.collapsed);
-    if(!groups.length)return[];
-    const rowIds=new Set([table.header,...table.rows]),columnIds=new Set(table.columns.map(field=>field.column));
+  const entries=tableGroupMembership(book,sheet).flatMap(({owner:table,rows:rowIds,columns:columnIds,hiddenRows,hiddenColumns})=>{
+    if(!hiddenRows.size&&!hiddenColumns.size)return[];
     const rowSlots=rows.filter(id=>rowIds.has(id)),columnSlots=columns.filter(id=>columnIds.has(id));
-    const hidden=(axis:Group['axis'])=>new Set(groups.filter(group=>group.axis===axis).flatMap(group=>outlineMembers(group,sheet.groups)));
-    const hiddenRows=hidden('row'),hiddenColumns=hidden('column');
     const visibleRows=rowSlots.filter(id=>!hiddenRows.has(id)),visibleColumns=columnSlots.filter(id=>!hiddenColumns.has(id));
     return[{table:table.id,rows:new Set(rowSlots),columns:new Set(columnSlots),
       sourceRows:new Map(rowSlots.map((id,i)=>[id,visibleRows[i]])),sourceColumns:new Map(columnSlots.map((id,i)=>[id,visibleColumns[i]])),

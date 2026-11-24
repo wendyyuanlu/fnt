@@ -45,13 +45,40 @@ test('Find cancels obsolete scans and every one-character match remains browsabl
   await input.fill('a');await input.fill('apple');
   await expect(count).toHaveText('Results found (60)');
   await input.fill('a');await expect(count).toHaveText(/Results found \(\d+\)/);
-  const total=Number((await count.innerText()).match(/\d+/)![0]);expect(total).toBeGreaterThan(9000);
+  const total=Number((await count.innerText()).match(/\d+/)![0]);expect(total).toBe(9962);
   await page.evaluate(()=>{const next=document.querySelector<HTMLButtonElement>('#find-next-page')!;while(!next.disabled)next.click();});
   const last=page.locator(`[data-find-match="${total-1}"]`);
   expect(await last.getAttribute('data-find-match')).toBe(String(total-1));
   await last.click();
   await expect(page.locator('.grid td.active')).toBeVisible();
   await expect(page.locator('.grid td.active')).toContainText(/a/i);
+});
+
+test('complete Save reports success only after its recovery transaction commits',async({page})=>{
+  await meals(page);
+  await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.evaluate(()=>{
+    const put=IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put=function(...args:Parameters<typeof put>){
+      const result=put.apply(this,args);
+      if(this.name==='history'&&(args[0] as {label?:string}).label==='Manual save'){
+        const deadline=performance.now()+600,transaction=this.transaction;
+        document.documentElement.dataset.checkpointPending='true';
+        const keepAlive=()=>{
+          if(performance.now()<deadline)this.get('disposable-save-test').onsuccess=keepAlive;
+        };
+        keepAlive();
+        transaction.addEventListener('complete',()=>{document.documentElement.dataset.checkpointPending='false';});
+      }
+      return result;
+    };
+  });
+  await page.locator('[data-action="save"]').click();
+  await expect(page.locator('html')).toHaveAttribute('data-checkpoint-pending','true');
+  await expect(page.locator('#save-state')).not.toContainText('Saved');
+  await expect(page.locator('html')).toHaveAttribute('data-checkpoint-pending','false');
+  await expect(page.locator('#save-state')).toHaveText('Saved locally + recovery checkpoint');
+  await page.reload();await expect(page.locator('.grid')).toBeVisible();
 });
 
 test('large dropdown options preserve End, Home, paging and selection',async({page})=>{

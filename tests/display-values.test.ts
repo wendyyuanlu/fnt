@@ -28,3 +28,42 @@ it('retains valid calculations across layout replay and binds subsequent cell in
   const structural={...next,sheets:next.sheets.map(sheet=>({...sheet,rows:[...sheet.rows].reverse()}))};
   expect(engine.rebindLayout(structural)).toBe(false);
 });
+it('rebinds proven cell-only Undo without retaining stale dependents or invalidating unrelated calculations',()=>{
+  const book=createDemo(),s=book.sheets.at(-1)!,row=s.rows[0].id,a=s.columns[0].id,b=s.columns[1].id,c=s.columns[2].id;
+  setInput(book,s,row,a,'4');setInput(book,s,row,b,'=A1*2');setInput(book,s,row,c,'=3+7');
+  const engine=new Engine(book);engine.cell(s.id,row,b);const independent=engine.cell(s.id,row,c);
+  const changes=[{sheet:s.id,key:key(row,a),value:{value:6}}],next=applyUndo(book,{cells:changes}).book;
+  expect(engine.rebindCells(next,changes.map(c=>`${c.sheet}:${c.key}`))).toBe(true);
+  expect(engine.cell(s.id,row,b)).toBe(12);expect(engine.cache.get(`${s.id}:${key(row,c)}`)).toBe(independent);
+  const structural={...next,sheets:next.sheets.map(s=>({...s,rows:[...s.rows].reverse()}))};
+  expect(engine.rebindCells(structural,[`${s.id}:${key(row,a)}`])).toBe(false);
+});
+it('shares reference and range work without stale matches, numeric results or hidden errors after edits',()=>{
+  const book=createDemo(),s=book.sheets.at(-1)!,a=s.columns[0].id,b=s.columns[1].id,c=s.columns[2].id;
+  for(let i=0;i<3;i++)setInput(book,s,s.rows[i].id,a,String(i+1));
+  setInput(book,s,s.rows[0].id,b,'=SUM(A1:A3)');setInput(book,s,s.rows[0].id,c,'=XMATCH(2,A1:A3,0,-1)');
+  const engine=new Engine(book),row=s.rows[0].id;
+  expect(engine.cell(s.id,row,b)).toBe(6);expect(engine.cell(s.id,row,c)).toBe(2);
+  setInput(book,s,s.rows[2].id,a,'2');engine.invalidate([`${s.id}:${key(s.rows[2].id,a)}`]);
+  expect(engine.cell(s.id,row,b)).toBe(5);expect(engine.cell(s.id,row,c)).toBe(3);
+  setInput(book,s,s.rows[1].id,a,'=1/0');engine.invalidate([`${s.id}:${key(s.rows[1].id,a)}`]);
+  expect(engine.cell(s.id,row,b)).toMatchObject({error:'#DIV/0!'});expect(engine.cell(s.id,row,c)).toBe(3);
+});
+it('reuses suffix match boundaries with duplicate order, blank comparisons and relevant error propagation',()=>{
+  const book=createDemo(),s=book.sheets.at(-1)!,a=s.columns[0].id,b=s.columns[1].id,c=s.columns[2].id;
+  for(const [i,value]of ['=1/0','x','X','','x',''].entries())setInput(book,s,s.rows[i].id,a,value);
+  const expressions=['=XMATCH("x",A1:A6,0,1)','=XMATCH("x",A3:A6,0,1)','=XMATCH("x",A3:A6,0,-1)','=XMATCH(0,A3:A6,0,1)','=XMATCH("missing",A2:A6,0,1)','=XMATCH("missing",A1:A6,0,1)'];
+  expressions.forEach((formula,i)=>setInput(book,s,s.rows[i].id,b,formula));
+  const engine=new Engine(book),values=()=>s.rows.slice(0,6).map(r=>engine.cell(s.id,r.id,b));
+  expect(values()).toEqual([2,1,3,2,{error:'#N/A'},{error:'#DIV/0!'}]);
+  setInput(book,s,s.rows[0].id,a,'=UNKNOWN(1)');engine.invalidate([`${s.id}:${key(s.rows[0].id,a)}`]);
+  expect(engine.cell(s.id,s.rows[0].id,b)).toMatchObject({error:'#UNSUPPORTED!'});
+  expect(engine.cell(s.id,s.rows[1].id,b)).toBe(1);
+  setInput(book,s,s.rows[4].id,a,'=UNKNOWN(1)');engine.invalidate([`${s.id}:${key(s.rows[4].id,a)}`]);
+  expect(engine.cell(s.id,s.rows[1].id,b)).toMatchObject({error:'#UNSUPPORTED!'});
+  setInput(book,s,s.rows[4].id,a,'z');engine.invalidate([`${s.id}:${key(s.rows[4].id,a)}`]);
+  expect(engine.cell(s.id,s.rows[2].id,b)).toBe(1);
+  setInput(book,s,s.rows[0].id,c,'=XMATCH("z",A5:A6,0,1)');
+  setInput(book,s,s.rows[1].id,c,'=XMATCH("x",A2:A6,0,1)');
+  const narrow=new Engine(book);expect(narrow.cell(s.id,s.rows[0].id,c)).toBe(1);expect(narrow.cell(s.id,s.rows[1].id,c)).toBe(1);
+});

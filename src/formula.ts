@@ -260,6 +260,11 @@ export class Engine {
   private flatValues=new WeakMap<Value[],Scalar[]>();
   private exactMatches=new WeakMap<Scalar[],Map<Scalar,{first:number;last:number}>>();
   private vectorFaults=new WeakMap<Scalar[],{first?:Fault;compatibility?:Fault}>();
+  private referenceRanges=new Map<string,{sheet:string;rows:string[];columns:string[]}>();
+  private contiguousRows=new WeakMap<string[],{start:number;end:number;valid:boolean}>();
+  private referenceMembers=0;
+  private rangeSizes=new Map<string,number>();
+  private rangeCells=0;
   private faults(values:Scalar[]):{first?:Fault;compatibility?:Fault}{
     let result=this.vectorFaults.get(values);
     if(!result){
@@ -289,6 +294,15 @@ export class Engine {
     }))return false;
     this.book=book;this.sheets=new Map(sheets.map(s=>[s.id,s]));return true;
   }
+  rebindCells(book:Workbook,changed:string[]):boolean{
+    if(book.tables!==this.book.tables||book.names!==this.book.names||book.references!==this.book.references||book.dropdownData?.tables!==this.book.dropdownData?.tables)return false;
+    const affected=new Set(changed.map(id=>id.slice(0,id.indexOf(':')))),sheets=allSheets(book);
+    if(sheets.length!==this.sheets.size||sheets.some(s=>{
+      const old=this.sheets.get(s.id);
+      return !old||s.rows!==old.rows||s.columns!==old.columns||s.validations!==old.validations||s.groups!==old.groups||s.name!==old.name||s.cells!==old.cells&&!affected.has(s.id);
+    }))return false;
+    this.book=book;this.sheets=new Map(sheets.map(s=>[s.id,s]));this.invalidate(changed);return true;
+  }
   constructor(public book: Workbook) {
     this.sheets=new Map(allSheets(book).map(s=>[s.id,s]));
     this.rowSets=new Map(allSheets(book).map(s=>[s.id,new Set(s.rows.map(r=>r.id))]));
@@ -313,7 +327,7 @@ export class Engine {
       }
       this.spillAnchors.set(sheetId,anchors);
     }
-    if(this.spills.size||spillChanged){this.cache.clear();this.spills.clear();this.dependents.clear();return;}
+    if(this.spills.size||spillChanged){this.cache.clear();this.rangeSizes.clear();this.rangeCells=0;this.spills.clear();this.dependents.clear();return;}
     const pending=[...changed],seen=new Set<string>();
     while(pending.length){
       const id=pending.pop()!;if(seen.has(id))continue;seen.add(id);this.cache.delete(id);
@@ -413,7 +427,22 @@ export class Engine {
         const r1 = this.rowPositions.get(target.id)!.get(start.rows[0])??-1, r2 = this.rowPositions.get(target.id)!.get(end.rows.at(-1)!)??-1;
         const c1 = this.columnPositions.get(target.id)!.get(start.columns[0])??-1, c2 = this.columnPositions.get(target.id)!.get(end.columns.at(-1)!)??-1;
         if ([r1,r2,c1,c2].some(x => x < 0)) return fault('#REF!');
-        return target.rows.slice(Math.min(r1,r2), Math.max(r1,r2)+1).map(r => target.columns.slice(Math.min(c1,c2), Math.max(c1,c2)+1).map(c => scalar(this.cell(target.id,r.id,c.id))));
+        const cacheKey=`range:${target.id}:${Math.min(r1,r2)}:${Math.max(r1,r2)}:${Math.min(c1,c2)}:${Math.max(c1,c2)}`;
+        this.depend(cacheKey);const cached=this.cache.get(cacheKey);if(cached)return cached;
+        this.stack.push(cacheKey);let value:Value;
+        try{
+          const columns=target.columns.slice(Math.min(c1,c2),Math.max(c1,c2)+1);
+          value=target.rows.slice(Math.min(r1,r2),Math.max(r1,r2)+1).map(r=>columns.map(c=>scalar(this.cell(target.id,r.id,c.id))));
+        }finally{this.stack.pop();}
+        const size=(Math.abs(r2-r1)+1)*(Math.abs(c2-c1)+1);
+        if(size<=100000&&!this.flat(value).some(v=>isFault(v)&&v.error==='#LIMIT!')){
+          if(this.rangeSizes.has(cacheKey)){this.rangeCells-=this.rangeSizes.get(cacheKey)!;this.rangeSizes.delete(cacheKey);}
+          while(this.rangeCells+size>100000){
+            const oldest=this.rangeSizes.keys().next().value!;this.rangeCells-=this.rangeSizes.get(oldest)!;this.rangeSizes.delete(oldest);this.cache.delete(oldest);
+          }
+          this.rangeSizes.set(cacheKey,size);this.rangeCells+=size;this.cache.set(cacheKey,value);
+        }
+        return value;
       }
       case 'unary': return zip(ev(ast.child), 0, (a) => { const n = number(a); return isFault(n) ? n : ast.op === '-' ? -n : ast.op === '%' ? n/100 : n; });
       case 'binary': return zip(ev(ast.left), ev(ast.right), (a,b) => {
@@ -452,7 +481,18 @@ export class Engine {
       const s=this.sheets.get(start.sheet);if(!s)return;
       const r1=this.rowPositions.get(s.id)!.get(start.rows[0])??-1,r2=this.rowPositions.get(s.id)!.get(end.rows.at(-1)!)??-1,c1=this.columnPositions.get(s.id)!.get(start.columns[0])??-1,c2=this.columnPositions.get(s.id)!.get(end.columns.at(-1)!)??-1;
       if([r1,r2,c1,c2].some(i=>i<0))return;
-      return{sheet:s.id,rows:s.rows.slice(Math.min(r1,r2),Math.max(r1,r2)+1).map(r=>r.id),columns:s.columns.slice(Math.min(c1,c2),Math.max(c1,c2)+1).map(c=>c.id)};
+      const cacheKey=`${s.id}:${Math.min(r1,r2)}:${Math.max(r1,r2)}:${Math.min(c1,c2)}:${Math.max(c1,c2)}`;
+      let ref=this.referenceRanges.get(cacheKey);
+      if(!ref){
+        ref={sheet:s.id,rows:s.rows.slice(Math.min(r1,r2),Math.max(r1,r2)+1).map(r=>r.id),columns:s.columns.slice(Math.min(c1,c2),Math.max(c1,c2)+1).map(c=>c.id)};
+        this.contiguousRows.set(ref.rows,{start:Math.min(r1,r2),end:Math.max(r1,r2),valid:true});
+        const size=ref.rows.length+ref.columns.length;
+        if(size<=100000){
+          while(this.referenceMembers+size>100000){const oldest=this.referenceRanges.keys().next().value!,value=this.referenceRanges.get(oldest)!;this.referenceMembers-=value.rows.length+value.columns.length;this.referenceRanges.delete(oldest);}
+          this.referenceRanges.set(cacheKey,ref);this.referenceMembers+=size;
+        }
+      }
+      return ref;
     }
     if(ast.kind==='structured'){
       const t=allTables(this.book).find(t=>t.id===ast.table);if(!t)return;
@@ -472,7 +512,10 @@ export class Engine {
     const sheet=this.sheets.get(ref.sheet),positions=this.rowPositions.get(ref.sheet);
     if(!sheet||!positions)return;
     const start=positions.get(ref.rows[0]),end=positions.get(ref.rows.at(-1)!);
-    if(start===undefined||end===undefined||end-start+1!==ref.rows.length||ref.rows.some((id,i)=>sheet.rows[start+i].id!==id))return;
+    if(start===undefined||end===undefined)return;
+    let contiguous=this.contiguousRows.get(ref.rows);
+    if(!contiguous){contiguous={start,end,valid:end-start+1===ref.rows.length&&ref.rows.every((id,i)=>sheet.rows[start+i].id===id)};this.contiguousRows.set(ref.rows,contiguous);}
+    if(!contiguous.valid)return;
     let match=-1,firstError:Scalar|undefined,compatibility:Scalar|undefined;
     // Compatibility errors anywhere in the reference still override a match.
     for(let at=start;at<=end;){
@@ -636,10 +679,11 @@ export class Engine {
       return fault('#VALUE!', 'ROW requires a reference.');
     }
     const values = args.map((_,i) => ev(i));
-    const errors = values.flatMap(value=>this.flat(value)).find(isFault);
-    if (name !== 'ISNUMBER' && name !== 'XLOOKUP' && name !== 'FILTER' && name !== 'VSTACK' && errors) return errors;
+    if(!['ISNUMBER','XLOOKUP','FILTER','VSTACK'].includes(name)){
+      for(const value of values){const error=this.faults(this.flat(value)).first;if(error)return error;}
+    }
     const n = (i: number, fallback = 0) => number(values[i] ?? fallback);
-    const numericValues=values.flatMap((value,i)=>args[i].kind==='literal'&&typeof value!=='object'?[number(value)]:this.flat(value));
+    const numericValues=['SUM','AVERAGE','MIN','MAX','COUNT'].includes(name)?values.flatMap((value,i)=>args[i].kind==='literal'&&typeof value!=='object'?[number(value)]:this.flat(value)):[];
     if(['SUM','AVERAGE','MIN','MAX'].includes(name)){
       const error=numericValues.find(isFault);if(error)return error;
     }

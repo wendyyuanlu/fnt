@@ -559,3 +559,51 @@ test('table headers remain sticky through virtual scrolling, align horizontally 
   await grid.evaluate(el=>{const last=el.querySelector('td[data-r="59"][data-c="1"]')!;el.scrollTop+=last.getBoundingClientRect().bottom-el.querySelector('thead')!.getBoundingClientRect().bottom+1;});
   await expect(page.locator('.sticky-table-header[data-table="scope-top"]')).toHaveCount(0);
 });
+test('native table headers anchor before redraw with scoped compaction, wrapped rows, horizontal pins and retained focus',async({page})=>{
+  await fixture(page,100);
+  await page.evaluate(async()=>{
+    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,book=state.book,s=book.sheets[0],top=book.tables.find(t=>t.id==='scope-top')!,right=book.tables.find(t=>t.id==='scope-right')!;
+      book.tables=book.tables.filter(t=>!['scope-middle','scope-bottom','scope-far-right'].includes(t.id));
+      top.rows=s.rows.slice(3,65).map(r=>r.id);right.rows=s.rows.slice(10,70).map(r=>r.id);
+      s.columns.forEach(c=>c.width=160);
+      s.groups.push({id:'native-summary',axis:'row',kind:'summary',table:top.id,members:s.rows.slice(4,9).map(r=>r.id),collapsed:true,label:'Keep scoped grouping'});
+      s.cells[`${s.rows[40].id}:${s.columns[3].id}`]={value:'Wrapped header geometry '.repeat(20),format:{wrap:true}};
+      await store.save(book,state.version,'Synthetic native sticky geometry');
+    }finally{store.close();}
+  });
+  await page.reload();await page.locator('th[data-col="1"] .column-index').click();await page.locator('[data-action="pin"]').click();
+  const grid=page.locator('#grid-scroll');await grid.evaluate(el=>{el.scrollTop=30*33;el.scrollLeft=450;});
+  const header=page.locator('.sticky-table-header[data-table="scope-top"]').first(),right=page.locator('.sticky-table-header[data-table="scope-right"]').first();
+  await expect(header).toBeVisible();await expect(right).toBeVisible();await header.focus();
+  const samples=await grid.evaluate(async el=>{
+    const samples:{top:number;left:number;focused:boolean}[]=[];
+    for(const change of [180,-120,160,-80]){
+      el.scrollTop+=change;
+      const button=el.querySelector<HTMLElement>('.sticky-table-header[data-table="scope-top"]')!,head=el.querySelector<HTMLElement>('thead [data-col="1"]')!;
+      samples.push({top:button.getBoundingClientRect().top-el.querySelector('thead')!.getBoundingClientRect().bottom,left:button.getBoundingClientRect().left-head.getBoundingClientRect().left,focused:document.activeElement===button});
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    }
+    return samples;
+  });
+  expect(samples.every(s=>Math.abs(s.top)<2&&Math.abs(s.left)<2&&s.focused)).toBe(true);
+  expect(await header.evaluate(button=>{const r=button.getBoundingClientRect();return document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===button;})).toBe(true);
+  await page.screenshot({path:test.info().outputPath('native-sticky-painted.png')});
+  await header.click();await expect(page.locator('#formula')).toHaveValue('Name');
+  await header.dblclick();await expect(page.locator('#answer')).toBeVisible();await page.locator('#answer').fill('Stable header');await page.locator('#answer').press('Enter');
+  await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  const restored=await snapshot(page);expect(restored.tables.find(t=>t.id==='scope-top')!.columns[0].name).toBe('Name');
+  expect(restored.sheets[0].groups.find(g=>g.id==='native-summary')).toMatchObject({table:'scope-top',collapsed:true});
+});
+test('native sticky header remains the touch target after vertical and pinned horizontal scrolling',async({browser})=>{
+  const context=await browser.newContext({baseURL:'http://127.0.0.1:5388/',viewport:{width:390,height:844},hasTouch:true,isMobile:true});
+  try{
+    const page=await context.newPage();await fixture(page,90);
+    await page.locator('th[data-col="1"] .column-index').tap();await page.locator('[data-action="pin"]').tap();
+    await page.locator('#grid-scroll').evaluate(el=>{el.scrollTop=130;el.scrollLeft=180;});
+    const header=page.locator('.sticky-table-header[data-table="scope-top"]').first();await expect(header).toBeVisible();await header.tap();
+    await expect(page.locator('#formula')).toHaveValue('Name');await expect(page.locator('.formula-bar .address')).toHaveText('B3');
+  }finally{await context.close();}
+});

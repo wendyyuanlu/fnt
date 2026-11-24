@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import {describe,expect,it,vi} from 'vitest';
 import {clone,createDemo,key,uid,type Workbook} from '../src/model';
 import {parseArchive,stringifyArchive} from '../src/archive';
-import {request,Store,validateBook,validateBookMetadata,type Backup} from '../src/storage';
+import {request,Store,validateBook,validateBookMetadata,validateCellChanges,type Backup} from '../src/storage';
 import {applyUndo,type History,type UndoHistory} from '../src/undo-history';
 
 const title=(value:string):History=>({patch:[{path:['title'],exists:true,value}]});
@@ -42,6 +42,35 @@ function failRequest(store:IDBObjectStore,error:DOMException):IDBRequest<IDBVali
 }
 
 describe('transactional workbook change journal',()=>{
+  it('materializes compaction and its independent complete recovery checkpoint once at the exact logical version',async()=>{
+    const {store,book,state}=await fixture(),receipt=await store.saveChanges(book.id,book.revision+1,state.version,'Edit',[title('Exact saved version')],history);
+    await store.visit(book.id,book.tables[0].id,4);
+    const reads=vi.spyOn(IDBObjectStore.prototype,'getAll'),result=(await store.compact(receipt.version,'Manual save'))!;
+    expect(reads.mock.calls).toHaveLength(1);reads.mockRestore();
+    expect(result.version).toBe(receipt.version);expect(result.pending.some(p=>p.id===receipt.pending[0].id)).toBe(true);
+    expect(result.book.tableActivity?.[book.tables[0].id].visits).toBe(5);
+    const checkpoint=(await store.history())[0];expect(checkpoint.book).toEqual(result.book);
+    result.book.title='Mutated returned snapshot';book.title='Mutated live input';
+    expect((await store.load())!.book.title).toBe('Exact saved version');expect((await store.history())[0].book.title).toBe('Exact saved version');
+    expect(await store.undoHistory(receipt.version,book.id)).toEqual(history);store.close();
+  });
+  it('rolls back compaction and checkpoint together while retaining the already durable journal on checkpoint failure',async()=>{
+    const {store,book,state}=await fixture(),receipt=await store.saveChanges(book.id,book.revision+1,state.version,'Edit',[title('Durable journal')],history),original=IDBObjectStore.prototype.put;
+    const fail=vi.spyOn(IDBObjectStore.prototype,'put').mockImplementation(function(this:IDBObjectStore,value:unknown,key?:IDBValidKey){
+      if(this.name==='history')throw new DOMException('Checkpoint quota','QuotaExceededError');
+      return original.call(this,value,key!);
+    });
+    await expect(store.compact(receipt.version,'Manual save')).rejects.toMatchObject({name:'QuotaExceededError'});
+    fail.mockRestore();expect((await store.load())!.book.title).toBe('Durable journal');expect(await store.history()).toEqual([]);
+    expect(await store.undoHistory(receipt.version,book.id)).toEqual(history);store.close();
+  });
+  it('validates cell-only changes with the shared formula rules and rejects missing axes',()=>{
+    const book=createDemo(),s=book.sheets[0],address=key(s.rows[0].id,s.columns[0].id),changes=[{sheet:s.id,key:address}];
+    s.cells[address]={formula:{kind:'unknown'} as never};expect(()=>validateCellChanges(book,changes)).toThrow('Unknown formula AST node.');
+    s.cells[address]={value:NaN};expect(()=>validateCellChanges(book,changes)).toThrow('Invalid numeric cell value.');
+    s.cells[address]={value:434,format:{number:'percent',color:'#193c34',background:'#ffffff'}};expect(()=>validateCellChanges(book,changes)).not.toThrow();
+    expect(()=>validateCellChanges(book,[{sheet:s.id,key:'missing:'+s.columns[0].id}])).toThrow('Invalid cell address.');
+  });
   it('shares metadata validation while skipping only sheet cells and their formulas',()=>{
     const book=createDemo(),sheet=book.sheets[0],key=`${sheet.rows[0].id}:${sheet.columns[0].id}`;
     sheet.cells[key]={value:Number.NaN};

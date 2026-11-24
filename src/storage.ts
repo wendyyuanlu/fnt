@@ -111,6 +111,25 @@ export function validateBook(value: unknown): asserts value is Workbook {
 export function validateBookMetadata(book:Workbook):void{
   validateWorkbook(book,false);
 }
+/** Only for cell-only replay against an already validated, structurally unchanged workbook. */
+export function validateCellChanges(book:Workbook,changes:readonly {sheet:string;key:string}[]):void{
+  const selected=new Map<string,Set<string>>();
+  for(const change of changes){let keys=selected.get(change.sheet);if(!keys)selected.set(change.sheet,keys=new Set());keys.add(change.key);}
+  const sheets=[...book.sheets,...book.dropdownData?.sheets??[]],targets:Workbook['sheets']=[];
+  for(const [id,keys]of selected){
+    const sheet=sheets.find(s=>s.id===id);if(!sheet)throw Error('Invalid cell sheet.');
+    const rows=new Set<string>(),columns=new Set<string>(),cells:typeof sheet.cells={};
+    for(const address of keys){
+      const parts=address.split(':');if(parts.length!==2)throw Error('Invalid cell address.');
+      rows.add(parts[0]);columns.add(parts[1]);
+      if(Object.prototype.hasOwnProperty.call(sheet.cells,address))cells[address]=sheet.cells[address];
+    }
+    const selectedRows=sheet.rows.filter(r=>rows.has(r.id)),selectedColumns=sheet.columns.filter(c=>columns.has(c.id));
+    if(selectedRows.length!==rows.size||selectedColumns.length!==columns.size)throw Error('Invalid cell address.');
+    targets.push({...sheet,rows:selectedRows,columns:selectedColumns,cells,groups:[],validations:[]});
+  }
+  if(targets.length)validateBook({schema:1,id:book.id,title:book.title,revision:book.revision,sheets:targets,tables:[],names:[],pickerSources:{}});
+}
 function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook{
   if (!value || typeof value !== 'object') throw Error('Not a workbook.');
   const b = value as Partial<Workbook>;
@@ -256,16 +275,21 @@ export class Store {
     try{await done;}catch(e){throw failure??e;}return result!;
   }
   /** Materialize a bounded batch without creating another logical edit or discarding its pending IDs. */
-  async compact(expected:number):Promise<void>{
-    const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
-    let failure:unknown;
+  async compact(expected:number,checkpointLabel?:string):Promise<LocalState|undefined>{
+    const tx=this.db.transaction(checkpointLabel?['state','history']:['state'],'readwrite'),done=complete(tx),store=tx.objectStore('state');
+    let failure:unknown,result:LocalState|undefined;
     readState(store,(state,head)=>{
       try{
         if((state?.version??0)!==expected)throw Error('Workbook changed during this operation. Retry after saving.');
-        if(state){if(head?.count)store.put(state,'current');resetJournal(store,state);}
+        if(state){
+          result=state;
+          if(head?.count||checkpointLabel)store.put(state,'current');
+          resetJournal(store,state);
+          if(checkpointLabel)tx.objectStore('history').put({id:uid(),label:checkpointLabel,time:new Date().toISOString(),book:state.book} satisfies Checkpoint);
+        }
       }catch(e){failure=e;tx.abort();}
     },e=>{failure=e;tx.abort();});
-    try{await done;}catch(e){throw failure??e;}
+    try{await done;}catch(e){throw failure??e;}return result;
   }
   async visit(book:string,table:string,previous:number):Promise<number>{
     const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
@@ -355,7 +379,7 @@ export class Store {
         try{
           const current=head?.count&&state?.book.id===book.id&&book.revision<=head.revision?state.book:book;
           const snapshot=withNavigation({book:current,pending:[],version:0,updated:''},navigation.result).book;
-          tx.objectStore('history').put({ id:uid(), label, time:new Date().toISOString(), book:clone(snapshot) } satisfies Checkpoint);
+          tx.objectStore('history').put({ id:uid(), label, time:new Date().toISOString(), book:snapshot } satisfies Checkpoint);
           for(const original of originals)tx.objectStore('originals').put(original);
         }catch(e){failure=e;tx.abort();}
       };

@@ -38,11 +38,14 @@ export function structuralUndo(before:unknown,after:unknown,skipCells=false):His
 }
 
 // Editing commands replace stored cells; unchanged cells and ASTs can stay shared.
-export function editSnapshot(book:Workbook):Workbook{
+export function editSnapshot(book:Workbook,cellSheets?:ReadonlySet<string>):Workbook{
   const empty=(s:ReturnType<typeof allSheets>[number])=>({...s,cells:{}});
   const snapshot=clone({...book,sheets:book.sheets.map(empty),...(book.dropdownData?{dropdownData:{...book.dropdownData,sheets:book.dropdownData.sheets.map(empty)}}:{})});
   const sources=new Map(allSheets(book).map(s=>[s.id,s]));
-  for(const s of allSheets(snapshot))s.cells={...sources.get(s.id)!.cells};
+  for(const s of allSheets(snapshot)){
+    const cells=sources.get(s.id)!.cells;
+    s.cells=!cellSheets||cellSheets.has(s.id)?{...cells}:cells;
+  }
   return snapshot;
 }
 

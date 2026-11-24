@@ -23,7 +23,9 @@ dialog .picker-results{max-height:none}
 .grid td.scoped-hidden{cursor:default}
 .grid td.scoped-hidden .cell-display,.grid td.scoped-hidden .note-dot,.grid td.scoped-hidden .fill-handle{visibility:hidden}
 .grid td.scoped-hidden:after{display:none}
-.sticky-table-headers{position:absolute;height:0;overflow:hidden;pointer-events:none;z-index:4}
+.sticky-table-header-range{position:absolute;left:0;pointer-events:none;z-index:4}
+.sticky-table-headers{position:sticky;height:0;overflow:clip;pointer-events:none}
+.sticky-table-header-slot{position:absolute;inset:0;pointer-events:none}
 .sticky-table-header{position:absolute;display:block;margin:0;padding:6px 10px;min-height:0;border:0;border-right:1px solid #e6e9e1;border-bottom:1px solid var(--table-stroke);border-radius:0;background:#edf2e8;color:#335544;text-align:left;font-size:12px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:auto}
 .sticky-table-header:hover{background:#e5eddf}
 #app{height:100dvh;display:flex;flex-direction:column;overflow:hidden}

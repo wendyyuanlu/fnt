@@ -19,6 +19,16 @@ function fixture(){
   const neighbors=()=>Object.fromEntries(Object.entries(book.sheets[0].cells).filter(([address])=>address.endsWith(':'+s.columns[5].id)||address.endsWith(':'+s.columns[8].id)||address.startsWith(s.rows[7].id+':')||address.startsWith(s.rows[8].id+':')));
   return{book,s,table,rows,columns,put,formula,value,neighbors};
 }
+it('retains unrelated cell dictionaries and ASTs while remapping affected external references in an independent table plan',()=>{
+  const {book,s,table,rows,formula}=fixture();
+  formula(10,9,'=E11');formula(11,9,'=C3');
+  const extra=blankSheet('Unchanged',3,3);extra.cells[key(extra.rows[0].id,extra.columns[0].id)]={value:'Keep source identity'};book.sheets.push(extra);
+  const before=clone(book),unchanged=s.cells[key(s.rows[10].id,s.columns[9].id)],affected=s.cells[key(s.rows[11].id,s.columns[9].id)];
+  const plan=planTableAxisEdit(book,table.id,'row',{kind:'duplicate',ids:[rows[0]]}),next=plan.book.sheets[0];
+  expect(plan.book.sheets[1].cells).toBe(extra.cells);expect(next.cells[key(s.rows[10].id,s.columns[9].id)]).toBe(unchanged);
+  expect(next.cells[key(s.rows[11].id,s.columns[9].id)].formula).not.toBe(affected.formula);
+  expect(new Engine(plan.book).cell(s.id,s.rows[11].id,s.columns[9].id)).toBe(20);expect(book).toEqual(before);
+});
 it('reorders only table records, following exact formula targets, DD links, validations and hypo flags',()=>{
   const {book,s,table,rows,columns,formula,value,neighbors}=fixture(),before=neighbors();
   formula(10,9,'=C3');formula(11,9,'=SUM(Pantry[Value])');

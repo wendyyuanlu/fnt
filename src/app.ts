@@ -1,7 +1,7 @@
 import './style.css';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
-import { Store, SyncConflict, syncGitHub, validateBook,validateBookMetadata, type Backup, type LocalState } from './storage';
+import { Store, SyncConflict, syncGitHub, validateBook,validateBookMetadata,validateCellChanges, type Backup, type LocalState } from './storage';
 import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch} from './undo-history';
 import {cachedCellText} from './display-values';
 import { parseArchive, stringifyArchive } from './archive';
@@ -18,7 +18,7 @@ import { duplicateReference,moveReferenceGroup,referenceCaption,referenceChoices
 import { appendReferenceOption,conversionEditImpact,deleteReferenceColumns,referenceView,writeGridCell } from './reference-grid';
 import { hexToHsv,hsvToHex,normalizeHex } from './colors';
 import { dropdownCatalog,dropdownFormatMigration,dropdownGroupMigration,seedDropdownCatalog,verifiedCatalogOrigins } from './dropdown-catalog';
-import { constantSummaryRowLayout,groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,tableGroupProjection,ungroupPlainGroups } from './grouping';
+import { constantSummaryRowLayout,groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,tableGroupMembership,tableGroupProjection,ungroupPlainGroups } from './grouping';
 import {getHypotheticalStyle,hypotheticalBadgeCss,hypotheticalCss,hypotheticalTextCss} from './hypothetical';
 import {openHypotheticalSettings} from './hypothetical-ui';
 import {toolbarIcon} from './icons';
@@ -355,6 +355,31 @@ const cellText = (cell: Cell, s: Sheet, r: number,c: number): string => cachedCe
   }
   return value;
 });
+let searchPriming:{engine:Engine;generation:number;timer?:ReturnType<typeof setTimeout>}|undefined;
+function primeSearchValues():void{
+  if(searchPriming?.engine===engine&&searchPriming.generation===generation)return;
+  clearTimeout(searchPriming?.timer);
+  const target=engine,snapshot=book,version=generation,task={engine:target,generation:version,timer:undefined as ReturnType<typeof setTimeout>|undefined};
+  searchPriming=task;
+  const values=(function*(){
+    for(const s of allSheets(snapshot)){
+      const rows=new Map(s.rows.map((r,i)=>[r.id,i])),columns=new Map(s.columns.map((c,i)=>[c.id,i]));
+      for(const [address,cell]of Object.entries(s.cells)){
+        const [row,column]=address.split(':'),r=rows.get(row),c=columns.get(column);
+        if(r!==undefined&&c!==undefined)yield{s,r,c,cell};
+      }
+    }
+  })();
+  const step=()=>{
+    if(target!==engine||version!==generation||busy||document.querySelector('dialog[open]')||document.activeElement?.matches('input,textarea,[contenteditable="true"]'))return;
+    target.beginPass();const started=performance.now();
+    try{
+      do{const next=values.next();if(next.done)return;const {s,r,c,cell}=next.value;cellText(cell,s,r,c);}while(performance.now()-started<6);
+      task.timer=setTimeout(step,20);
+    }catch(e){flash(e);}
+  };
+  task.timer=setTimeout(step,1000);
+}
 function flash(e: unknown): void { error = e instanceof Error ? e.message : String(e); renderStatus(); }
 function mutate(label: string, fn: () => void,confirmed=false): boolean {
   if (busy) { flash('Wait for the current save or sync to finish.'); return false; }
@@ -423,6 +448,22 @@ function sheetPath(s:Sheet=sheet()):Patch['path']{
   if(at<0&&dropdown<0)throw Error('This sheet no longer exists.');
   return at>=0?['sheets',at]:['dropdownData','sheets',dropdown];
 }
+function mutateCell(s:Sheet,row:string,column:string,fn:()=>void):boolean{
+  if(busy){flash('Wait for the current save or sync to finish.');return false;}
+  const address=key(row,column),previous=s.cells[address],inverse:History={cells:[{sheet:s.id,key:address,value:clone(previous)}]};
+  try{fn();validateCellChanges(book,inverse.cells);}catch(e){
+    if(previous)s.cells[address]=previous;else delete s.cells[address];
+    flash(e);render();return false;
+  }
+  const oldSheet={...s,cells:previous?{[address]:previous}:{}},before={...book,sheets:book.sheets.map(sheet=>sheet===s?oldSheet:sheet),...(book.dropdownData?{dropdownData:{...book.dropdownData,sheets:book.dropdownData.sheets.map(sheet=>sheet===s?oldSheet:sheet)}}:{})};
+  recordTableEdits(before,book,inverse.cells);
+  undo.push(inverse);while(undo.length>undoLimit)undo.shift();redo.length=0;
+  const forward:History={cells:[{sheet:s.id,key:address,value:clone(s.cells[address])}]};
+  scopedChanges.push(capturePatch(book,[['tableActivity']]));
+  engine.invalidate([`${s.id}:${address}`]);displayedVersion++;
+  changed('Edit cell',false,false,forward);
+  drawRowWindow?.(true);groupManager?.refresh();renderStatus();return true;
+}
 function tablePath(t:ReturnType<typeof allTables>[number]):Patch['path']{
   const at=book.tables.findIndex(item=>item.id===t.id),dropdown=book.dropdownData?.tables.findIndex(item=>item.id===t.id)??-1;
   if(at<0&&dropdown<0)throw Error('This table no longer exists.');
@@ -462,6 +503,7 @@ function changed(label: string,reset=true,quiet=false,forward?:History): void {
   if(!quiet){error='';status = 'Unsaved changes - saving locally...';}
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { void flush(label,preservedStatus); },350);
+  primeSearchValues();
 }
 async function flush(label = 'Edit workbook',preservedStatus?:string): Promise<void> {
   clearTimeout(saveTimer);
@@ -508,10 +550,12 @@ async function manualSave(): Promise<void> {
     if(navigationError)generation++;
     await flush('Manual save');
     if(savedGeneration!==generation)return;
-    await store.compact(state.version);compactionWrites=0;
+    const captured=await store.compact(state.version,state.sync?undefined:'Manual save');compactionWrites=0;
+    if(!captured)throw Error('Saved workbook is missing. Restore from recovery before continuing.');
+    state=captured;navigationDirty=false;
     await navigationSaving;
     if(navigationDirty){state=await store.metadata(state.version,s=>s);navigationDirty=false;}
-    if(!state.sync){await store.checkpoint('Manual save',book);status='Saved locally + recovery checkpoint';return;}
+    if(!state.sync){status='Saved locally + recovery checkpoint';return;}
     if(!token){openSync();return;}
     status='Syncing private repository...';renderStatus();
     const originals=(await store.backup(state)).originals;
@@ -561,7 +605,7 @@ function renderStatus(): void {
   root.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('#formula,.cell-inline-editor').forEach(el=>el.disabled=busy||!editableReference()||!!gridReference()?.error);
   if(expandedEditor)expandedEditor.input.disabled=busy||!editableReference()||!!gridReference()?.error;
   const el = document.querySelector('#save-state');
-  if (el) { el.textContent = draft!==undefined?'Editing cell - not saved yet':appendDraft?'Editing new option - not saved yet':colorPicker?.pending?'Previewing color - release to apply':status; el.className = `save-state ${error ? 'bad' : ''}`; }
+  if (el) { el.textContent = draft!==undefined?'Editing cell - not saved yet':appendDraft?'Editing new option - not saved yet':colorPicker?.pending?'Previewing color - release to apply':busy&&status.startsWith('Saved')?'Finishing complete save...':status; el.className = `save-state ${error ? 'bad' : ''}`; }
   const alert = document.querySelector<HTMLElement>('#error');
   if (alert) {
     alert.querySelector<HTMLElement>('.error-message')!.textContent=error;alert.hidden=!error;
@@ -640,12 +684,11 @@ function render(): void {
   const collapsedRows=new Set(s.groups.filter(g=>!g.table&&g.axis==='row'&&g.collapsed).flatMap(g=>outlineMembers(g,s.groups)));
   const collapsedColumns=new Set(s.groups.filter(g=>!g.table&&g.axis==='column'&&g.collapsed).flatMap(g=>outlineMembers(g,s.groups)));
   const pins=pinnedColumns.get(s.id)??[];
-  const sheetTables=allTables(book).filter(table=>table.sheet===s.id).map(owner=>({owner,rows:new Set([owner.header,...owner.rows]),columns:new Set(owner.columns.map(field=>field.column))}));
+  const sheetTables=tableGroupMembership(book,s);
   const cellTable=(row:string,column:string)=>sheetTables.find(table=>table.rows.has(row)&&table.columns.has(column))?.owner;
   const hypotheticalRows=hypotheticalMembers(s,'row'),hypotheticalColumns=hypotheticalMembers(s,'column');
   const rowHypo=hypotheticalProjection(book,s,'row'),columnHypo=hypotheticalProjection(book,s,'column');
-  const scopedCollapsed=s.groups.filter(g=>g.table&&g.collapsed).map(group=>({group,members:new Set(outlineMembers(group,s.groups))}));
-  maskedCell=(row,column)=>scopedCollapsed.some(({group,members})=>members.has(group.axis==='row'?row:column)&&groupContainsCell(book,s,group,row,column))||!showHypothetical&&(rowHypo(row,column)||columnHypo(row,column));
+  maskedCell=(row,column)=>sheetTables.some(table=>table.rows.has(row)&&table.columns.has(column)&&(table.hiddenRows.has(row)||table.hiddenColumns.has(column)))||!showHypothetical&&(rowHypo(row,column)||columnHypo(row,column));
   const columns = s.columns.map((c,i) => ({...c,i})).filter(c => !c.hidden && !collapsedColumns.has(c.id)&&(showHypothetical||!hypotheticalColumns.has(c.id)||s.rows.some(row=>!columnHypo(row.id,c.id)))&&(!view||view.columns.includes(c.id)));
   const rows = s.rows.map((r,i) => ({...r,i})).filter(r => !r.hidden && !collapsedRows.has(r.id)&&(showHypothetical||!hypotheticalRows.has(r.id)||columns.some(column=>!rowHypo(r.id,column.id)))&&(!view||view.rows.includes(r.id)));
   const firstOwned=new Map(sheetTables.map(({owner,rows:ownedRows,columns:ownedColumns})=>[owner.id,{
@@ -677,9 +720,8 @@ function render(): void {
   const rowById=new Map(rows.map(row=>[row.id,row])),columnById=new Map(columns.map(column=>[column.id,column]));
   const hypotheticalStyle=getHypotheticalStyle(book);
   const tableRightEdges=new Set<string>(),tableBottomEdges=new Set<string>();
-  for(const table of allTables(book).filter(table=>table.sheet===s.id)){
-    const rowIds=new Set([table.header,...table.rows]),columnIds=new Set(table.columns.map(column=>column.column));
-    const tableRows=rows.filter(row=>rowIds.has(row.id)&&!scopedCollapsed.some(({group,members})=>group.table===table.id&&group.axis==='row'&&members.has(row.id))),tableColumns=columns.filter(column=>columnIds.has(column.id)&&!scopedCollapsed.some(({group,members})=>group.table===table.id&&group.axis==='column'&&members.has(column.id)));
+  for(const {rows:rowIds,columns:columnIds,hiddenRows,hiddenColumns}of sheetTables){
+    const tableRows=rows.filter(row=>rowIds.has(row.id)&&!hiddenRows.has(row.id)),tableColumns=columns.filter(column=>columnIds.has(column.id)&&!hiddenColumns.has(column.id));
     const lastRow=tableRows.at(-1),lastColumn=tableColumns.at(-1);
     if(!lastRow||!lastColumn)continue;
     for(const row of tableRows)tableRightEdges.add(key(row.id,lastColumn.id));
@@ -828,6 +870,7 @@ function render(): void {
   toolbar.scrollLeft=toolbarScroll;
   groupControls?.positionMenu();
   rememberView();
+  primeSearchValues();
 }
 function safeLink(value: string): boolean {
   try { return ['https:','http:','mailto:'].includes(new URL(value).protocol); } catch { return false; }
@@ -1235,11 +1278,14 @@ function applyInput(text:string): boolean {
   if(!editableReference()||gridReference()?.error){flash('This list is read-only or unavailable. Edit its original source instead.');return false;}
   const previousDraft=draft,literal=draft!==undefined&&draftLiteral;draft=undefined;draftLiteral=false;
   if(!literal&&text===inputText(current())){render();return true;}
-  const ok=mutate('Edit cell',()=>{
-    const s=sheet(),t=allTables(book).find(t=>t.sheet===s.id&&t.header===s.rows[selected.r].id&&t.columns.some(c=>c.column===s.columns[selected.c].id));
+  const s=sheet(),row=s.rows[selected.r].id,column=s.columns[selected.c].id,owner=tableAt(book,s.id,row,column);
+  const write=()=>{
+    const t=allTables(book).find(t=>t.sheet===s.id&&t.header===row&&t.columns.some(c=>c.column===column));
     if(t) renameColumn(book,t,t.columns.find(c=>c.column===s.columns[selected.c].id)!.id,text);
-    else writeGridCell(book,s,s.rows[selected.r].id,s.columns[selected.c].id,text,literal);
-  });
+    else writeGridCell(book,s,row,column,text,literal);
+  };
+  const scoped=owner&&owner.header!==row&&!book.references?.some(source=>source.kind==='conversions'&&source.table===owner.id);
+  const ok=scoped?mutateCell(s,row,column,write):mutate('Edit cell',write);
   if(!ok&&!awaitingMutationConfirmation){draft=previousDraft??text;draftLiteral=literal;}
   return ok;
 }
@@ -1387,7 +1433,7 @@ async function action(name:string):Promise<void> {
       const from=name==='undo'?undo:redo,to=name==='undo'?redo:undo,previous=from.at(-1);
       if(previous){
         const revision=book.revision,before=book,layoutOnly=layoutHistory(previous);let forward:History;
-        try{const applied=applyUndo(book,previous);if(layoutOnly)validateBookMetadata(applied.book);else validateBook(applied.book);book=applied.book;forward=clone(previous);from.pop();to.push(applied.inverse);}catch(error){flash(error);return;}
+        try{const applied=applyUndo(book,previous);if('cells'in previous)validateCellChanges(applied.book,previous.cells);else if(layoutOnly)validateBookMetadata(applied.book);else validateBook(applied.book);book=applied.book;forward=clone(previous);from.pop();to.push(applied.inverse);}catch(error){flash(error);return;}
         const cellChanges=layoutOnly?[]:'cells'in previous?previous.cells:'patch'in previous&&previous.patch.every(p=>p.path.length>1&&!(p.path.includes('cells')&&p.path.at(-1)==='cells'))?previous.patch.flatMap(p=>{
           const at=p.path.indexOf('cells');if(at<0)return[];
           const index=Number(p.path[at-1]),s=p.path[0]==='sheets'?before.sheets[index]:before.dropdownData?.sheets[index];
@@ -1395,7 +1441,7 @@ async function action(name:string):Promise<void> {
         }):undefined;
         recordTableEdits(before,book,cellChanges);
         scopedChanges.push(capturePatch(book,[['tableActivity']]));
-        const reset=!layoutOnly||!engine.rebindLayout(book);
+        const reset='cells'in previous?!engine.rebindCells(book,previous.cells.map(c=>`${c.sheet}:${c.key}`)):!layoutOnly||!engine.rebindLayout(book);
         if(reset)displayedVersion++;book.revision=revision;if(!allSheets(book).some(s=>s.id===sheetId))sheetId=allSheets(book)[0].id;changed(name,reset,false,'book'in forward?undefined:forward);render();
       }break;
     }
