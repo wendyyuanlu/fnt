@@ -50,6 +50,19 @@ it('projects nested row and column groups into owned slots without moving sparse
   expect(tableGroupProjection(book,sheet,rows,columns)).not.toBe(project);
   expect(tableGroupProjection(book,sheet,rows,columns).source(rows[7],columns[3])).toEqual({row:rows[7],column:columns[3]});
 });
+it('combines hypo masks with collapsed groups and invalidates the projection when visibility changes',()=>{
+  const {book,sheet,left,right}=scopedFixture(),rows=sheet.rows.map(row=>row.id),columns=sheet.columns.map(column=>column.id);
+  sheet.groups.push({id:'group-mask',axis:'row',kind:'summary',table:left.id,members:left.rows.slice(0,3),collapsed:true,label:'Summary'});
+  const before=clone(book),hidden=new Map([[left.id,{rows:new Set([left.rows[3]]),columns:new Set([columns[2]])}]]);
+  const project=tableGroupProjection(book,sheet,rows,columns,hidden);
+  expect(project.source(rows[4],columns[2])).toEqual({row:left.rows[4],column:columns[3]});
+  expect(project.source(rows[4],right.columns[0].column)).toEqual({row:rows[4],column:right.columns[0].column});
+  expect(tableGroupProjection(book,sheet,rows,columns,hidden)).toBe(project);
+  hidden.get(left.id)!.rows.clear();
+  const changed=tableGroupProjection(book,sheet,rows,columns,hidden);
+  expect(changed).not.toBe(project);expect(changed.source(rows[4],columns[2])?.row).toBe(left.rows[3]);
+  expect(book).toEqual(before);
+});
 for(const axis of ['row','column'] as const){
   it(`keeps table ${axis} hypo inheritance separate from shared sheet axes and other table owners`,()=>{
     const {book,sheet,left,right,below}=scopedFixture(),other=axis==='row'?right:below,items=axis==='row'?sheet.rows:sheet.columns;

@@ -214,11 +214,27 @@ remain viewable only in history.
   same browser tab.
   Summary/plain groups and **hypo** tags inherit the selected table or sheet
   scope; different table and sheet scopes can coexist on the same physical axes.
+  Direct group controls allow both expansion and collapse when Auto has no
+  selected table. A selected table still blocks toggles in other table or sheet scopes.
   Table-only group collapse compacts visible records and fields up/left within
   that table's existing slots. Neighboring tables and sheet coordinates stay fixed;
   editing, keyboard navigation and formulas retain the original cell identities.
   Expanding restores the original layout without moving stored data.
-  Hypo hiding masks only owned cells. Insertion, deletion, duplication, movement,
+  Hypo hiding similarly compacts tagged records and fields within their own table,
+  preserving stored data and neighboring tables. Hide/show keeps the nearby viewport,
+  even when the selected hypo cell disappears. Sheet-axis selection highlights the
+  displayed axis; custom cell fills remain underneath its selection tint.
+  Sheet-axis drops into a compacted table group explicitly request Table selection
+  when the displayed and underlying member identities differ. Valid table member
+  drops retain the viewport rather than scrolling to the moved or hidden selection.
+  Sheet-axis copy/paste follows displayed table cells and translates formulas from
+  their actual source identities. Whole-sheet row/column copies align to their axis,
+  rather than overflowing from the clicked cell's column/row. Empty DD searches
+  permit grid Copy and internal linked-cell Paste; selected search text stays native.
+  Copied outlines follow stable cell identities and table relocations through Undo.
+  A header insertion keeps the selected record count when another boundary in the
+  same table is chosen.
+  Insertion, deletion, duplication, movement,
   clipboard operations, fill, grouping and hiding stay within the selected table.
   Table record moves relocate owned cells and follow exact references, DD links
   and validations without moving neighboring tables. Field identities survive

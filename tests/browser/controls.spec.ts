@@ -245,6 +245,19 @@ test('grouping shortcuts preserve nested identities, formulas, undo and saved gr
   expect((await snapshot()).groups).toEqual(grouped.groups.slice(0,-1));
 });
 
+test('repeated Ctrl+G keeps creating distinct groups without losing the shortcut',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const count=()=>page.evaluate(async()=>{const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();try{return(await store.load()).book.sheets[0].groups.length;}finally{store.close();}});
+  const initial=await count();
+  for(let i=0;i<6;i++){
+    await page.locator(`[data-row-select="${1+i*2}"] .row-index`).click();
+    await page.locator(`[data-row-select="${2+i*2}"] .row-index`).click({modifiers:['Shift']});
+    await page.keyboard.press('Control+g');
+    await expect(page.locator('#error')).toBeHidden();
+    await expect(page.locator('#save-state')).toContainText(/^Saved/);
+    expect(await count()).toBe(initial+i+1);
+  }
+});
 test('grouping shortcuts resolve cell axes but never hijack text editing',async({page})=>{
   await page.goto('/');await page.locator('td[data-r="1"][data-c="5"]').click();await page.locator('td[data-r="2"][data-c="5"]').click({modifiers:['Shift']});
   await page.keyboard.press('Control+g');await expect(page.getByRole('dialog')).toContainText('Group selection');

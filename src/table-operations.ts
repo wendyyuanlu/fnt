@@ -13,7 +13,8 @@ export class TableExpansionConflict extends Error{
 }
 
 /** ownedCandidate opts out of rollback: book must be an independent, disposable snapshot. */
-export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableAxisEdit,trace?:Map<string,{sheet:string;row:string;column:string}|null>,options:{ownedCandidate?:boolean}={}):string[]{
+export type CellMoveTrace=(source:string,target:{sheet:string;row:string;column:string}|null)=>void;
+export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableAxisEdit,trace?:Map<string,{sheet:string;row:string;column:string}|null>|CellMoveTrace,options:{ownedCandidate?:boolean}={}):string[]{
   const owner=allTables(book).find(table=>table.id===tableId);
   if(!owner)throw Error('The selected table no longer exists.');
   const next=options.ownedCandidate?book:editSnapshot(book,new Set([owner.sheet])),table=allTables(next).find(t=>t.id===tableId);
@@ -145,6 +146,6 @@ export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableA
   }
   if(axis==='column')for(const field of table.columns)sheet.cells[key(table.header,field.column)]={...getCell(sheet,table.header,field.column),value:field.name};
   if(next!==book)Object.assign(book,next);
-  if(trace)for(const [source,target] of mapping)trace.set(source,target);
+  if(trace)for(const [source,target] of mapping){if(typeof trace==='function')trace(source,target);else trace.set(source,target);}
   return entries.flatMap((entry,i)=>edit.kind==='delete'?[]:edit.kind==='move'?entry.source&&selected.has(entry.source)?[members[i]]:[]:!entry.source?[members[i]]:[]);
 }

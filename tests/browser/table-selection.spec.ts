@@ -260,7 +260,10 @@ for(const axis of ['row','column'] as const){
     await expect(page.locator(neighbor)).toHaveClass(/hypothetical-cell/);
     await page.locator('[data-action="hypothetical-visibility"]').click();
     await expect(page.locator('td[data-r="11"][data-c="2"]')).not.toHaveClass(/scoped-hidden/);
-    await expect(page.locator(neighbor)).toHaveClass(/scoped-hidden/);
+    await expect(page.locator(neighbor)).toHaveCount(0);
+    const compactedNeighbor=page.locator(axis==='row'?'td[data-r="12"][data-c="5"]':'td[data-r="17"][data-c="3"]');
+    await expect(compactedNeighbor).toHaveAttribute(axis==='row'?'data-display-r':'data-display-c',axis==='row'?'11':'2');
+    expect((await snapshot(page)).sheets[0].cells).toEqual(before.sheets[0].cells);
   });
 }
 test('table deletion removes only selected records and leaves sheet axes and adjacent table data intact',async({page,isMobile})=>{
@@ -439,6 +442,258 @@ async function collision(page:Page,broken:boolean){
     }finally{store.close();}
   },broken);await page.reload();await chooseTarget(page,'scope-top');await page.locator('[data-row-select="4"] .row-index').click();
 }
+for(const tableMode of [false,true])test(`copied outlines follow ${tableMode?'table records':'sheet cell IDs'} through insertion, movement and Undo`,async({page})=>{
+  await fixture(page);
+  if(tableMode)await chooseTarget(page,'scope-middle');
+  const source=page.locator('td[data-r="11"][data-c="1"]');await source.click();
+  const label=await source.innerText();await page.getByRole('button',{name:'Copy',exact:true}).click();
+  await page.locator('[data-row-select="10"] .row-index').click();await page.locator('[data-row-select="10"]').hover();await page.locator('[data-insert-row="11"]').click();
+  await expect(page.locator('td[data-r="12"][data-c="1"]')).toHaveText(label);
+  await expect(page.locator('td[data-r="12"][data-c="1"]')).toHaveClass(/copying/);await expect(page.locator('td[data-r="11"][data-c="1"]')).not.toHaveClass(/copying/);
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(source).toHaveClass(/copying/);
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(page.locator('td[data-r="12"][data-c="1"]')).toHaveClass(/copying/);
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  await page.locator('[data-row-select="11"] .row-index').click();await page.locator('[data-move-row="11"]').click();
+  await page.locator('[data-row-select="13"]').hover();await page.locator('[data-insert-row="14"]').click();
+  await expect(page.locator('td[data-c="1"].copying')).toHaveText(label);
+  await expect(source).not.toHaveClass(/copying/);
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(source).toHaveClass(/copying/);
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(page.locator('td[data-c="1"].copying')).toHaveText(label);
+});
+for(const accept of [false,true])test(`copied outlines ${accept?'follow confirmed':'retain cancelled'} conversion-table insertion`,async({page})=>{
+  await fixture(page);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0],table=state.book.tables.find(table=>table.id==='scope-middle')!;
+      table.rows.forEach((row,i)=>{s.cells[`${row}:${table.columns[0].column}`]={value:'From '+i};s.cells[`${row}:${table.columns[1].column}`]={value:i+1};s.cells[`${row}:${table.columns[2].column}`]={value:'To '+i};});
+      state.book.references!.push({id:'outline-conversions',name:'Outline conversions',kind:'conversions',table:table.id,column:table.columns[0].id,archivedRows:[],conversion:{from:table.columns[0].id,to:table.columns[2].id,factor:table.columns[1].id}});
+      s.cells[`${s.rows[0].id}:${s.columns[0].id}`]={binding:{table:table.id,row:table.rows[0],column:table.columns[0].id}};
+      state.book.dropdownData!.sheets.push(s);
+      state.book.dropdownData!.tables.push(...state.book.tables.filter(owner=>owner.sheet===s.id));
+      state.book.sheets=state.book.sheets.filter(sheet=>sheet.id!==s.id);state.book.tables=state.book.tables.filter(owner=>owner.sheet!==s.id);
+      sessionStorage.setItem('fnt-view:'+state.book.id,JSON.stringify({reference:'outline-conversions',sheet:s.id,row:s.rows[11].id,column:s.columns[1].id,scroll:0,left:0,tableMode:true,scope:table.id,target:table.id}));
+      await store.save(state.book,state.version,'Disposable conversion outline fixture');
+    }finally{store.close();}
+  });await page.reload();await expect(page.locator('.grid')).toHaveAttribute('aria-label','Outline conversions');
+  await page.locator('td[data-r="11"][data-c="1"]').click();await page.getByRole('button',{name:'Copy',exact:true}).click();
+  await page.locator('[data-row-select="10"] .row-index').click();await page.locator('[data-row-select="10"]').hover();await page.locator('[data-insert-row="11"]').click();
+  await expect(page.getByRole('heading',{name:'Change conversion factor?',exact:true})).toBeVisible();
+  await expect(page.locator('td[data-r="11"][data-c="1"]')).toHaveClass(/copying/);
+  await page.getByRole('button',{name:accept?'Confirm':'Close dialog',exact:true}).click();
+  const destination=accept?12:11;
+  await expect(page.locator(`td[data-r="${destination}"][data-c="1"]`)).toHaveClass(/copying/);
+  await expect(page.locator(`td[data-r="${destination}"][data-c="1"]`)).toHaveText('From 1');
+  if(accept){await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('td[data-r="11"][data-c="1"]')).toHaveClass(/copying/);await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(page.locator('td[data-r="12"][data-c="1"]')).toHaveClass(/copying/);}
+});
+for(const kind of ['cell','sheet-row','sheet-row-compacted'] as const)test(`matched clipboard baseline preserves warmed lookup dependencies after ${kind} paste and reload`,async({page},info)=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await page.evaluate(async kind=>{
+    const model='/src/model.ts',storage='/src/storage.ts';
+    const [{blankSheet,setInput},{Store}]=await Promise.all([import(/* @vite-ignore */model) as Promise<typeof import('../../src/model')>,import(/* @vite-ignore */storage) as Promise<typeof import('../../src/storage')>]);
+    const s=blankSheet('Clipboard baseline',35,8);s.id='clipboard-sheet';s.rows.forEach((row,i)=>row.id='row-'+i);s.columns.forEach((column,i)=>column.id='column-'+i);
+    const make=(id:string,name:string,header:number,rows:number[],fields:string[])=>({id,name,sheet:s.id,header:s.rows[header].id,rows:rows.map(r=>s.rows[r].id),columns:fields.map((name,c)=>({id:id+'-field-'+c,name,column:s.columns[c].id}))});
+    const meals=make('meals','Meals',0,[1,2,3,4,5,6],['Meal','Ingredient','Amount','Total','Unit']),ingredients=make('ingredients','Ingredients',10,[11,12,13],['Ingredients','Conversion Unit','Quantity']);
+    const book:import('../../src/model').Workbook={schema:1,id:'clipboard-baseline',title:'Deterministic clipboard baseline',revision:0,sheets:[s],tables:[meals,ingredients],names:[],pickerSources:{}};
+    for(const table of book.tables)for(const field of table.columns)s.cells[`${table.header}:${field.column}`]={value:field.name};
+    for(const [r,label,unit] of [[11,'Same','g'],[12,'Same','kg'],[13,'Other','oz']] as const){s.cells[`row-${r}:column-0`]={value:label};s.cells[`row-${r}:column-1`]={value:unit};}
+    for(const r of [1,2,3,4,5,6]){s.cells[`row-${r}:column-0`]={value:'Meal '+r};s.cells[`row-${r}:column-1`]={binding:{table:ingredients.id,row:'row-'+(r===2?12:13),column:ingredients.columns[0].id}};s.cells[`row-${r}:column-2`]={value:r*5};setInput(book,s,'row-'+r,'column-3',`=SUM(C${r}:C${r+1})`);setInput(book,s,'row-'+r,'column-4','=XLOOKUP(Meals[@Ingredient],Ingredients[Ingredients],Ingredients[Conversion Unit],"")');}
+    if(kind==='sheet-row-compacted'){s.groups=[{id:'clipboard-compact',axis:'row',kind:'summary',table:meals.id,members:['row-1','row-2'],collapsed:true,label:'Compacted rows'}];s.cells['row-3:column-1'].binding!.row='row-12';}
+    const store=await Store.open();try{const current=(await store.load())!;await store.save(book,current.version,'Deterministic clipboard regression fixture');}finally{store.close();}
+    sessionStorage.setItem('fnt-current-sheet',s.id);
+  },kind);await page.reload();
+  const cell=(r:number,c:number)=>page.locator(`td[data-r="${r}"][data-c="${c}"]`),before=await snapshot(page);
+  const destination=kind==='sheet-row-compacted'?5:4,source=kind==='sheet-row-compacted'?3:2,total=kind==='sheet-row'?25:35;
+  await expect(cell(destination,4)).toHaveText('oz');await expect(cell(source,4)).toHaveText('g');
+  if(kind==='cell')await cell(2,1).click();else await page.locator('[data-row-select="2"] .row-index').click();
+  await page.getByRole('button',{name:'Copy',exact:true}).click();
+  if(kind==='cell')await cell(4,1).click();else await page.locator('[data-row-select="4"] .row-index').click();
+  await page.getByRole('button',{name:'Paste',exact:true}).click();
+  const pasted=await snapshot(page);
+  const warm={unit:await cell(destination,4).innerText(),total:await cell(destination,3).innerText()};
+  const cold=await page.evaluate(async destination=>{
+    const formula='/src/formula.ts',storage='/src/storage.ts';
+    const [{Engine},{Store}]=await Promise.all([import(/* @vite-ignore */formula) as Promise<typeof import('../../src/formula')>,import(/* @vite-ignore */storage) as Promise<typeof import('../../src/storage')>]);
+    const store=await Store.open();try{const book=(await store.load())!.book,engine=new Engine(book);return{total:engine.cell('clipboard-sheet','row-'+destination,'column-3'),unit:engine.cell('clipboard-sheet','row-'+destination,'column-4')};}finally{store.close();}
+  },destination);
+  await info.attach('matched-clipboard-paste',{body:JSON.stringify({kind,before,pasted,warm,cold}),contentType:'application/json'});
+  await expect(page.locator('#error')).toBeHidden();await expect(cell(destination,4)).toHaveText('g');
+  await expect(cell(destination,3)).toHaveText(String(total));
+  expect(pasted.sheets[0].cells[`row-${destination}:column-1`].binding).toEqual(before.sheets[0].cells[`row-${source}:column-1`].binding);
+  expect(pasted.sheets[0].cells[`row-${destination}:column-4`].formula).toEqual(before.sheets[0].cells[`row-${destination}:column-4`].formula);
+  await cell(11,1).click();await page.locator('#formula').fill('lb');await page.locator('#formula').press('Enter');
+  await expect(cell(destination,4)).toHaveText('lb');await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(cell(destination,4)).toHaveText('g');
+  const restored=await snapshot(page);await page.reload();await expect(cell(destination,4)).toHaveText('g');await expect(cell(destination,3)).toHaveText(String(total));
+  const fresh=await page.evaluate(async destination=>{
+    const formula='/src/formula.ts',storage='/src/storage.ts';
+    const [{Engine},{Store}]=await Promise.all([import(/* @vite-ignore */formula) as Promise<typeof import('../../src/formula')>,import(/* @vite-ignore */storage) as Promise<typeof import('../../src/storage')>]);
+    const store=await Store.open();try{const book=(await store.load())!.book,engine=new Engine(book);return{total:engine.cell('clipboard-sheet','row-'+destination,'column-3'),unit:engine.cell('clipboard-sheet','row-'+destination,'column-4')};}finally{store.close();}
+  },destination);
+  expect(fresh).toEqual({total,unit:'g'});
+  await info.attach('matched-clipboard-state',{body:JSON.stringify({kind,before,pasted,restored,fresh}),contentType:'application/json'});
+});
+test('table header insertion keeps a ten-record selection when choosing another boundary in the same table',async({page})=>{
+  await fixture(page,80);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{const state=(await store.load())!,s=state.book.sheets[0],owner=state.book.tables.find(t=>t.id==='scope-middle')!;state.book.tables=state.book.tables.filter(t=>t.id!=='scope-bottom');owner.rows=s.rows.slice(10,24).map(row=>row.id);await store.save(state.book,state.version,'Disposable multi-record insertion');}finally{store.close();}
+  });await page.reload();
+  await chooseTarget(page,'scope-middle');await page.locator('[data-row-select="10"] .row-index').click();await extend(page,'row',19,false);
+  await expect(page.locator('.selection-count')).toHaveText('30 cells');
+  const before=await snapshot(page);
+  await page.locator('[data-row-select="23"]').hover();await page.locator('[data-insert-row="24"]').click();
+  const after=await snapshot(page);
+  expect(after.tables.find(t=>t.id==='scope-middle')!.rows).toHaveLength(24);
+  expect(after.sheets[0].rows).toEqual(before.sheets[0].rows);
+  expect(after.tables.filter(t=>t.id!=='scope-middle')).toEqual(before.tables.filter(t=>t.id!=='scope-middle'));
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  expect((await snapshot(page)).tables.find(t=>t.id==='scope-middle')!.rows).toEqual(before.tables.find(t=>t.id==='scope-middle')!.rows);
+});
+test('copying a compacted sheet row uses displayed cells and actual formula origins when pasted at a table cell',async({page})=>{
+  await groupFixture(page,'row',true);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',model='/src/model.ts';
+    const [{Store},{setInput}]=await Promise.all([import(/* @vite-ignore */path) as Promise<typeof import('../../src/storage')>,import(/* @vite-ignore */model) as Promise<typeof import('../../src/model')>]);
+    const store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0],right=state.book.tables.find(t=>t.id==='scope-right')!;
+      for(const r of [12,13]){setInput(state.book,s,s.rows[r].id,s.columns[2].id,String(r));setInput(state.book,s,s.rows[r].id,s.columns[3].id,'=[@Qty]*2');}
+      s.cells[`${s.rows[13].id}:${s.columns[1].id}`]={binding:{table:right.id,row:right.rows[0],column:right.columns[0].id},format:{background:'#fff2cc'}};
+      await store.save(state.book,state.version,'Disposable projected clipboard formulas');
+    }finally{store.close();}
+  });await page.reload();
+  const before=await snapshot(page),source=page.locator('td[data-r="13"][data-c="3"]');
+  await expect(source).toHaveAttribute('data-display-r','12');await expect(source).toHaveText('26');
+  await page.locator('[data-row-select="12"] .row-index').click();await page.getByRole('button',{name:'Copy',exact:true}).click();
+  await page.locator('td[data-r="17"][data-c="2"]').click();await page.getByRole('button',{name:'Paste',exact:true}).click();
+  await expect(page.locator('#error')).toBeHidden();await expect(page.locator('td[data-r="17"][data-c="3"]')).toHaveText('26');
+  await expect(page.locator('td[data-r="17"][data-c="1"]')).toHaveText('Right 1 Name');
+  const after=await snapshot(page),s=after.sheets[0],old=before.sheets[0];
+  expect(s.cells[`${s.rows[17].id}:${s.columns[1].id}`]).toEqual(old.cells[`${old.rows[13].id}:${old.columns[1].id}`]);
+  expect(s.cells[`${s.rows[17].id}:${s.columns[3].id}`].formula).toBeTruthy();
+  await page.getByRole('button',{name:'Undo',exact:true}).click();expect((await snapshot(page)).sheets[0].cells).toEqual(old.cells);
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await snapshot(page);await page.reload();
+  await expect(page.locator('td[data-r="17"][data-c="3"]')).toHaveText('26');
+});
+test('native single-cell copy from an empty dropdown search replaces the old row clipboard and preserves linked identity',async({page})=>{
+  await fixture(page);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0],right=state.book.tables.find(t=>t.id==='scope-right')!;
+      s.validations.push({id:'copy-dd',sheet:s.id,rows:[s.rows[10].id,s.rows[11].id],columns:[s.columns[1].id],source:'Right[Name]'});
+      s.cells[`${s.rows[10].id}:${s.columns[1].id}`]={binding:{table:right.id,row:right.rows[0],column:right.columns[0].id}};
+      await store.save(state.book,state.version,'Disposable native clipboard dropdown');
+    }finally{store.close();}
+  });await page.reload();
+  const original=(await snapshot(page)).sheets[0],binding=original.cells[`${original.rows[10].id}:${original.columns[1].id}`].binding;
+  await page.locator('[data-row-select="10"] .row-index').click();await page.getByRole('button',{name:'Copy',exact:true}).click();
+  await page.locator('td[data-r="10"][data-c="1"]').click();await expect(page.locator('.cell-dropdown input')).toBeFocused();
+  const clipboard=await page.evaluateHandle(()=>{
+    const data=new DataTransfer();document.activeElement!.dispatchEvent(new ClipboardEvent('copy',{clipboardData:data,bubbles:true,cancelable:true}));return data;
+  });
+  await page.locator('td[data-r="11"][data-c="1"]').click();await expect(page.locator('.cell-dropdown input')).toBeFocused();
+  await page.locator('.cell-dropdown input').evaluate((input,data)=>input.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true})),clipboard);
+  await expect(page.locator('#error')).toBeHidden();await expect(page.locator('td[data-r="11"][data-c="1"]')).toHaveText('Right 1 Name');
+  await expect.poll(async()=>{const s=(await snapshot(page)).sheets[0];return s.cells[`${s.rows[11].id}:${s.columns[1].id}`].binding;}).toEqual(binding);
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('td[data-r="11"][data-c="1"]')).toHaveText('Middle 2 Name');
+});
+for(const axis of ['row','column'] as const)test(`sheet ${axis} selection remains visible over compacted tables and custom fills`,async({page})=>{
+  await groupFixture(page,axis,true);
+  const source=axis==='row'?{r:13,c:1}:{r:9,c:4},slot=axis==='row'?12:3;
+  await page.evaluate(async source=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{const state=(await store.load())!,s=state.book.sheets[0],key=`${s.rows[source.r].id}:${s.columns[source.c].id}`;s.cells[key].format={background:'#ffffff'};await store.save(state.book,state.version,'Disposable selected fill');}finally{store.close();}
+  },source);await page.reload();
+  const cell=page.locator(`td[data-r="${source.r}"][data-c="${source.c}"]`);
+  await page.locator(axis==='row'?`[data-row-select="${slot}"] .row-index`:`th[data-col="${slot}"] .column-index`).click();
+  await expect(page.locator('#selection-scope-label')).toHaveText('Sheet selection');
+  await expect(cell).toHaveClass(/selected/);
+  await expect(cell).toHaveCSS('background-color','rgb(255, 255, 255)');
+  await expect(cell).not.toHaveCSS('background-image','none');
+  await page.getByRole('button',{name:'Pin selected columns',exact:true}).click();
+  await expect(cell).toHaveClass(/selected/);
+  await page.locator('td[data-r="0"][data-c="0"]').click();
+  await expect(cell).not.toHaveClass(/selected/);await expect(cell).toHaveCSS('background-image','none');
+  await expect(cell).toHaveCSS('background-color','rgb(255, 255, 255)');
+});
+for(const collapsed of [false,true])test(`sheet-row drops into ${collapsed?'compacted':'expanded'} table groups do not jump or change unintended records`,async({page})=>{
+  await fixture(page,180);
+  await page.evaluate(async collapsed=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0],owner=state.book.tables.find(t=>t.id==='scope-middle')!;
+      state.book.tables=state.book.tables.filter(t=>!['scope-top','scope-bottom'].includes(t.id));
+      owner.rows=s.rows.slice(10,170).map(row=>row.id);
+      owner.rows.forEach((row,i)=>owner.columns.forEach(field=>s.cells[`${row}:${field.column}`]={value:`Record ${i} ${field.name}`}));
+      s.groups=[{id:'sheet-drop-target',axis:'row',kind:'summary',table:owner.id,members:s.rows.slice(140,143).map(row=>row.id),collapsed,label:'Destination'}];
+      await store.save(state.book,state.version,'Disposable deep group move');
+    }finally{store.close();}
+  },collapsed);await page.reload();
+  const scroller=page.locator('#grid-scroll');await scroller.evaluate(el=>{el.scrollTop=33*135;});
+  await page.locator('[data-row-select="147"] .row-index').click();
+  const top=await scroller.evaluate(el=>el.scrollTop),before=await snapshot(page);
+  const target=page.locator('.grid .group-control[data-group-id="sheet-drop-target"]'),rect=(await target.boundingBox())!;
+  const transfer=await page.evaluateHandle(()=>new DataTransfer());
+  await page.locator('[data-move-row="147"]').dispatchEvent('dragstart',{dataTransfer:transfer});
+  await target.dispatchEvent('dragover',{dataTransfer:transfer,clientX:rect.x+rect.width/2,clientY:rect.y+rect.height/2});
+  await target.dispatchEvent('drop',{dataTransfer:transfer,clientX:rect.x+rect.width/2,clientY:rect.y+rect.height/2});
+  await expect.poll(()=>scroller.evaluate(el=>el.scrollTop)).toBe(top);
+  const after=await snapshot(page);
+  if(collapsed){
+    await expect(page.locator('#error')).toContainText('Turn on Table selection');
+    expect(after.sheets[0].cells).toEqual(before.sheets[0].cells);expect(after.sheets[0].groups).toEqual(before.sheets[0].groups);
+  }else{
+    await expect(page.locator('#error')).toBeHidden();
+    expect(after.sheets[0].groups[0].members).toHaveLength(4);
+    const neighbor=(book:typeof before)=>Object.fromEntries(Object.entries(book.sheets[0].cells).filter(([key])=>before.sheets[0].columns.slice(5).some(column=>key.endsWith(':'+column.id))));
+    expect(neighbor(after)).toEqual(neighbor(before));
+    await page.getByRole('button',{name:'Undo',exact:true}).click();const undone=await snapshot(page);
+    expect(undone.sheets[0].cells).toEqual(before.sheets[0].cells);expect(undone.sheets[0].groups).toEqual(before.sheets[0].groups);
+  }
+});
+test('Auto table selection without an owning table can both expand and collapse a group with durable Undo',async({page})=>{
+  await groupFixture(page,'row',true);
+  const before=await snapshot(page);
+  await page.getByRole('button',{name:'Table-constrained header selection',exact:true}).click();
+  await chooseTarget(page,'');
+  await page.locator('td[data-r="0"][data-c="0"]').click();
+  await page.getByRole('button',{name:'Expand Scoped child rows in Middle',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Collapse Scoped child rows in Middle',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Collapse Scoped child rows in Middle',exact:true}).click();
+  await expect(page.locator('#error')).toBeHidden();
+  await expect(page.getByRole('button',{name:'Expand Scoped child rows in Middle',exact:true})).toBeVisible();
+  const after=await snapshot(page);
+  expect(after.sheets[0].groups.find(group=>group.id==='scoped-inner')!.collapsed).toBe(true);
+  expect(after.sheets.map(sheet=>sheet.cells)).toEqual(before.sheets.map(sheet=>sheet.cells));
+  await page.locator('[data-action="undo"]').click();
+  await expect(page.getByRole('button',{name:'Collapse Scoped child rows in Middle',exact:true})).toBeVisible();
+  await page.locator('[data-action="redo"]').click();
+  await expect(page.getByRole('button',{name:'Expand Scoped child rows in Middle',exact:true})).toBeVisible();
+  await snapshot(page);await page.reload();
+  await expect(page.getByRole('button',{name:'Expand Scoped child rows in Middle',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Table-constrained header selection',exact:true})).toHaveAttribute('aria-pressed','true');
+});
+test('hypo visibility compacts only tagged table records and fields without changing stored data',async({page})=>{
+  await fixture(page);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{const state=(await store.load())!,s=state.book.sheets[0];s.rows[10].hypotheticalTables={'scope-middle':true};s.columns[2].hypotheticalTables={'scope-middle':true};await store.save(state.book,state.version,'Disposable table hypo compaction');}finally{store.close();}
+  });
+  await page.reload();const before=await snapshot(page);
+  await page.locator('[data-action="hypothetical-visibility"]').click();
+  const moved=page.locator('td[data-r="11"][data-c="3"]');
+  await expect(moved).toHaveText('Middle 2 Note');
+  await expect(moved).toHaveAttribute('data-display-r','10');
+  await expect(moved).toHaveAttribute('data-display-c','2');
+  await expect(page.locator('td[data-r="10"][data-c="1"],td[data-r="11"][data-c="2"]')).toHaveCount(0);
+  await expect(page.locator('td[data-r="10"][data-c="5"]')).toHaveText('Right 1 Name');
+  await expect(page.locator('td[data-r="10"][data-c="5"]')).toHaveAttribute('data-display-r','10');
+  expect((await snapshot(page)).sheets.map(s=>s.cells)).toEqual(before.sheets.map(s=>s.cells));
+  await page.locator('[data-action="hypothetical-visibility"]').click();
+  await expect(moved).toHaveAttribute('data-display-r','11');
+  await expect(moved).toHaveAttribute('data-display-c','3');
+});
 test('direct group controls cannot toggle a neighboring table while selection is locked elsewhere',async({page})=>{
   await fixture(page);
   await page.evaluate(async()=>{

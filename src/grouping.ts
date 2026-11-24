@@ -12,16 +12,17 @@ export function tableGroupMembership(book:Workbook,sheet:Sheet){
   });
 }
 const projectionCache=new WeakMap<Workbook,Map<string,{signature:string;projection:ReturnType<typeof buildTableGroupProjection>}>>();
-export function tableGroupProjection(book:Workbook,sheet:Sheet,rows:string[],columns:string[]){
+export function tableGroupProjection(book:Workbook,sheet:Sheet,rows:string[],columns:string[],hidden?:Map<string,{rows:Set<string>;columns:Set<string>}>){
   const tables=allTables(book).filter(table=>table.sheet===sheet.id);
-  const signature=JSON.stringify([rows,columns,sheet.groups,tables.map(t=>[t.id,t.header,t.rows,t.columns.map(c=>c.column)])]);
+  const signature=JSON.stringify([rows,columns,sheet.groups,tables.map(t=>[t.id,t.header,t.rows,t.columns.map(c=>c.column)]),hidden?[...hidden].map(([id,value])=>[id,[...value.rows],[...value.columns]]):undefined]);
   let cache=projectionCache.get(book);if(!cache){cache=new Map();projectionCache.set(book,cache);}
   const previous=cache.get(sheet.id);if(previous?.signature===signature)return previous.projection;
-  const projection=buildTableGroupProjection(book,sheet,rows,columns);
+  const projection=buildTableGroupProjection(book,sheet,rows,columns,hidden);
   cache.set(sheet.id,{signature,projection});return projection;
 }
-function buildTableGroupProjection(book:Workbook,sheet:Sheet,rows:string[],columns:string[]){
-  const entries=tableGroupMembership(book,sheet).flatMap(({owner:table,rows:rowIds,columns:columnIds,hiddenRows,hiddenColumns})=>{
+function buildTableGroupProjection(book:Workbook,sheet:Sheet,rows:string[],columns:string[],hidden?:Map<string,{rows:Set<string>;columns:Set<string>}>){
+  const entries=tableGroupMembership(book,sheet).flatMap(({owner:table,rows:rowIds,columns:columnIds,hiddenRows:groupRows,hiddenColumns:groupColumns})=>{
+    const extra=hidden?.get(table.id),hiddenRows=extra?new Set([...groupRows,...extra.rows]):groupRows,hiddenColumns=extra?new Set([...groupColumns,...extra.columns]):groupColumns;
     if(!hiddenRows.size&&!hiddenColumns.size)return[];
     const rowSlots=rows.filter(id=>rowIds.has(id)),columnSlots=columns.filter(id=>columnIds.has(id));
     const visibleRows=rowSlots.filter(id=>!hiddenRows.has(id)),visibleColumns=columnSlots.filter(id=>!hiddenColumns.has(id));

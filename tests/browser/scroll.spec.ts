@@ -43,6 +43,27 @@ test('one continuous large sheet crosses row 60, respects groups/heights and pre
   await expect(page.locator('#save-state')).toContainText('Saved');await page.reload();
   await page.locator('#row-jump').fill('4001');await page.locator('#row-jump').press('Enter');await expect(cell(4000,2)).toHaveText('123');
 });
+test('hiding a selected hypo row preserves the nearby viewport through hide and show',async({page})=>{
+  await openLongSheet(page);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();
+    try{const state=await store.load(),s=state.book.sheets[0];for(const row of [...s.rows.slice(0,20),s.rows[4000]])row.hypothetical=true;await store.save(state.book,state.version,'Disposable hypo viewport fixture');}finally{store.close();}
+  });
+  await page.reload();
+  await page.locator('#row-jump').fill('4001');await page.locator('#row-jump').press('Enter');
+  const scroller=page.locator('#grid-scroll');
+  const topRow=()=>scroller.evaluate(el=>{
+    const top=el.getBoundingClientRect().top+el.querySelector('thead')!.getBoundingClientRect().height;
+    return [...el.querySelectorAll<HTMLElement>('tr[data-row]')].find(row=>row.getBoundingClientRect().bottom>top)?.dataset.row;
+  });
+  await expect.poll(topRow).toBe('4000');
+  await page.locator('[data-action="hypothetical-visibility"]').click();
+  await expect.poll(topRow).toBe('4001');
+  expect(await scroller.evaluate(el=>el.scrollTop)).toBeGreaterThan(100000);
+  await expect(page.locator('td.active')).toBeVisible();
+  await page.locator('[data-action="hypothetical-visibility"]').click();
+  await expect.poll(topRow).toBe('4001');
+});
 test('column drag/tap moves, pinning and undo retain the actual mid-sheet viewport rather than revealing the selection end',async({page,isMobile})=>{
   await openLongSheet(page);const scroller=page.locator('#grid-scroll');
   const position=()=>scroller.evaluate(el=>{

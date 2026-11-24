@@ -93,6 +93,8 @@ dialog .picker-results{max-height:none}
 .grid .row-drop-before:after,.grid .row-drop-after:after{content:"";position:absolute;left:0;right:0;height:4px;background:#286b56;pointer-events:none}
 .grid .row-drop-before:after{top:0}.grid .row-drop-after:after{bottom:0}
 .grid .column-selected{background:#dce9cf}
+.grid td.selected{--selection-overlay:rgba(90,140,108,.19);background-image:linear-gradient(var(--selection-overlay),var(--selection-overlay))}
+.dd-mode .grid td.selected{--selection-overlay:rgba(118,80,147,.19)}
 .grid td.moving,.grid th.moving{background:#f5f5f5!important;border-color:#d6dbd3}
 .grid th.moving>.move-control,.grid th.moving>.row-move-control{opacity:1;pointer-events:auto}
 .grid .drop-before{box-shadow:inset 3px 0 #286b56}
@@ -119,7 +121,7 @@ dialog .picker-results{max-height:none}
 .hypothetical-badge{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:1px;border:1px solid #98764e;border-radius:0;margin-right:5px;background:#fff7e6;color:#785a30;line-height:1;vertical-align:middle}
 .hypothetical-badge::before{content:"";position:absolute;inset:-1px;pointer-events:none;background-image:var(--hyp-badge-horizontal,none),var(--hyp-badge-horizontal,none),var(--hyp-badge-vertical,none),var(--hyp-badge-vertical,none);background-size:100% 1px,100% 1px,1px 100%,1px 100%;background-position:left top,left bottom,left top,right top;background-repeat:no-repeat}
 .hypothetical-badge .toolbar-icon,.treatment-section>.inline .toolbar-icon{width:14px;height:14px}
-.hypothetical-cell{--hyp-state:transparent;background-image:linear-gradient(var(--hyp-state),var(--hyp-state)),var(--hyp-pattern),var(--hyp-fill)!important;background-size:auto,var(--hyp-pattern-size),auto!important}
+.hypothetical-cell{--hyp-state:transparent;background-image:linear-gradient(var(--selection-overlay,var(--hyp-state)),var(--selection-overlay,var(--hyp-state))),var(--hyp-pattern),var(--hyp-fill)!important;background-size:auto,var(--hyp-pattern-size),auto!important}
 .hypothetical-cell.has-hyp-fill:hover{--hyp-state:rgba(87,127,106,.10)}
 .hypothetical-cell.has-hyp-fill:is(.selected,.active){--hyp-state:rgba(90,140,108,.19)}
 .hypothetical-cell.custom-hyp-text .cell-value a{color:inherit}

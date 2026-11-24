@@ -35,7 +35,7 @@ export function mountGroupControls(host:GroupingHost):{drawRows:()=>void;positio
     el.title=`${el.getAttribute('aria-label')} · ${plain?'plain range':`level ${outlineLayer(depth)}`}`;
     el.setAttribute(plain?'aria-pressed':'aria-expanded',String(!group.collapsed));
     el.onclick=e=>{e.stopPropagation();
-      const scope=host.scope?.();if(scope?.enabled&&group.table!==scope.table&&!(group.collapsed&&!scope.table)){host.refuse('This group belongs to another table or sheet scope. Select its table, or turn off Table selection first.');return;}
+      const scope=host.scope?.();if(scope?.enabled&&scope.table!==undefined&&group.table!==scope.table){host.refuse('This group belongs to another table or sheet scope. Select its table, or turn off Table selection first.');return;}
       host.change('Toggle group',()=>{group.collapsed=!group.collapsed;},{groups:[group]});
     };
     el.ondblclick=e=>e.stopPropagation();

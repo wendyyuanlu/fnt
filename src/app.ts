@@ -105,7 +105,8 @@ let fillSource:ReturnType<typeof bounds>|undefined,fillPointer:number|undefined;
 let status = 'Opening local workbook...', error = '', busy = false, token = '';
 let savedGeneration = 0, generation = 0, saving: Promise<void> = Promise.resolve();
 const undo: History[] = [], redo: History[] = [];
-let copied: {sheet:string; r:number;c:number;rows:string[];columns:string[];cells:Cell[][];cut?:boolean;table?:string;kind?:'rows'|'columns'|'cells'} | undefined;
+let copied: {sheet:string; r:number;c:number;rows:string[];columns:string[];cells:Cell[][];origins?:{row:string;column:string}[][];outlineOrigins?:{row:string;column:string}[][];cut?:boolean;table?:string;kind?:'rows'|'columns'|'cells'} | undefined;
+const clipboardHistory=new WeakMap<History,{current:NonNullable<typeof copied>;restore:NonNullable<typeof copied>}>();
 let saveTimer: ReturnType<typeof setTimeout>;
 let scopedChanges:History[]=[],fullSaveRequired=false,compactionWrites=0;
 let compactionTimer:ReturnType<typeof setTimeout>|undefined;
@@ -155,6 +156,10 @@ const bounds = () => ({r1:Math.min(anchor.r,selected.r),r2:Math.max(anchor.r,sel
 const scopedSelectionTable=()=>allTables(book).find(table=>table.id===selectionScope&&table.sheet===sheetId);
 const currentSelections=()=>selectionRanges(sheet(),bounds(),extraSelections,scopedSelectionTable(),allTables(book));
 const selectionMode=()=>extraSelections.every(area=>area.kind===selectionKind&&area.table===selectionScope)?selectionKind:'cells';
+function selectionPaintPosition(row:number,column:number,displayRow:number,displayColumn:number):{r:number;c:number}{
+  const mode=selectionScope?'cells':selectionMode();
+  return{r:mode==='rows'?displayRow:row,c:mode==='columns'?displayColumn:column};
+}
 const selectedAxisIndices=(axis:'row'|'column')=>{
   const ranges=currentSelections(),items=axis==='row'?sheet().rows:sheet().columns;
   return items.map((_,i)=>i).filter(i=>ranges.some(r=>axis==='row'?i>=r.r1&&i<=r.r2:i>=r.c1&&i<=r.c2));
@@ -264,12 +269,18 @@ function runTableEdit(tableId:string,axis:'row'|'column',edit:TableAxisEdit,labe
   try{
     if(!editableReference()||gridReference()?.error)throw Error('This source is read-only or unavailable. Edit its original table instead.');
     const before=book,expected=generation,table=allTables(book).find(t=>t.id===tableId)!;
-    const plan=planTableAxisEdit(book,tableId,axis,edit,{candidate:editSnapshot(book)}),at=axis==='row'?bounds().r1:bounds().c1;
+    const sourceCopy=copied?.sheet===table.sheet?copied:undefined,copyMoves=new Map<string,{row:string;column:string}>();
+    const copiedKeys=sourceCopy?new Set(sourceCopy.cells.flatMap((row,i)=>row.map((_,j)=>{const origin=sourceCopy.outlineOrigins?.[i][j]??sourceCopy.origins?.[i][j]??{row:sourceCopy.rows[i],column:sourceCopy.columns[j]};return`${sourceCopy.sheet}:${key(origin.row,origin.column)}`;}))):undefined;
+    const plan=planTableAxisEdit(book,tableId,axis,edit,{candidate:editSnapshot(book),trace:copiedKeys?(source,target)=>{if(copiedKeys.has(source)&&(!target||`${target.sheet}:${key(target.row,target.column)}`!==source))copyMoves.set(source,target??{row:'deleted',column:'deleted'});}:undefined}),at=axis==='row'?bounds().r1:bounds().c1;
     confirmTableExpansion(before,plan,table.name,dialog,()=>{
       if(book!==before||generation!==expected){flash('The workbook changed while this edit was open. Select the records or fields and try again.');return false;}
       return mutate(label,()=>{
         book=plan.book;selectionScope=tableId;extraSelections=[];movingRows=movingColumns=undefined;clearMovePreview();
         if(label==='Cut and move table members')copied=undefined;
+        if(sourceCopy&&copied===sourceCopy&&copyMoves.size){
+          const outlineOrigins=sourceCopy.cells.map((row,i)=>row.map((_,j)=>{const origin=sourceCopy.outlineOrigins?.[i][j]??sourceCopy.origins?.[i][j]??{row:sourceCopy.rows[i],column:sourceCopy.columns[j]};return copyMoves.get(`${sourceCopy.sheet}:${key(origin.row,origin.column)}`)??origin;}));
+          copied={...sourceCopy,outlineOrigins};
+        }
         const owner=scopedSelectionTable()!,s=sheet(),items=axis==='row'?s.rows:s.columns;
         const owned=axis==='row'?owner.rows:owner.columns.map(field=>field.column);
         options.finish?.(plan.ids);
@@ -280,17 +291,18 @@ function runTableEdit(tableId:string,axis:'row'|'column',edit:TableAxisEdit,labe
           const first=Math.min(...positions),last=Math.max(...positions),range=tableHeaderBounds(s,owner,axis,last,first);
           anchor={r:range.r1,c:range.c1};selected={r:range.r2,c:range.c2};selectionKind=axis==='row'?'rows':'columns';
         }
-        renderedTarget=`${sheetId}:${selected.r}`;scrollTarget=edit.kind==='insert'?undefined:selected.r;
-      });
+        renderedTarget=`${sheetId}:${selected.r}`;scrollTarget=edit.kind==='insert'||edit.kind==='move'?undefined:selected.r;
+      },false,edit.kind==='move'?{preserveViewport:true}:undefined);
     });
   }catch(error){flash(error);}
 }
 function requestInsert(axis:'row'|'column',boundary:number,index?:number):void{
   try{
+    const previousOwner=selectionScope,previousCount=selectionMode()===(axis==='row'?'rows':'columns')?selectedAxisIndices(axis).length:1;
     if(index!==undefined)boundary+=prepareAxisOperation(axis,index)-index;
     const owner=scopedSelectionTable();
     if(owner){
-      const count=selectionMode()===(axis==='row'?'rows':'columns')?selectedAxisIndices(axis).length:1;
+      const count=previousOwner===owner.id?previousCount:selectionMode()===(axis==='row'?'rows':'columns')?selectedAxisIndices(axis).length:1;
       const at=axis==='row'?Math.max(boundary,sheet().rows.findIndex(row=>row.id===owner.header)+1):boundary;
       runTableEdit(owner.id,axis,{kind:'insert',boundary:at,count},`Insert table ${axis==='row'?'rows':'columns'}`);
     }else mutate(`Insert ${axis==='row'?'rows':'columns'}`,()=>insertDimensions(axis,boundary));
@@ -381,22 +393,22 @@ function primeSearchValues():void{
   task.timer=setTimeout(step,1000);
 }
 function flash(e: unknown): void { error = e instanceof Error ? e.message : String(e); renderStatus(); }
-function mutate(label: string, fn: () => void,confirmed=false): boolean {
+function mutate(label: string, fn: () => void,confirmed=false,renderOptions?:{preserveViewport:boolean}): boolean {
   if (busy) { flash('Wait for the current save or sync to finish.'); return false; }
   const before = editSnapshot(book);
-  const priorBook=book,shape=structureKey(book),metadata=metadataKey(book),cells=new Map(allSheets(before).map(s=>[s.id,s.cells]));
+  const priorBook=book,priorCopy=copied,shape=structureKey(book),metadata=metadataKey(book),cells=new Map(allSheets(before).map(s=>[s.id,s.cells]));
   try {
     fn();
     const impact=confirmed?'':conversionEditImpact(before,book);
     if(impact){
-      const proposed=clone(book);book=before;engine=new Engine(book);
-      draft=undefined;awaitingMutationConfirmation=true;render();
-      confirmAction('Change conversion factor?',impact,()=>{draft=undefined;mutate(label,()=>{book=proposed;},true);});
+      const proposed=clone(book),proposedCopy=copied;book=before;copied=priorCopy;engine=new Engine(book);
+      draft=undefined;awaitingMutationConfirmation=true;render(renderOptions);
+      confirmAction('Change conversion factor?',impact,()=>{draft=undefined;mutate(label,()=>{book=proposed;if(copied===priorCopy)copied=proposedCopy;},true,renderOptions);});
       document.querySelector('dialog')?.addEventListener('close',()=>{awaitingMutationConfirmation=false;draft=undefined;renderStatus();});
       return false;
     }
   }
-  catch(e) { book = before; engine = new Engine(book); flash(e); render(); return false; }
+  catch(e) { book = before; copied=priorCopy;engine = new Engine(book); flash(e); render(renderOptions); return false; }
   const changes:{sheet:string;key:string;value?:Cell}[]=[];
   const incremental=priorBook===book&&metadata===metadataKey(book);
   const compared=new WeakMap<object,WeakSet<object>>();
@@ -417,7 +429,7 @@ function mutate(label: string, fn: () => void,confirmed=false): boolean {
     }
   }
   if(incremental){
-    if(!changes.length){render();return true;}undo.push({cells:changes});
+    if(!changes.length){copied=priorCopy;render(renderOptions);return true;}undo.push({cells:changes});
   }else{
     const entry=structuralUndo(before,book,true);
     if('patch'in entry)for(const change of changes){
@@ -425,7 +437,7 @@ function mutate(label: string, fn: () => void,confirmed=false): boolean {
       const path:Patch['path']=[...(before.sheets.includes(s)?['sheets',before.sheets.indexOf(s)]:['dropdownData','sheets',before.dropdownData!.sheets.indexOf(s)]),'cells',change.key];
       if(!entry.patch.some(p=>p.path.length<path.length&&p.path.every((key,i)=>key===path[i])))entry.patch.push({path,exists:change.value!==undefined,value:clone(change.value)});
     }
-    if('patch'in entry&&!entry.patch.length){render();return true;}undo.push(entry);
+    if('patch'in entry&&!entry.patch.length){copied=priorCopy;render(renderOptions);return true;}undo.push(entry);
   }
   while(undo.length>undoLimit)undo.shift();
   redo.length = 0;
@@ -436,11 +448,12 @@ function mutate(label: string, fn: () => void,confirmed=false): boolean {
   }
   displayedVersion++;
   const entry=undo.at(-1)!;
+  if(priorCopy&&copied&&copied!==priorCopy)clipboardHistory.set(entry,{current:copied,restore:priorCopy});
   const forward:History='cells'in entry?{cells:entry.cells.map(change=>({sheet:change.sheet,key:change.key,value:clone(allSheets(book).find(s=>s.id===change.sheet)!.cells[change.key])}))}:'patch'in entry?capturePatch(book,entry.patch.map(p=>p.path)):{book:clone(book)};
   const activity=capturePatch(book,[['tableActivity']]);if('patch'in forward)forward.patch.push(...activity.patch);
   else scopedChanges.push(activity);
   changed(label,reset,false,forward);
-  if(incremental&&!reset&&drawRowWindow){drawRowWindow(true);groupManager?.refresh();renderStatus();}else render();
+  if(incremental&&!reset&&drawRowWindow){drawRowWindow(true);groupManager?.refresh();renderStatus();}else render(renderOptions);
   return true;
 }
 function sheetPath(s:Sheet=sheet()):Patch['path']{
@@ -652,7 +665,8 @@ function workbookTabsHtml():string{
   }).join('');
   return`<div class="tabs">${tabs}<span class="tab-drop-marker" hidden></span></div>`;
 }
-function render(): void {
+let captureViewport:(()=>{row:string;index:number;offset:number}|undefined)|undefined;
+function render(options?:{preserveViewport:boolean}): void {
   cancelAnimationFrame(selectionPaintFrame);selectionPaintFrame=0;
   const toolbarScroll=root.querySelector<HTMLElement>('.toolbar')?.scrollLeft??0;
   closeToolbar?.();closeToolbar=undefined;
@@ -675,6 +689,7 @@ function render(): void {
   anchor.r=Math.min(anchor.r,s.rows.length-1); anchor.c=Math.min(anchor.c,s.columns.length-1);
   if(view?.rows.length&&view.columns.length&&selectionKind==='cells'&&!inGrid(selected.r,selected.c)){selected={r:s.rows.findIndex(r=>r.id===(view.rows[1]??view.rows[0])),c:s.columns.findIndex(c=>c.id===view.columns[0])};anchor={...selected};selectionKind='cells';}
   const previousGrid=root.querySelector<HTMLElement>('#grid-scroll'),viewKey=s.id+(referenceId??''),sameSheet=renderedSheet===viewKey;
+  const previousViewport=sameSheet&&options?.preserveViewport?captureViewport?.():undefined;
   if(!sameSheet)extraSelections=[];
   if(tableSelectionTarget&&!(view?.table?[view.table]:allTables(book)).some(t=>t.id===tableSelectionTarget&&t.sheet===s.id))tableSelectionTarget=undefined;
   if(selectionKind==='cells')selectionScope=tableSelectionMode?tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)?.id:undefined;
@@ -684,21 +699,31 @@ function render(): void {
   const collapsedRows=new Set(s.groups.filter(g=>!g.table&&g.axis==='row'&&g.collapsed).flatMap(g=>outlineMembers(g,s.groups)));
   const collapsedColumns=new Set(s.groups.filter(g=>!g.table&&g.axis==='column'&&g.collapsed).flatMap(g=>outlineMembers(g,s.groups)));
   const pins=pinnedColumns.get(s.id)??[];
-  const sheetTables=tableGroupMembership(book,s);
-  const cellTable=(row:string,column:string)=>sheetTables.find(table=>table.rows.has(row)&&table.columns.has(column))?.owner;
+  const memberships=tableGroupMembership(book,s);
   const hypotheticalRows=hypotheticalMembers(s,'row'),hypotheticalColumns=hypotheticalMembers(s,'column');
   const rowHypo=hypotheticalProjection(book,s,'row'),columnHypo=hypotheticalProjection(book,s,'column');
+  const hiddenTables=showHypothetical?undefined:new Map(memberships.map(({owner,rows,columns})=>[owner.id,{
+    rows:new Set([...rows].filter(row=>owner.columns[0]&&rowHypo(row,owner.columns[0].column))),
+    columns:new Set([...columns].filter(column=>columnHypo(owner.header,column)))
+  }]));
+  const sheetTables=memberships.map(table=>{
+    const hidden=hiddenTables?.get(table.owner.id);
+    return hidden?{...table,hiddenRows:new Set([...table.hiddenRows,...hidden.rows]),hiddenColumns:new Set([...table.hiddenColumns,...hidden.columns])}:table;
+  });
+  const cellTable=(row:string,column:string)=>sheetTables.find(table=>table.rows.has(row)&&table.columns.has(column))?.owner;
   maskedCell=(row,column)=>sheetTables.some(table=>table.rows.has(row)&&table.columns.has(column)&&(table.hiddenRows.has(row)||table.hiddenColumns.has(column)))||!showHypothetical&&(rowHypo(row,column)||columnHypo(row,column));
   const columns = s.columns.map((c,i) => ({...c,i})).filter(c => !c.hidden && !collapsedColumns.has(c.id)&&(showHypothetical||!hypotheticalColumns.has(c.id)||s.rows.some(row=>!columnHypo(row.id,c.id)))&&(!view||view.columns.includes(c.id)));
   const rows = s.rows.map((r,i) => ({...r,i})).filter(r => !r.hidden && !collapsedRows.has(r.id)&&(showHypothetical||!hypotheticalRows.has(r.id)||columns.some(column=>!rowHypo(r.id,column.id)))&&(!view||view.rows.includes(r.id)));
   const firstOwned=new Map(sheetTables.map(({owner,rows:ownedRows,columns:ownedColumns})=>[owner.id,{
     row:rows.find(row=>ownedRows.has(row.id))?.id,column:columns.find(column=>ownedColumns.has(column.id))?.id
   }]));
-  groupProjection=tableGroupProjection(book,s,rows.map(row=>row.id),columns.map(column=>column.id));
+  groupProjection=tableGroupProjection(book,s,rows.map(row=>row.id),columns.map(column=>column.id),hiddenTables);
   if(maskedCell(s.rows[selected.r].id,s.columns[selected.c].id)){
     const owner=tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id);
+    const availableRows=options?.preserveViewport?[...rows].sort((a,b)=>Math.abs(a.i-selected.r)-Math.abs(b.i-selected.r)):rows;
+    const availableColumns=options?.preserveViewport?[...columns].sort((a,b)=>Math.abs(a.i-selected.c)-Math.abs(b.i-selected.c)):columns;
     const available=(owned:boolean)=>{
-      for(const row of rows)for(const column of columns)if((!owned||!owner||(row.id===owner.header||owner.rows.includes(row.id))&&owner.columns.some(field=>field.column===column.id))&&!maskedCell(row.id,column.id))return{r:row.i,c:column.i};
+      for(const row of availableRows)for(const column of availableColumns)if((!owned||!owner||(row.id===owner.header||owner.rows.includes(row.id))&&owner.columns.some(field=>field.column===column.id))&&!maskedCell(row.id,column.id))return{r:row.i,c:column.i};
     };
     const replacement=available(true)??available(false);
     if(replacement){selected=replacement;anchor={...selected};selectionKind='cells';extraSelections=[];}
@@ -754,7 +779,11 @@ function render(): void {
   const headers=new Set(allTables(book).filter(t=>t.sheet===s.id).map(t=>t.header));
   const layout=new RowViewport(rows.map(r=>measuredRowHeights.get(r.id)??Math.max(r.height?r.height*4/3:33,headers.has(r.id)?38:0)));
   let vertical=sameSheet?previousGrid?.scrollTop??0:0;
-  const target=typeof scrollTarget==='object'?scrollTarget.row:scrollTarget??(renderedTarget!==`${s.id}:${selected.r}`?selected.r:undefined);
+  if(previousViewport&&rows.length){
+    const exact=rows.findIndex(row=>row.id===previousViewport.row),next=rows.findIndex(row=>row.i>=previousViewport.index),at=exact>=0?exact:next>=0?next:rows.length-1;
+    vertical=layout.offsets[at]+Math.min(previousViewport.offset,layout.heights[at]-1);
+  }
+  const target=typeof scrollTarget==='object'?scrollTarget.row:scrollTarget??(!options?.preserveViewport&&renderedTarget!==`${s.id}:${selected.r}`?selected.r:undefined);
   if(target!==undefined){
     const display=groupProjection.display(s.rows[target]?.id,s.columns[selected.c].id),displayIndex=display?s.rows.findIndex(row=>row.id===display.row):target;
     const position=rows.findIndex(r=>r.i>=displayIndex),at=position<0?rows.length-1:position,top=layout.offsets[Math.max(0,at)],height=previousGrid?.clientHeight??innerHeight-180;
@@ -790,6 +819,7 @@ function render(): void {
     <div class="grid-footer"><div><button class="selection-count" data-action="range" title="Select a cell range, including on mobile">${selectionCount(selectedRanges)} cells</button><span id="selection-scope-label"></span></div><div class="navigator"><button data-action="top" aria-label="Jump to top">Top</button><button data-action="prev" aria-label="Previous rows">&larr;</button><input id="row-jump" type="number" min="1" max="${s.rows.length}" aria-label="Jump to row"><span>/ ${s.rows.length}</span><button data-action="next" aria-label="Next rows">&rarr;</button><button data-action="bottom">Bottom</button></div></div>
     <footer class="sheet-bar" aria-label="${referenceId?'Dropdown sources':'Workbook sheets'}">${referenceId?referenceTabsHtml():workbookTabsHtml()}<div class="tab-actions"><button type="button" data-action="${referenceId?'new-reference':'new-sheet'}" title="${referenceId?'Add dropdown source':'Add sheet'}" aria-label="${referenceId?'Add dropdown source':'Add sheet'}">${toolbarIcon('add')}</button><button type="button" data-action="${referenceId?'reference-settings':'sheet-settings'}" title="${referenceId?'Dropdown settings':'Sheet settings'}" aria-label="${referenceId?'Dropdown settings':'Sheet settings'}">${toolbarIcon('settings')}</button></div><button class="reference-manager" data-action="references" title="Dropdown sources" aria-label="DD">DD</button></footer>`;
   const grid=root.querySelector<HTMLElement>('#grid-scroll')!,body=grid.querySelector('tbody')!;
+  captureViewport=()=>{const at=layout.at(grid.scrollTop),row=rows[at];return row?{row:row.id,index:row.i,offset:grid.scrollTop-layout.offsets[at]}:undefined;};
   grid.dataset.firstRow=String(rows[0]?.i??0);grid.dataset.firstColumn=String(columns[0]?.i??0);
   groupControls=mountGroupControls({sheet:s,groups,tables:allTables(book),grid,rows:rows.map(r=>r.id),columns:columns.map(c=>c.id),projection:groupProjection,rowLayouts,tableRowLayouts,tree,hints,menuOpen:groupMenuOpen,setMenuOpen:open=>{groupMenuOpen=open;},
     change:(label,fn,scope)=>commitDraft()&&mutateMetadata(label,fn,scope.view?[[...sheetPath(s),'outlineView']]:scope.groups!.map(group=>[...sheetPath(s),'groups',s.groups.indexOf(group),'collapsed'])),refuse:flash,selectAll:()=>{void action('select-all');},manage:openGroups,scope:()=>({enabled:tableSelectionMode,table:selectionScope??tableSelectionTarget}),menuButton:root.querySelector<HTMLButtonElement>('.toolbar .group-menu-button')!});
@@ -821,11 +851,15 @@ function render(): void {
     if(window.start===lastStart&&window.end===lastEnd&&initialTop===undefined&&!force)return;
     lastStart=window.start;lastEnd=window.end;engine.beginPass();
     const active=document.activeElement,wasInline=active instanceof HTMLTextAreaElement&&active.classList.contains('cell-inline-editor'),caret=wasInline?[active.selectionStart,active.selectionEnd]:undefined,b=bounds(),ranges=currentSelections();
+    const copiedRows=new Set(copied?.sheet===s.id?copied.rows:[]),copiedColumns=new Set(copied?.sheet===s.id?copied.columns:[]);
+    const copyOrigins=copied?.outlineOrigins??copied?.origins;
+    const copiedOrigins=copied?.sheet===s.id&&copyOrigins?new Set(copyOrigins.flatMap(row=>row.map(origin=>key(origin.row,origin.column)))):undefined;
     body.innerHTML=spacer(window.before,'before')+rows.slice(window.start,window.end).map((slotRow,index)=>{const r=slotRow,rowNumber=view?window.start+index+1:r.i+1;return`<tr data-row="${r.i}"${r.height?` style="--row-height:${r.height*4/3}px"`:''} class="${activeReference()?.archivedRows.includes(r.id)?'archived ':''}${r.status&&r.status!=='real'?r.status:''}"><th data-row-select="${r.i}" class="${r.i>=b.r1&&r.i<=b.r2?'row-selected':''}"><span class="row-index">${rowNumber}</span>${editableReference()&&(!view||r.id!==view.table?.header)?`<button class="row-move-control" data-move-row="${r.i}" draggable="true" aria-label="Move row ${rowNumber}" title="Drag row, or tap then tap destination">${grip(false)}</button>`:''}<button class="boundary-control row-boundary" data-insert-row="${r.i+1}" aria-label="${movingRows?'Move rows':'Insert row'} after ${rowNumber}">+</button>${index===0||view&&r.id===view.table?.rows[0]?`<button class="boundary-control row-start" data-insert-row="${r.i}" aria-label="Insert row before ${rowNumber}">+</button>`:''}<button class="resize-edge resize-row" data-resize-row="${r.i}" aria-label="Resize row ${rowNumber}" title="Drag to resize; double-click to fit"></button></th>${columns.map(slotColumn=>{
       const source=groupProjection!.source(slotRow.id,slotColumn.id),display=`data-display-r="${slotRow.i}" data-display-c="${slotColumn.i}"`;
       if(!source)return`<td ${display} class="compacted-empty" aria-hidden="true"></td>`;
       const r=rowById.get(source.row)!,c=columnById.get(source.column)!,owner=cellTable(r.id,c.id),tableLayout=owner?tableRowLayouts.get(owner.id):undefined;
-      const cell=getCell(s,r.id,c.id),val=cellText(cell,s,r.i,c.i),header=owner?.header===r.id,inSelection=ranges.some(b=>r.i>=b.r1&&r.i<=b.r2&&c.i>=b.c1&&c.i<=b.c2),copying=copied?.sheet===s.id&&r.i>=copied.r&&r.i<copied.r+copied.cells.length&&c.i>=copied.c&&c.i<copied.c+copied.cells[0].length;
+      const paint=selectionPaintPosition(r.i,c.i,slotRow.i,slotColumn.i);
+      const cell=getCell(s,r.id,c.id),val=cellText(cell,s,r.i,c.i),header=owner?.header===r.id,inSelection=ranges.some(b=>paint.r>=b.r1&&paint.r<=b.r2&&paint.c>=b.c1&&paint.c<=b.c2),copying=copiedOrigins?copiedOrigins.has(key(r.id,c.id)):copiedRows.has(r.id)&&copiedColumns.has(c.id);
       const inset=(c.id===firstColumn?.id?rowLayouts.get(r.id)?.inset??0:0)+(tableLayout?.column===c.id?tableLayout.rows.get(r.id)?.inset??0:0)+(r.id===rows[0]?.id?(columnSummaries.get(c.id)??0)*24:0);
       const rowTagged=rowHypo(r.id,c.id),columnTagged=columnHypo(r.id,c.id);
       const firstOwnedColumn=owner?firstOwned.get(owner.id)?.column:firstColumn?.id;
@@ -1065,7 +1099,9 @@ function bind(): void {
     showMovePreview(axis,index+Number(after),index,after);
   },{capture:true});
   scrolling.addEventListener('drop',e=>{
-    const target=movePreview;if(!target)return;
+    const axis=e.dataTransfer?.types.includes('application/x-fnt-rows')?'row':e.dataTransfer?.types.includes('application/x-fnt-columns')?'column':undefined;
+    const group=axis?moveGroupAt(e.target as Element,axis,e.clientX,e.clientY):undefined;
+    const target:typeof movePreview=group?{axis:axis!,groupId:group,boundary:0,index:0,after:false}:movePreview;if(!target)return;
     const cell=(e.target as Element).closest<HTMLElement>('td[data-r][data-c]');if(!cell&&!target.groupId)return;
     const value=e.dataTransfer?.getData(target.axis==='row'?'application/x-fnt-rows':'application/x-fnt-columns');if(!value)return;
     e.preventDefault();e.stopPropagation();
@@ -1156,8 +1192,8 @@ function refreshSelection(closeDropdown=true):void {
   renderedTarget=`${sheetId}:${selected.r}`;
   const b=bounds(),ranges=currentSelections();
   root.querySelectorAll<HTMLElement>('td[data-r]').forEach(el=>{
-    const r=Number(el.dataset.r),c=Number(el.dataset.c);
-    el.classList.toggle('selected',ranges.some(b=>r>=b.r1&&r<=b.r2&&c>=b.c1&&c<=b.c2));
+    const r=Number(el.dataset.r),c=Number(el.dataset.c),paint=selectionPaintPosition(r,c,Number(el.dataset.displayR??el.dataset.r),Number(el.dataset.displayC??el.dataset.c));
+    el.classList.toggle('selected',ranges.some(b=>paint.r>=b.r1&&paint.r<=b.r2&&paint.c>=b.c1&&paint.c<=b.c2));
     el.classList.toggle('active',r===selected.r&&c===selected.c);
   });
   root.querySelectorAll<HTMLElement>('[data-col]').forEach(el=>{const c=Number(el.dataset.col);el.classList.toggle('column-selected',ranges.some(b=>c>=b.c1&&c<=b.c2));});
@@ -1366,7 +1402,12 @@ function copyCells(cut=false):boolean {
   if(referenceId&&cut){flash('Move complete option rows with their grab handle. Copy is available for cell contents.');return false;}
   const s=sheet(),b=requireRectangle(cut?'Cut':'Copy');if(!b){copied=undefined;return false;}
   const rows=s.rows.filter((r,i)=>i>=b.r1&&i<=b.r2&&(!gridReference()||gridReference()!.rows.includes(r.id))),columns=s.columns.filter((c,i)=>i>=b.c1&&i<=b.c2&&(!gridReference()||gridReference()!.columns.includes(c.id)));
-  copied={sheet:s.id,r:b.r1,c:b.c1,rows:rows.map(r=>r.id),columns:columns.map(c=>c.id),cells:rows.map(r=>columns.map(c=>clone(getCell(s,r.id,c.id)))),cut,table:selectionScope,kind:selectionMode()};
+  const kind=selectionMode(),projected=!selectionScope&&(kind==='rows'||kind==='columns');
+  const positions=projected?rows.map(row=>columns.map(column=>groupProjection?.source(row.id,column.id))):undefined;
+  const shifted=positions?.some((row,i)=>row.some((position,j)=>!position||position.row!==rows[i].id||position.column!==columns[j].id));
+  if(cut&&shifted){copied=undefined;flash('Sheet axes and displayed table members differ because a table is compacted. Use Table selection to cut its visible records or fields.');return false;}
+  const origins=shifted?positions!.map((row,i)=>row.map((position,j)=>position??{row:rows[i].id,column:columns[j].id})):undefined;
+  copied={sheet:s.id,r:b.r1,c:b.c1,rows:rows.map(r=>r.id),columns:columns.map(c=>c.id),origins,cells:shifted?positions!.map(row=>row.map(position=>position?clone(getCell(s,position.row,position.column)):{})):rows.map(row=>columns.map(column=>clone(getCell(s,row.id,column.id)))),cut,table:selectionScope,kind};
   render();return true;
 }
 function pasteCells():void {
@@ -1388,14 +1429,15 @@ function pasteCells():void {
   }
   mutate('Paste cells',()=>{
     source.cells.forEach((row,i)=>row.forEach((cell,j)=>{
-      const position=pastePosition(i,j);
+      const position=pastePosition(i,j,source);
       if(!position)throw Error('Paste exceeds this sheet or list. Add rows or columns first.');
       const row=position.r,column=position.c;
       const target=clone(cell);
-      if(!from.rows.some(r=>r.id===source.rows[i])||!from.columns.some(c=>c.id===source.columns[j]))throw Error('Copied source was deleted. Copy again before pasting.');
+      const origin=source.origins?.[i][j]??{row:source.rows[i],column:source.columns[j]};
+      if(!from.rows.some(r=>r.id===origin.row)||!from.columns.some(c=>c.id===origin.column))throw Error('Copied source was deleted. Copy again before pasting.');
       if(target.formula||target.binding||target.value!=null&&target.value!=='')expandAdjacentTable(book,s,s.rows[row].id,s.columns[column].id);
-      if(target.formula)target.formula=translate(target.formula,book,from.id,source.rows[i],source.columns[j],s.rows[row].id,s.columns[column].id,s.id);
-      if(target.calculation)target.calculation=translate(target.calculation,book,from.id,source.rows[i],source.columns[j],s.rows[row].id,s.columns[column].id,s.id);
+      if(target.formula)target.formula=translate(target.formula,book,from.id,origin.row,origin.column,s.rows[row].id,s.columns[column].id,s.id);
+      if(target.calculation)target.calculation=translate(target.calculation,book,from.id,origin.row,origin.column,s.rows[row].id,s.columns[column].id,s.id);
       const targetTable=allTables(book).find(t=>t.sheet===s.id&&t.header===s.rows[row].id&&t.columns.some(c=>c.column===s.columns[column].id));
       if(targetTable)throw Error('Paste into table headers is disabled. Rename headers explicitly to protect table integrity.');
       s.cells[key(s.rows[row].id,s.columns[column].id)]=target;
@@ -1404,14 +1446,30 @@ function pasteCells():void {
 }
 function copiedText(source:NonNullable<typeof copied>):string{
   const s=allSheets(book).find(s=>s.id===source.sheet)!;
-  return serializeTsv(source.rows.map(row=>{
-    const r=s.rows.findIndex(r=>r.id===row);
-    return source.columns.map(column=>cellText(getCell(s,row,column),s,r,s.columns.findIndex(c=>c.id===column)));
-  }));
+  return serializeTsv(source.cells.map((row,i)=>row.map((cell,j)=>{
+    const origin=source.origins?.[i][j]??{row:source.rows[i],column:source.columns[j]};
+    return cellText(cell,s,s.rows.findIndex(r=>r.id===origin.row),s.columns.findIndex(c=>c.id===origin.column));
+  })));
 }
-function pastePosition(i:number,j:number):typeof selected|undefined{
-  const s=sheet(),view=gridReference(),owner=scopedSelectionTable(),start=selectionMode()==='cells'?selected:{r:bounds().r1,c:bounds().c1},rows=s.rows.map((_,r)=>r).filter(r=>r>=start.r&&(!view||view.rows.includes(s.rows[r].id))&&(!owner||owner.header===s.rows[r].id||owner.rows.includes(s.rows[r].id))),cols=s.columns.map((_,c)=>c).filter(c=>c>=start.c&&(!view||view.columns.includes(s.columns[c].id))&&(!owner||owner.columns.some(field=>field.column===s.columns[c].id)));
-  return rows[i]!==undefined&&cols[j]!==undefined?{r:rows[i],c:cols[j]}:undefined;
+function pastePosition(i:number,j:number,source?:NonNullable<typeof copied>):typeof selected|undefined{
+  const s=sheet(),view=gridReference(),owner=scopedSelectionTable(),mode=selectionMode(),start=mode==='cells'?{...selected}:{r:bounds().r1,c:bounds().c1};
+  const sheetAxis=!owner&&(mode==='rows'||mode==='columns'||!source?.table&&(source?.kind==='rows'||source?.kind==='columns'));
+  if(source?.kind==='rows'){
+    if(!source.table){const display=mode==='cells'?groupProjection?.display(s.rows[start.r].id,s.columns[start.c].id):undefined;if(display)start.r=s.rows.findIndex(row=>row.id===display.row);start.c=0;}
+    else if(owner)start.c=Math.min(...owner.columns.map(field=>s.columns.findIndex(column=>column.id===field.column)));
+  }
+  if(source?.kind==='columns'){
+    if(!source.table){const display=mode==='cells'?groupProjection?.display(s.rows[start.r].id,s.columns[start.c].id):undefined;if(display)start.c=s.columns.findIndex(column=>column.id===display.column);start.r=0;}
+    else if(owner)start.r=s.rows.findIndex(row=>row.id===owner.header);
+  }
+  const rows=s.rows.map((_,r)=>r).filter(r=>r>=start.r&&(!view||view.rows.includes(s.rows[r].id))&&(!owner||owner.header===s.rows[r].id||owner.rows.includes(s.rows[r].id))),cols=s.columns.map((_,c)=>c).filter(c=>c>=start.c&&(!view||view.columns.includes(s.columns[c].id))&&(!owner||owner.columns.some(field=>field.column===s.columns[c].id)));
+  if(rows[i]===undefined||cols[j]===undefined)return;
+  if(sheetAxis){
+    const position=groupProjection?.source(s.rows[rows[i]].id,s.columns[cols[j]].id);
+    if(!position)throw Error('This displayed table slot is empty because members are hidden. Show or expand them before pasting here.');
+    return{r:s.rows.findIndex(row=>row.id===position.row),c:s.columns.findIndex(column=>column.id===position.column)};
+  }
+  return{r:rows[i],c:cols[j]};
 }
 async function action(name:string):Promise<void> {
   if(busy){flash('Wait for the current save or sync to finish.');return;}
@@ -1433,7 +1491,9 @@ async function action(name:string):Promise<void> {
       const from=name==='undo'?undo:redo,to=name==='undo'?redo:undo,previous=from.at(-1);
       if(previous){
         const revision=book.revision,before=book,layoutOnly=layoutHistory(previous);let forward:History;
-        try{const applied=applyUndo(book,previous);if('cells'in previous)validateCellChanges(applied.book,previous.cells);else if(layoutOnly)validateBookMetadata(applied.book);else validateBook(applied.book);book=applied.book;forward=clone(previous);from.pop();to.push(applied.inverse);}catch(error){flash(error);return;}
+        try{const applied=applyUndo(book,previous);if('cells'in previous)validateCellChanges(applied.book,previous.cells);else if(layoutOnly)validateBookMetadata(applied.book);else validateBook(applied.book);book=applied.book;forward=clone(previous);from.pop();to.push(applied.inverse);
+          const clipboard=clipboardHistory.get(previous);if(clipboard&&copied===clipboard.current){copied=clipboard.restore;clipboardHistory.set(applied.inverse,{current:clipboard.restore,restore:clipboard.current});}
+        }catch(error){flash(error);return;}
         const cellChanges=layoutOnly?[]:'cells'in previous?previous.cells:'patch'in previous&&previous.patch.every(p=>p.path.length>1&&!(p.path.includes('cells')&&p.path.at(-1)==='cells'))?previous.patch.flatMap(p=>{
           const at=p.path.indexOf('cells');if(at<0)return[];
           const index=Number(p.path[at-1]),s=p.path[0]==='sheets'?before.sheets[index]:before.dropdownData?.sheets[index];
@@ -1524,7 +1584,7 @@ async function action(name:string):Promise<void> {
       changeHypotheticalTags(selection.axis,selection.ids,name==='hypothetical'&&selection.tagged!==selection.ids.length,selection.table);
       break;
     }
-    case 'hypothetical-visibility':showHypothetical=!showHypothetical;render();break;
+    case 'hypothetical-visibility':showHypothetical=!showHypothetical;render({preserveViewport:true});break;
     case 'ungroup-plain':{
       const owner=scopedSelectionTable(),local=tableSelectionMode||!!owner;
       if(!(local?sheet().groups.some(g=>g.table===owner?.id&&g.kind!=='summary'):allSheets(book).some(s=>s.groups.some(g=>g.kind!=='summary')))){flash('There are no plain groups in this scope.');break;}
@@ -2299,20 +2359,25 @@ function showGroupMovePreview(axis:'row'|'column',groupId:string):void{
   if(movePreview?.axis===axis&&movePreview.groupId===groupId&&previewGeneration===generation){scheduleMovePaint();return;}
   previewGeneration=generation;
   try{
-    const group=sheet().groups.find(group=>group.id===groupId),owner=scopedSelectionTable();
-    if(owner&&group?.table!==owner.id)throw Error('Move members within the selected table. Other table and sheet groups remain separate.');
-    const scope=owner??allTables(book).find(table=>table.id===group?.table);
-    if(scope&&ids.some(id=>!(axis==='row'?scope.rows:scope.columns.map(field=>field.column)).includes(id)))throw Error('Select only members of the destination table.');
+    const scope=groupMoveOwner(axis,ids,groupId);
     const target=groupMoveTarget(scope?{...sheet(),groups:sheet().groups.filter(group=>group.table===scope.id)}:sheet(),axis,ids,groupId,scope??(axis==='row'?gridReference()?.table:undefined));movePreview={axis,groupId,boundary:target.boundary,index:0,after:false};scheduleMovePaint();
   }
   catch(error){clearMovePreview();flash(error);}
 }
+function groupMoveOwner(axis:'row'|'column',ids:string[],groupId:string){
+  const destination=sheet().groups.find(group=>group.id===groupId&&group.axis===axis),selectedOwner=scopedSelectionTable();
+  if(!destination)throw Error('The destination group is no longer available.');
+  if(selectedOwner&&destination.table!==selectedOwner.id)throw Error('Move members within the selected table. Other table and sheet groups remain separate.');
+  const owner=selectedOwner??allTables(book).find(table=>table.id===destination.table);
+  if(owner&&ids.some(id=>!(axis==='row'?owner.rows:owner.columns.map(field=>field.column)).includes(id)))throw Error('Select only members of the destination table.');
+  if(owner&&!selectedOwner&&ids.some(id=>groupProjection?.axis(owner.id,axis,id)!==id))throw Error('Sheet axes and displayed table members differ because this table is compacted. Turn on Table selection to move its visible records or fields.');
+  return owner;
+}
 function dropIntoGroup(axis:'row'|'column',ids:string[],groupId:string):void{
   if(!sheetAxisSelectionAllowed('Moving sheet axes'))return;
   if(!editableReference()){flash('Edit the live list source instead.');return;}
-  const destination=sheet().groups.find(group=>group.id===groupId),selectedOwner=scopedSelectionTable();
-  if(selectedOwner&&destination?.table!==selectedOwner.id){flash('Move members within the selected table. Other table and sheet groups remain separate.');return;}
-  const owner=selectedOwner??allTables(book).find(table=>table.id===destination?.table);
+  let owner:ReturnType<typeof scopedSelectionTable>;
+  try{owner=groupMoveOwner(axis,ids,groupId);}catch(error){movingRows=movingColumns=undefined;clearMovePreview();paintMoving();flash(error);return;}
   if(owner){
     try{
       const target=groupMoveTarget({...sheet(),groups:sheet().groups.filter(group=>group.table===owner.id)},axis,ids,groupId,owner);
@@ -3134,10 +3199,11 @@ document.addEventListener('keydown',e=>{
   }
 });
 document.addEventListener('paste',e=>{
-  if(!book||['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)||document.querySelector('dialog[open]'))return;
+  const own=e.clipboardData?.getData('application/x-fnt-copy')===clipboardId&&!!copied;
+  if(!book||['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)&&!(own&&emptyDropdownSearch(e.target))||document.querySelector('dialog[open]'))return;
   const text=e.clipboardData?.getData('text/plain');if(!text)return;e.preventDefault();
   if(!requireRectangle('Paste'))return;
-  if(e.clipboardData?.getData('application/x-fnt-copy')===clipboardId&&copied){pasteCells();return;}
+  if(own){closeCellDropdown?.();pasteCells();return;}
   if(!editableReference()){flash('Edit the live list source instead.');return;}
   mutate('Paste text',()=>{const rows=parseTsv(text),s=sheet();rows.forEach((row,i)=>row.forEach((v,j)=>{const p=pastePosition(i,j);if(!p)throw Error('Paste exceeds this sheet or list.');if(allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[p.r].id&&t.columns.some(c=>c.column===s.columns[p.c].id)))throw Error('Rename table headers explicitly.');writeGridCell(book,s,s.rows[p.r].id,s.columns[p.c].id,v);}));});
 });
@@ -3148,10 +3214,13 @@ document.addEventListener('cut',e=>{
   e.clipboardData?.setData('text/plain',copiedText(copied!));
 });
 document.addEventListener('copy',e=>{
-  if(!book||['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName))return;
+  if(!book||['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)&&!emptyDropdownSearch(e.target))return;
   e.preventDefault();if(!copyCells())return;e.clipboardData?.setData('text/plain',copiedText(copied!));
   e.clipboardData?.setData('application/x-fnt-copy',clipboardId);e.preventDefault();
 });
+function emptyDropdownSearch(target:EventTarget|null):boolean{
+  return target instanceof HTMLInputElement&&!!target.closest('.cell-dropdown')&&target.value===''&&target.selectionStart===target.selectionEnd;
+}
 document.addEventListener('click',e=>{if(appendDraft&&!(e.target as HTMLElement).closest('.reference-append-row')&&!commitDraft()){e.preventDefault();e.stopImmediatePropagation();}});
 window.addEventListener('beforeunload',e=>{if(generation!==savedGeneration||draft!==undefined||appendDraft||colorPicker?.pending||navigationError){e.preventDefault();e.returnValue='Unsaved workbook edits or navigation preferences';}});
 window.addEventListener('resize',()=>drawRowWindow?.());

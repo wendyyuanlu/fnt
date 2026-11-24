@@ -1,6 +1,6 @@
 import {displayFormula,Engine,type Ast} from './formula';
 import { allSheets,allTables,addTableColumns,addTableRows,clone,getCell,inheritInsertedGroups,isFault,letters,uid,type Value,type Workbook} from './model';
-import {editTableAxis,TableExpansionConflict,type TableAxisEdit} from './table-operations';
+import {editTableAxis,TableExpansionConflict,type TableAxisEdit,type CellMoveTrace} from './table-operations';
 import {editSnapshot} from './undo-history';
 
 export interface FormulaImpact{
@@ -53,12 +53,12 @@ export function formulaImpacts(before:Workbook,after:Workbook,trace=new Map<stri
   return impacts.sort((a,b)=>['broken','review','changed','updated'].indexOf(a.reason)-['broken','review','changed','updated'].indexOf(b.reason));
 }
 /** candidate must be an independent snapshot of book; it is consumed even if planning fails. */
-export function planTableAxisEdit(book:Workbook,tableId:string,axis:'row'|'column',edit:TableAxisEdit,options:{candidate?:Workbook}={}):TableEditPlan{
+export function planTableAxisEdit(book:Workbook,tableId:string,axis:'row'|'column',edit:TableAxisEdit,options:{candidate?:Workbook;trace?:CellMoveTrace}={}):TableEditPlan{
   if(options.candidate===book)throw Error('Table planning requires an independent candidate workbook.');
   const owner=allTables(book).find(table=>table.id===tableId);
   if(!owner)throw Error('The selected table no longer exists.');
   const next=options.candidate??editSnapshot(book,new Set([owner.sheet]));
-  try{return{book:next,ids:editTableAxis(next,tableId,axis,edit,undefined,{ownedCandidate:true})};}
+  try{return{book:next,ids:editTableAxis(next,tableId,axis,edit,options.trace,{ownedCandidate:true})};}
   catch(error){
     if(!(error instanceof TableExpansionConflict))throw error;
     const table=allTables(next).find(t=>t.id===tableId)!,sheet=allSheets(next).find(s=>s.id===table.sheet)!,{boundary,count}=error;
@@ -75,6 +75,7 @@ export function planTableAxisEdit(book:Workbook,tableId:string,axis:'row'|'colum
     if(axis==='row')sheet.rows.splice(boundary,0,...insertions.map(({id})=>({id})));else sheet.columns.splice(boundary,0,...insertions);
     for(const other of crossing)if(axis==='row')addTableRows(next,sheet,other,insertions.map(item=>item.id));else addTableColumns(next,sheet,other,insertions.map(item=>item.id));
     const trace=new Map<string,{sheet:string;row:string;column:string}|null>(),ids=editTableAxis(next,tableId,axis,edit,trace,{ownedCandidate:true});
+    if(options.trace)for(const [source,target] of trace)options.trace(source,target);
     return{book:next,ids,shift:{axis,count,boundary,impacts:formulaImpacts(book,next,trace)}};
   }
 }
