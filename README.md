@@ -267,6 +267,16 @@ remain viewable only in history.
   Cells never show horizontal or vertical scrollbars, including while typing.
   Long in-cell drafts still scroll to the caret; double-click opens the full editor.
   Editing notes does not change wrapping. Formula-column cells can be manually overridden.
+  On touch devices, the formula bar starts hidden. Tap one cell to focus a compact
+  bottom input in the same gesture; it follows the visual viewport above the native
+  keyboard. Assigned dropdowns appear above that input, which also filters their
+  choices without a second search field. The shared chevron hides/reopens choices
+  for direct entry; source tabs, Custom entry and choice identities are retained.
+  Enter or dismissing the keyboard applies the draft; Escape cancels. Explicit
+  touch-drag range selection does not open this editor. Double-tap or **Expand**
+  still opens the multiline editor without changing wrapping. Desktop editing is unchanged.
+  On touch, **123 > Restore calculation** retains access to a manually overridden formula
+  without adding status controls to the compact input.
   The formula bar marks **Calculated** versus **Manual**; **Restore** recovers
   the exact previous formula (or asks which existing column calculation to use).
   Overrides/default formulas survive save, copy/fill, moves and native backups.
@@ -873,8 +883,9 @@ Exact remote conflict checkpoints are not substituted with the local journal.
 
 **File > Compare workbooks and backups** opens a read-only, browser-local
 comparison. Load a native full Fnt backup on either side; this does not restore,
-save or upload it. With authenticated sync, **Load saved GitHub version for right
-side** performs a read-only fetch, never a sync/upload, including when local edits
+save or upload it. **Compare with remote version (GitHub)** is always visible;
+it requires configured, authenticated private sync and loads the right side with
+a read-only fetch, never a sync/upload, including when local edits
 are pending. The conflict dialog also offers **Compare versions or a
 backup**, initially comparing this device with the received GitHub version.
 Cells match by stable identities, not current row/column positions. Values,

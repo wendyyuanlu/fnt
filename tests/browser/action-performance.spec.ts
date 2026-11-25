@@ -172,7 +172,7 @@ test('scoped title changes repaint the heading and persist with Undo',async({pag
   await page.locator('[data-action="undo"]').click();await expect(page.locator('#title')).toHaveText(before);
 });
 
-test('paged DD choices retain explicit source identity for duplicate labels and Custom through search, Undo and reload',async({page})=>{
+test('paged DD choices retain explicit source identity for duplicate labels and Custom through search, Undo and reload',async({page,isMobile})=>{
   await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
   const sources=await page.evaluate(async()=>{
     const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{allTables}=await import(p+'model.ts') as typeof import('../../src/model'),{addReferenceValue,referenceLabel}=await import(p+'references.ts') as typeof import('../../src/references'),store=await Store.open();
@@ -198,11 +198,11 @@ test('paged DD choices retain explicit source identity for duplicate labels and 
   });
   await cell.click();await page.getByRole('button',{name:'Next dropdown options',exact:true}).click();await page.getByRole('option',{name:'Shared food',exact:true}).click();
   await expect(page.locator('#save-state')).toContainText('Saved');expect(await binding()).toEqual(sources[0]);
-  await cell.click();await page.getByRole('tab',{name:'Snack / Category',exact:true}).click();await page.getByRole('searchbox',{name:'Search dropdown options'}).fill('Shared food');await page.getByRole('option',{name:'Shared food',exact:true}).click();
+  await cell.click();await page.getByRole('tab',{name:'Snack / Category',exact:true}).click();await page.locator('.cell-dropdown input, .formula-bar.touch-editing #formula').fill('Shared food');await page.getByRole('option',{name:'Shared food',exact:true}).click();
   await expect(page.locator('#save-state')).toContainText('Saved');expect(await binding()).toEqual(sources[1]);
   await page.locator('[data-action="undo"]').click();await expect(page.locator('#save-state')).toContainText('Saved');expect(await binding()).toEqual(sources[0]);
   await page.locator('[data-action="redo"]').click();await expect(page.locator('#save-state')).toContainText('Saved');expect(await binding()).toEqual(sources[1]);
-  await cell.click();await page.getByRole('button',{name:'Custom',exact:true}).click();await page.getByRole('textbox',{name:'Edit selected cell',exact:true}).fill('Shared food');await page.keyboard.press('Enter');
+  await cell.click();await page.getByRole('button',{name:'Custom',exact:true}).click();await (isMobile?page.locator('#formula'):page.getByRole('textbox',{name:'Edit selected cell',exact:true})).fill('Shared food');await page.keyboard.press('Enter');
   await expect(cell).not.toHaveClass(/linked/);await expect(page.locator('#save-state')).toContainText('Saved');await page.reload();
   await expect(cell).toHaveText('Shared food');expect(await binding()).toBeUndefined();
   await page.locator('[data-action="undo"]').click();await expect(page.locator('#save-state')).toContainText('Saved');await page.reload();

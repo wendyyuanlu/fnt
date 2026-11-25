@@ -40,6 +40,7 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
     await second.getByRole('button',{name:'Use remote version on this device',exact:true}).click();
     await expect(second.locator('#save-state')).toContainText('Synced');
     await second.locator('td[data-r="1"][data-c="0"]').click();
+    if(isMobile)await second.locator('#formula').press('Escape');
     const started=Date.now();await edit(page,'801');
     await expect.poll(()=>local(page)).toEqual({pending:0,value:801});
     await second.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
@@ -61,8 +62,8 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
     expect((await local(page)).value).toBe(901);expect((await local(second)).value).toBe(902);expect(revision).toBe(before);
     await page.getByRole('button',{name:'Compare versions or a backup',exact:true}).click();
     await expect(page.locator('#comparison-status')).toContainText('Comparison complete.');
-    await page.getByRole('button',{name:'Load saved GitHub version for right side',exact:true}).click();
-    await expect(page.getByRole('button',{name:'Load saved GitHub version for right side',exact:true})).toBeEnabled();
+    await page.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true}).click();
+    await expect(page.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeEnabled();
     await expect(page.locator('#comparison-status')).toContainText('Comparison complete.');
     await page.locator('#comparison-search').fill('901');
     await expect(page.locator('.sync-comparison-table tbody')).toContainText('901');
@@ -98,6 +99,9 @@ test('backup comparison is local, searchable, paged and never restores or syncs 
   await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
   await page.getByRole('button',{name:'Compare workbooks and backups',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'Compare workbooks and backups',exact:true});
+  await expect(dialog.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeVisible();
+  await expect(dialog.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeDisabled();
+  await expect(dialog).toContainText('Configure Private GitHub sync from File first');
   await expect(page.locator('#comparison-status')).toContainText('Choose a full Fnt backup');
   await page.locator('#comparison-right').setInputFiles({name:'invented.fnt.json',mimeType:'application/json',buffer:Buffer.from(fixture.contents)});
   await expect(page.locator('#comparison-status')).toContainText('Comparison complete.');

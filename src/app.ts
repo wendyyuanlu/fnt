@@ -103,6 +103,15 @@ let navigationRows:number[]=[],navigationColumns:number[]=[];
 const measuredRowHeights=new Map<string,number>();
 const pinnedColumns=new Map<string,string[]>();
 let touchSelection=false,touchPointer:number|undefined;
+let touchInputDevice=navigator.maxTouchPoints>0&&matchMedia('(pointer:coarse)').matches;
+document.body.classList.toggle('touch-input-device',touchInputDevice);
+document.addEventListener('pointerdown',e=>{
+  if(e.pointerType==='touch'&&!touchInputDevice){touchInputDevice=true;document.body.classList.add('touch-input-device');}
+},{capture:true});
+let touchCell:{sheet:string;row:string;column:string}|undefined;
+let touchViewportHeight=0,touchKeyboardSeen=false;
+let touchTap:{pointer:number;x:number;y:number;r:number;c:number}|undefined,touchTapHandled=-Infinity;
+let touchOutsideGesture=false;
 let fillSource:ReturnType<typeof bounds>|undefined,fillPointer:number|undefined;
 let status = 'Opening local workbook...', error = '', busy = false, token = '';
 let savedGeneration = 0, generation = 0, saving: Promise<void> = Promise.resolve();
@@ -728,7 +737,7 @@ function schedulePrivateSync(delay=15000):void{
   clearTimeout(privateSyncTimer);
   if(!state?.sync||!token||privateSyncConflict||!navigator.onLine)return;
   privateSyncTimer=setTimeout(()=>{
-    if(document.visibilityState!=='visible'||busy||draft!==undefined||appendDraft||colorPicker?.pending||document.querySelector('dialog[open]')){schedulePrivateSync();return;}
+    if(document.visibilityState!=='visible'||busy||draft!==undefined||touchCell||appendDraft||colorPicker?.pending||document.querySelector('dialog[open]')){schedulePrivateSync();return;}
     void manualSave(true);
   },delay);
 }
@@ -807,7 +816,7 @@ function openConflict(conflict:SyncConflict):void {
   });
 }
 function openComparison(conflict?:SyncConflict):void{
-  const d=dialog('Compare workbooks and backups',`${state.sync?`<button id="comparison-github" ${token?'':'disabled'}>Load saved GitHub version for right side</button>${token?'':'<p class="muted">Reconnect private sync first to authenticate a GitHub read. Backup comparisons work offline.</p>'}`:''}<section id="workbook-comparison"></section>`);
+  const d=dialog('Compare workbooks and backups',`<button id="comparison-github" ${state.sync&&token?'':'disabled'}>Compare with remote version (GitHub)</button>${state.sync&&token?'':`<p class="muted">${state.sync?'Reconnect':'Configure'} Private GitHub sync from File first to authenticate a remote read. Backup comparisons work offline.</p>`}<section id="workbook-comparison"></section>`);
   const comparison=mountWorkbookComparison(d.querySelector<HTMLElement>('#workbook-comparison')!,book,conflict?.remote,flash);
   const load=d.querySelector<HTMLButtonElement>('#comparison-github');
   if(load)load.onclick=async()=>{
@@ -817,7 +826,7 @@ function openComparison(conflict?:SyncConflict):void{
       if(!received.remote)throw Error('The saved GitHub workbook was not returned. Neither copy was changed.');
       if(d.isConnected)comparison.setRemote(received.remote);
     }catch(e){if(d.isConnected)flash(e);}
-    finally{load.disabled=false;load.textContent='Load saved GitHub version for right side';}
+    finally{load.disabled=false;load.textContent='Compare with remote version (GitHub)';}
   };
   d.addEventListener('close',()=>{comparison.dispose();if(conflict)openConflict(conflict);},{once:true});
 }
@@ -898,6 +907,8 @@ function workbookTabsHtml():string{
 }
 let captureViewport:(()=>{row:string;index:number;offset:number}|undefined)|undefined;
 function render(options?:{preserveViewport:boolean}): void {
+  const restoreTouchFocus=!!touchCell&&document.activeElement?.id==='formula';
+  hideTouchEditor();
   closeMoveAutoScroll?.();closeMoveAutoScroll=undefined;
   groupEdgeTargets=undefined;edgeMoveGroups=undefined;
   cancelAnimationFrame(selectionPaintFrame);selectionPaintFrame=0;
@@ -1078,7 +1089,7 @@ function render(options?:{preserveViewport:boolean}): void {
       ${referenceId?'':`<div class="tool-set"><button class="icon-button" data-action="convert-table" aria-label="Convert to table" title="Create a table, or join selected rows/columns to their surrounding table">${toolbarIcon('convert-table')}</button><button class="icon-button" data-action="move-to-top" data-toolbar-before="action:tables" aria-label="Move to top" title="Move selected rows or a summary group below the table header">${toolbarIcon('move-to-top')}</button><button class="icon-button" data-action="tables" aria-label="Table manager" title="Table manager; rename the table containing the selected cell">${toolbarIcon('tables')}</button><button data-action="block">Meal / day</button></div>`}
       <div class="tool-set toolbar-layout-controls"><button class="icon-button" data-action="toolbar-layout" aria-label="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar'}" aria-pressed="${arrangingToolbar}" title="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar: drag tools or use Alt+Left/Right'}">${toolbarIcon('toolbar-layout')}</button></div>
     </nav>
-    <form class="formula-bar" id="formula-form"><span class="address">${letters(selected.c)}${selected.r+1}</span><span class="fx">fx</span><input id="formula" aria-label="Cell value or formula" autocomplete="off" spellcheck="false" value="${esc(draft??inputText(current()))}"><span id="calculation-state"></span></form>
+    <form class="formula-bar" id="formula-form"><span class="address">${letters(selected.c)}${selected.r+1}</span><span class="fx">fx</span><input id="formula" aria-label="Cell value or formula" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(draft??inputText(current()))}"><button type="button" class="icon-button touch-dropdown-toggle" aria-label="Show cell choices" aria-expanded="false" hidden><span class="format-caret">${dropdownArrowHtml}</span></button><span id="calculation-state"></span></form>
     ${view&&(view.error||referenceNotice)?`<div class="reference-notice" id="reference-notice" role="${view.error?'alert':'status'}">${esc(view.error||referenceNotice)}</div>`:''}
     <div class="grid-shell"><div id="grid-scroll" class="grid-scroll" tabindex="0" aria-label="Spreadsheet, use arrow keys to navigate">
     <table class="grid spreadsheet-grid option-a-outline ${tree?'tree-outline ':''}${hasPlainColumnControls?'plain-column-controls ':''}selection-${selectionKind} ${touchSelection?'touch-select':''}" role="grid" aria-label="${esc(activeReference()?.name??s.name)}" aria-rowcount="${s.rows.length}" aria-colcount="${s.columns.length}" style="--outline-gutter:${gutter}px;--column-header-height:${columnHeaderHeight}px;--grid-insert-width:${columns.reduce((w,c)=>w+(c.width??145),gutter)}px;--grid-insert-height:${layout.offsets.at(-1)!+estimatedHeaderHeight}px"><colgroup><col style="width:${gutter}px">${columns.map(c=>`<col style="width:${c.width??145}px">`).join('')}</colgroup>
@@ -1177,6 +1188,7 @@ function render(options?:{preserveViewport:boolean}): void {
   groupManager?.refresh();
   root.querySelector<HTMLElement>('.tabs')!.scrollLeft=tabScroll;
   if(draft!==undefined)syncDraft(draft,false,draftLiteral);
+  if(restoreTouchFocus&&draft!==undefined)root.querySelector<HTMLInputElement>('#formula')?.focus({preventScroll:true});
   expandedEditor?.position();
   renderStatus();
   const toolbar=root.querySelector<HTMLElement>('.toolbar')!;
@@ -1202,13 +1214,100 @@ function cellValidation(s:Sheet,row:string,column:string){
   const strip=(ast:Ast):Ast|undefined=>{if(validationReference(book,ast,s.id)?.kind==='units')return;if(ast.kind==='call'&&ast.name==='VSTACK'){const args=ast.args.map(strip).filter((arg):arg is Ast=>!!arg);return args.length>1?{...ast,args}:args[0];}return ast;};
   const ast=strip(assigned.source.startsWith('{')?JSON.parse(assigned.source) as Ast:compile(assigned.source,book,s.id,row,column));return ast?{...assigned,source:JSON.stringify(ast)}:undefined;
 }
+function touchTargetSelected():boolean{
+  return!!touchCell&&touchCell.sheet===sheetId&&touchCell.row===sheet().rows[selected.r]?.id&&touchCell.column===sheet().columns[selected.c]?.id&&selectionKind==='cells'&&!extraSelections.length&&anchor.r===selected.r&&anchor.c===selected.c;
+}
+function hideTouchEditor():void{
+  if(!touchCell)return;
+  touchCell=undefined;touchKeyboardSeen=false;touchOutsideGesture=false;
+  root.querySelector('#formula-form')?.classList.remove('touch-editing');
+  root.style.removeProperty('height');root.style.removeProperty('padding-bottom');
+  root.querySelector<HTMLElement>('#grid-scroll')?.style.removeProperty('padding-bottom');
+}
+function positionTouchEditor(reveal=false):void{
+  if(!touchTargetSelected())return;
+  const form=root.querySelector<HTMLElement>('#formula-form')!,viewport=window.visualViewport;
+  const top=viewport?.offsetTop??0,left=viewport?.offsetLeft??0,height=viewport?.height??innerHeight,width=viewport?.width??innerWidth;
+  const editorHeight=form.getBoundingClientRect().height;
+  root.style.height=top+height+'px';root.style.paddingBottom=editorHeight+'px';
+  form.style.left=left+'px';form.style.width=width+'px';form.style.top=top+height-editorHeight+'px';
+  const grid=root.querySelector<HTMLElement>('#grid-scroll')!,bottom=form.getBoundingClientRect().top;
+  grid.style.paddingBottom=Math.max(0,grid.getBoundingClientRect().bottom-bottom+8)+'px';
+  if(reveal){
+    const cell=root.querySelector<HTMLElement>(`td[data-r="${selected.r}"][data-c="${selected.c}"]`),rect=cell?.getBoundingClientRect(),gridTop=Math.max(top,grid.getBoundingClientRect().top);
+    if(rect&&bottom>gridTop){
+      if(rect.bottom>bottom-8)grid.scrollTop+=rect.bottom-bottom+8;
+      else if(rect.top<gridTop+28)grid.scrollTop-=gridTop+28-rect.top;
+    }
+  }
+}
+function beginTouchEdit(focus=true):boolean{
+  if(!touchInputDevice||busy||expandedEditor||!editableReference()||gridReference()?.error||!inGrid(selected.r,selected.c)||extraSelections.length||selectionKind!=='cells'||anchor.r!==selected.r||anchor.c!==selected.c)return false;
+  const input=root.querySelector<HTMLInputElement>('#formula')!,s=sheet(),form=root.querySelector<HTMLElement>('#formula-form')!;
+  const starting=!touchCell;
+  if(starting){touchViewportHeight=Math.max(window.visualViewport?.height??innerHeight,innerHeight);touchKeyboardSeen=false;}
+  touchCell={sheet:sheetId,row:s.rows[selected.r].id,column:s.columns[selected.c].id};
+  form.classList.add('touch-editing');
+  input.enterKeyHint='done';
+  const toggle=form.querySelector<HTMLButtonElement>('.touch-dropdown-toggle')!;
+  toggle.hidden=!cellValidation(s,touchCell.row,touchCell.column);
+  if(toggle.hidden){input.removeAttribute('role');input.removeAttribute('aria-expanded');input.removeAttribute('aria-controls');}
+  else{input.setAttribute('role','combobox');input.setAttribute('aria-expanded',String(!!closeCellDropdown));input.setAttribute('aria-controls','touch-cell-options');}
+  positionTouchEditor(focus||starting);
+  if(focus){input.focus({preventScroll:true});input.select();}
+  return true;
+}
+function openTouchCell(cell:HTMLElement):void{
+  if(beginTouchEdit())openCellDropdown(cell,false);
+}
+function touchViewportChanged():void{
+  if(!touchCell)return;
+  const viewport=window.visualViewport,height=viewport?.height??innerHeight;
+  if(!viewport||viewport.scale===1){
+    if(touchViewportHeight-height>100)touchKeyboardSeen=true;
+    else if(touchKeyboardSeen&&height>=touchViewportHeight-40){
+      touchKeyboardSeen=false;
+      if(commitDraft()){closeCellDropdown?.();hideTouchEditor();root.querySelector<HTMLInputElement>('#formula')?.blur();}
+      return;
+    }
+  }
+  positionTouchEditor(true);
+}
+window.visualViewport?.addEventListener('resize',touchViewportChanged);
+window.visualViewport?.addEventListener('scroll',()=>positionTouchEditor());
+window.addEventListener('resize',touchViewportChanged);
+document.addEventListener('pointerdown',e=>{
+  if(!touchCell||(e.target as HTMLElement).closest('#formula-form,.cell-dropdown,td[data-r]'))return;
+  touchOutsideGesture=true;
+  if((e.target as HTMLElement).closest('button,a'))e.preventDefault();
+},{capture:true});
+document.addEventListener('click',e=>{
+  touchOutsideGesture=false;
+  if(!touchCell||(e.target as HTMLElement).closest('#formula-form,.cell-dropdown,td[data-r]'))return;
+  const control=(e.target as HTMLElement).closest<HTMLElement>('input,textarea,select');
+  const selector=control?.id?`#${CSS.escape(control.id)}`:control?.dataset.appendColumn?`[data-append-column="${CSS.escape(control.dataset.appendColumn)}"]`:undefined;
+  if(!commitDraft()){e.preventDefault();e.stopImmediatePropagation();return;}
+  closeCellDropdown?.();hideTouchEditor();
+  if(control)(control.isConnected?control:selector?root.querySelector<HTMLElement>(selector):undefined)?.focus({preventScroll:true});
+},{capture:true});
+document.addEventListener('pointermove',e=>{
+  if(touchTap?.pointer===e.pointerId&&Math.hypot(e.clientX-touchTap.x,e.clientY-touchTap.y)>8)touchTap=undefined;
+},{passive:true});
+document.addEventListener('pointercancel',()=>{touchTap=undefined;touchOutsideGesture=false;});
+document.addEventListener('pointerup',e=>{
+  const tap=touchTap;touchTap=undefined;
+  if(!tap||tap.pointer!==e.pointerId||tap.r!==selected.r||tap.c!==selected.c)return;
+  const cell=(e.target as HTMLElement).closest<HTMLElement>('td[data-r]');
+  if(!cell||Number(cell.dataset.r)!==tap.r||Number(cell.dataset.c)!==tap.c)return;
+  if(beginTouchEdit()){touchTapHandled=e.timeStamp;openCellDropdown(cell,false);}
+},{capture:true});
 function refreshDropdownControl():void{
   root.querySelectorAll('[data-cell-dropdown]').forEach(el=>el.remove());
   const s=sheet(),b=bounds(),cell=root.querySelector<HTMLElement>(`td[data-r="${selected.r}"][data-c="${selected.c}"]`);
   if(!cell||b.r1!==b.r2||b.c1!==b.c2||!editableReference()||!inGrid(selected.r,selected.c)||!cellValidation(s,s.rows[selected.r].id,s.columns[selected.c].id)||cell.querySelector('textarea'))return;
   const button=document.createElement('button');button.type='button';button.className='cell-dropdown-trigger';button.dataset.cellDropdown='';button.setAttribute('aria-label','Open cell dropdown');button.setAttribute('aria-haspopup','listbox');
   button.innerHTML=dropdownArrowHtml;
-  button.onclick=e=>{e.stopPropagation();openCellDropdown(cell);};cell.append(button);
+  button.onclick=e=>{e.stopPropagation();if(touchInputDevice)openTouchCell(cell);else openCellDropdown(cell);};cell.append(button);
 }
 function writeLinkedCell(s:Sheet,row:string,column:string,binding:NonNullable<Cell['binding']>):void{
   expandAdjacentTable(book,s,row,column);
@@ -1220,14 +1319,24 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
   if(busy||!editableReference()||!inGrid(selected.r,selected.c))return;
   const s=sheet(),row=s.rows[selected.r].id,column=s.columns[selected.c].id,validation=cellValidation(s,row,column);
   cell??=root.querySelector<HTMLElement>(`td[data-r="${selected.r}"][data-c="${selected.c}"]`)??undefined;
-  if(!validation||!cell||!commitDraft())return;
+  if(!validation||!cell)return;
+  if(touchInputDevice&&!touchCell&&!beginTouchEdit())return;
+  const sharedInput=touchCell?root.querySelector<HTMLInputElement>('#formula')!:undefined;
+  if(!sharedInput&&!commitDraft())return;
   const preferenceKey=`default:${s.id}:${column}`,listKey=`list:${s.id}:${column}`,previous=getCell(s,row,column);
   if(!force&&book.pickerSources[preferenceKey]==='manual'&&!previous.binding&&!previous.formula&&(previous.value===undefined||previous.value===null||previous.value==='')){
     syncDraft('',true,true);return;
   }
   const popup=document.createElement('div'),controller=new AbortController();
   popup.className='cell-dropdown';popup.setAttribute('aria-label','Cell dropdown');
-  const close=()=>{controller.abort();popup.remove();if(closeCellDropdown===close)closeCellDropdown=undefined;};closeCellDropdown=close;
+  let disposeOptions:(()=>void)|undefined;
+  const toggle=root.querySelector<HTMLButtonElement>('.touch-dropdown-toggle');
+  const close=()=>{
+    controller.abort();disposeOptions?.();popup.remove();
+    if(closeCellDropdown===close)closeCellDropdown=undefined;
+    if(sharedInput){sharedInput.setAttribute('aria-expanded','false');toggle?.setAttribute('aria-expanded','false');toggle?.setAttribute('aria-label','Show cell choices');}
+  };closeCellDropdown=close;
+  if(sharedInput){sharedInput.setAttribute('aria-expanded','true');toggle?.setAttribute('aria-expanded','true');toggle?.setAttribute('aria-label','Hide cell choices');}
   try{
     engine.beginPass();const resolved=validationChoiceGroups(book,validation,row,column,engine),groups=resolved.filter((group,i)=>resolved.findIndex(g=>g.id===group.id)===i);
     if(!groups.length)throw Error('No dropdown sources are configured.');
@@ -1246,6 +1355,13 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
     const manual=popup.querySelector<HTMLButtonElement>('.dropdown-manual-action')!,options=groups.map(g=>({id:g.id,name:g.name==='Dropdown'?'Options':g.name}));
     const position=()=>{
       if(!popup.isConnected)return;
+      if(sharedInput){
+        if(!touchTargetSelected()){close();return;}
+        const viewport=window.visualViewport,left=viewport?.offsetLeft??0,top=viewport?.offsetTop??0,width=viewport?.width??innerWidth;
+        const bar=root.querySelector<HTMLElement>('#formula-form')!.getBoundingClientRect();
+        popup.style.width=Math.max(0,width-12)+'px';popup.style.maxHeight=Math.max(0,Math.min(360,bar.top-top-12))+'px';
+        popup.style.left=left+6+'px';popup.style.top=Math.max(top+6,bar.top-popup.getBoundingClientRect().height-4)+'px';return;
+      }
       cell=root.querySelector<HTMLElement>(`td[data-r="${selected.r}"][data-c="${selected.c}"]`)??undefined;
       const grid=root.querySelector<HTMLElement>('#grid-scroll')!.getBoundingClientRect(),anchor=cell?.getBoundingClientRect();
       if(!anchor||anchor.bottom<=grid.top||anchor.top>=grid.bottom||anchor.right<=grid.left||anchor.left>=grid.right){close();return;}
@@ -1254,13 +1370,16 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
       const bounds=popup.getBoundingClientRect();popup.style.left=Math.max(6,Math.min(rect.left,innerWidth-bounds.width-6))+'px';popup.style.top=(innerHeight-rect.bottom>=bounds.height+6?rect.bottom+3:Math.max(6,rect.top-bounds.height-3))+'px';
     };
     const choose=(choice:DropdownChoice)=>{
+      const previousDraft=draft,previousLiteral=draftLiteral;
+      if(sharedInput){draft=undefined;draftLiteral=false;hideTouchEditor();}
       remember(browsing);
       close();
-      mutate('Choose dropdown option',()=>{
+      const ok=mutate('Choose dropdown option',()=>{
         if(!s.rows.some(r=>r.id===row)||!s.columns.some(c=>c.id===column)||cellValidation(s,row,column)?.id!==validation.id)throw Error('The dropdown target changed. Open it again.');
         if(choice.binding)writeLinkedCell(s,row,column,choice.binding);
         else writeGridCell(book,s,row,column,String(choice.raw??''),typeof choice.raw==='string');
       });
+      if(!ok&&sharedInput&&previousDraft!==undefined){syncDraft(previousDraft,true,previousLiteral);return;}
       root.querySelector<HTMLElement>('#grid-scroll')?.focus({preventScroll:true});
     };
     const draw=()=>{
@@ -1269,7 +1388,7 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
         const button=document.createElement('button');button.type='button';button.id=`dropdown-source-tab-${i}`;button.setAttribute('role','tab');button.setAttribute('aria-selected',String(active===option.id));button.setAttribute('aria-controls','dropdown-source-panel');button.tabIndex=browsing===option.id?0:-1;button.innerHTML=`<span>${esc(option.name)}</span>${sourceCheck}`;
         button.onclick=()=>{
           active=browsing=option.id;remember(active);
-          draw();const selectedTab=tabs.querySelector<HTMLButtonElement>('[aria-selected="true"]');selectedTab?.focus({preventScroll:true});selectedTab?.scrollIntoView({block:'nearest',inline:'nearest'});
+          draw();const selectedTab=tabs.querySelector<HTMLButtonElement>('[aria-selected="true"]');(sharedInput??selectedTab)?.focus({preventScroll:true});selectedTab?.scrollIntoView({block:'nearest',inline:'nearest'});
         };
         tabs.append(button);
       }
@@ -1277,13 +1396,16 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
       panel.id='dropdown-source-panel';panel.setAttribute('aria-labelledby',`dropdown-source-tab-${options.findIndex(o=>o.id===browsing)}`);
       {
         const group=groups.find(g=>g.id===browsing)!;
-        mountDropdownOptions(panel,{choices:group.choices,value:choice=>choice.value,name:group.name,choose,position,empty:'No available options. Edit the source DD.',
+        disposeOptions?.();
+        const mounted=mountDropdownOptions(panel,{choices:group.choices,value:choice=>choice.value,name:group.name,choose,position,sharedInput,initialQuery:sharedInput?query??draft??'':undefined,empty:'No available options. Edit the source DD.',
           selected:choice=>{const previous=getCell(s,row,column);return!!choice.binding&&previous.binding?.table===choice.binding.table&&previous.binding?.row===choice.binding.row&&previous.binding?.column===choice.binding.column;}});
-        manual.onclick=()=>{remember('manual');close();syncDraft(cellText(current(),s,selected.r,selected.c),true,true);};
+        disposeOptions=mounted.dispose;if(sharedInput)mounted.list.id='touch-cell-options';
+        manual.onclick=()=>{remember('manual');close();syncDraft(sharedInput?(draft??inputText(current())):cellText(current(),s,selected.r,selected.c),true,true);};
       }
       position();
     };
-    popup.querySelector<HTMLButtonElement>('.dropdown-add-source')!.onclick=()=>{close();openDropdownAssignment();};
+    popup.querySelector<HTMLButtonElement>('.dropdown-add-source')!.onclick=()=>{if(!commitDraft())return;hideTouchEditor();close();openDropdownAssignment();};
+    if(sharedInput)popup.onpointerdown=e=>{if((e.target as HTMLElement).closest('button'))e.preventDefault();};
     popup.onkeydown=e=>{
       if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close();root.querySelector<HTMLElement>('#grid-scroll')?.focus({preventScroll:true});return;}
       const focused=document.activeElement as HTMLElement|null;
@@ -1291,16 +1413,19 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
         e.preventDefault();const at=options.findIndex(o=>o.id===browsing),next=e.key==='Home'?0:e.key==='End'?options.length-1:(at+(e.key==='ArrowRight'?1:-1)+options.length)%options.length;
         tabs.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next].click();
       }else{
-        const search=panel.querySelector<HTMLInputElement>('input')!,list=panel.querySelector<HTMLElement>('[role="listbox"]')!;
+        const search=sharedInput??panel.querySelector<HTMLInputElement>('input')!,list=panel.querySelector<HTMLElement>('[role="listbox"]')!;
         dropdownOptionsKey(e,search,list);
       }
       e.stopPropagation();
     };
     draw();document.body.append(popup);position();
-    document.addEventListener('pointerdown',e=>{if(!popup.contains(e.target as Node)&&!cell!.contains(e.target as Node))close();},{capture:true,signal:controller.signal});
+    document.addEventListener('pointerdown',e=>{if(!popup.contains(e.target as Node)&&!cell!.contains(e.target as Node)&&!(sharedInput&&(e.target as HTMLElement).closest('#formula-form')))close();},{capture:true,signal:controller.signal});
     document.addEventListener('scroll',e=>{if(!popup.contains(e.target as Node))position();},{capture:true,signal:controller.signal});
     window.addEventListener('resize',position,{signal:controller.signal});
-    if(query!==undefined){
+    window.visualViewport?.addEventListener('resize',position,{signal:controller.signal});
+    window.visualViewport?.addEventListener('scroll',position,{signal:controller.signal});
+    if(sharedInput){if(query!==undefined){sharedInput.value=query;sharedInput.dispatchEvent(new Event('input',{bubbles:true}));}sharedInput.focus({preventScroll:true});}
+    else if(query!==undefined){
       const search=panel.querySelector<HTMLInputElement>('input')!;search.value=query;search.dispatchEvent(new Event('input',{bubbles:true}));search.focus({preventScroll:true});
     }else if(matchMedia('(pointer:fine)').matches)panel.querySelector<HTMLElement>('input,textarea')?.focus({preventScroll:true});
   }catch(e){close();flash(`Dropdown could not open: ${e instanceof Error?e.message:String(e)}`);}
@@ -1356,14 +1481,16 @@ function bindRowControls():void {
     el.onpointerdown=e=>{
       if((e.target as HTMLElement).closest('a,textarea,input,button'))return;
       if(!inGrid(Number(el.dataset.r),Number(el.dataset.c)))return;
+      if(touchInputDevice)e.preventDefault();
+      if(touchInputDevice&&!touchSelection&&!e.shiftKey&&!e.ctrlKey&&!e.metaKey)touchTap={pointer:e.pointerId,x:e.clientX,y:e.clientY,r:Number(el.dataset.r),c:Number(el.dataset.c)};
       closeCellDropdown?.();
-      if(!commitDraft())return;
+      if(!commitDraft()){touchTap=undefined;return;}
       beginSelection(e,'cells');
       selected={r:Number(el.dataset.r),c:Number(el.dataset.c)};if(!e.shiftKey||selectionKind!=='cells')anchor={...selected};selectionKind='cells';
       if(touchSelection){e.preventDefault();touchPointer=e.pointerId;(root.querySelector('#grid-scroll') as HTMLElement).setPointerCapture(e.pointerId);}
       refreshSelection();(root.querySelector('#grid-scroll') as HTMLElement).focus({preventScroll:true});
     };
-    el.onclick=e=>{if(!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!extraSelections.length&&e.detail<2&&!(e.target as HTMLElement).closest('a,textarea,input,button')&&anchor.r===selected.r&&anchor.c===selected.c&&!openCellDatePicker(el))openCellDropdown(el,false);};
+    el.onclick=e=>{if(touchInputDevice&&e.timeStamp-touchTapHandled<100)return;if(!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!extraSelections.length&&e.detail<2&&!(e.target as HTMLElement).closest('a,textarea,input,button')&&anchor.r===selected.r&&anchor.c===selected.c){if(touchInputDevice)openTouchCell(el);else if(!openCellDatePicker(el))openCellDropdown(el,false);}};
     el.ondblclick=()=>{closeCellDropdown?.();openEditor();};
   });
   root.querySelector<HTMLButtonElement>('[data-fill-handle]')?.addEventListener('pointerdown',e=>{
@@ -1497,10 +1624,24 @@ function bind(): void {
   bindResizeControls();
   document.querySelector('#formula-form')!.addEventListener('submit',e=>{
     e.preventDefault(); const text=(document.querySelector('#formula') as HTMLInputElement).value;
-    applyInput(text);
+    if(applyInput(text)&&touchInputDevice){closeCellDropdown?.();hideTouchEditor();root.querySelector<HTMLElement>('#grid-scroll')?.focus({preventScroll:true});}
   });
-  document.querySelector<HTMLInputElement>('#formula')!.oninput=e=>syncDraft((e.target as HTMLInputElement).value);
-  document.querySelector<HTMLInputElement>('#formula')!.onkeydown=editKey;
+  const formula=document.querySelector<HTMLInputElement>('#formula')!;
+  formula.oninput=e=>syncDraft((e.target as HTMLInputElement).value,false,touchCell?draftLiteral:false);
+  formula.onkeydown=editKey;
+  if(touchInputDevice){
+    formula.onblur=()=>queueMicrotask(()=>{
+      if(!touchCell||touchOutsideGesture||formula!==root.querySelector('#formula')||document.activeElement===formula)return;
+      if((document.activeElement as HTMLElement|null)?.closest('.cell-dropdown,#formula-form'))return;
+      if(commitDraft()){closeCellDropdown?.();hideTouchEditor();}
+    });
+    const toggle=root.querySelector<HTMLButtonElement>('.touch-dropdown-toggle')!;
+    toggle.onpointerdown=e=>e.preventDefault();
+    toggle.onclick=()=>{
+      if(closeCellDropdown)closeCellDropdown();else openCellDropdown(undefined,true);
+      root.querySelector<HTMLInputElement>('#formula')?.focus({preventScroll:true});
+    };
+  }
   const rowJump=document.querySelector<HTMLInputElement>('#row-jump');if(rowJump)rowJump.onchange=e=>{
     if(!commitDraft())return;const s=sheet(),view=gridReference(),number=Number((e.target as HTMLInputElement).value),count=view?.rows.length??s.rows.length;if(!Number.isInteger(number)||number<1||number>count){flash(`Enter a row between 1 and ${count}.`);return;}selected.r=view?s.rows.findIndex(r=>r.id===view.rows[number-1]):number-1;anchor={...selected};selectionKind='cells';scrollTarget=selected.r;page=Math.floor(selected.r/60);render();
   };
@@ -1532,7 +1673,8 @@ function refreshSelection(closeDropdown=true):void {
   root.querySelectorAll<HTMLElement>('[data-row-select]').forEach(el=>{const r=Number(el.dataset.rowSelect);el.classList.toggle('row-selected',ranges.some(b=>r>=b.r1&&r<=b.r2));});
   const fill=root.querySelector('[data-fill-handle]'),last=root.querySelector(`td[data-r="${b.r2}"][data-c="${b.c2}"]`);if(fill&&last&&!last.querySelector('textarea'))last.append(fill);
   refreshDropdownControl();
-  const formula=root.querySelector<HTMLInputElement>('#formula');if(formula)formula.value=inGrid(selected.r,selected.c)?inputText(current()):'';
+  if(touchCell&&!touchTargetSelected())hideTouchEditor();
+  const formula=root.querySelector<HTMLInputElement>('#formula'),value=inGrid(selected.r,selected.c)?draft??inputText(current()):'';if(formula&&formula.value!==value)formula.value=value;
   const address=root.querySelector('.address');if(address)address.textContent=`${letters(selected.c)}${selected.r+1}`;
   const count=root.querySelector('.selection-count');if(count)count.textContent=`${selectionCount(ranges)} cells`;
   refreshTableSelectionControl();
@@ -1558,19 +1700,21 @@ function updateCalculationState():void{
   const diagnosis=quantityDiagnostic(book,s,row,column,engine);
   slot.innerHTML=cell.formula||possible?`<span class="${diagnosis?'bad':''}" title="${esc(diagnosis??(cell.formula?'Calculated from the editable formula':'Manual value; a calculation can be restored'))}">${draft!==undefined?'Editing':cell.formula?'Calculated':'Manual'}</span>${!cell.formula&&possible&&draft===undefined?'<button type="button" aria-label="Restore calculation" title="Restore calculation" id="restore-calculation">Restore</button>':''}`:'';
   const restore=slot.querySelector<HTMLButtonElement>('#restore-calculation');
-  if(restore)restore.onclick=()=>{
-    if(busy||!commitDraft())return;
-    try{
-      const options=columnCalculations(book,s,row,column,engine);
-      if(!options.length)throw Error('No matching calculation remains. Enter a formula, or restore a recovery checkpoint.');
-      const apply=(at:number)=>mutate('Restore calculation',()=>restoreCalculation(book,s,row,column,options[at].formula));
-      if(options.length===1){apply(0);return;}
-      dialog('Choose column calculation',`<p>This column has different formulas. Choose explicitly; existing values are not changed until Restore.</p><select id="calculation-source">${options.map((o,i)=>`<option value="${i}">From row ${s.rows.findIndex(r=>r.id===o.row)+1}</option>`).join('')}</select><pre id="calculation-preview"></pre><button id="apply-calculation" class="primary">Restore</button>`,d=>{
-        const source=d.querySelector<HTMLSelectElement>('#calculation-source')!,preview=()=>{d.querySelector('#calculation-preview')!.textContent=displayFormula(options[Number(source.value)].formula,book);};
-        source.onchange=preview;preview();d.querySelector<HTMLButtonElement>('#apply-calculation')!.onclick=()=>{apply(Number(source.value));d.close();};
-      });
-    }catch(e){flash(e);}
-  };
+  if(restore)restore.onclick=restoreSelectedCalculation;
+}
+function restoreSelectedCalculation():void{
+  if(busy||!commitDraft())return;
+  const s=sheet(),row=s.rows[selected.r].id,column=s.columns[selected.c].id;
+  try{
+    const options=columnCalculations(book,s,row,column,engine);
+    if(!options.length)throw Error('No matching calculation remains. Enter a formula, or restore a recovery checkpoint.');
+    const apply=(at:number)=>mutate('Restore calculation',()=>restoreCalculation(book,s,row,column,options[at].formula));
+    if(options.length===1){apply(0);return;}
+    dialog('Choose column calculation',`<p>This column has different formulas. Choose explicitly; existing values are not changed until Restore.</p><select id="calculation-source">${options.map((o,i)=>`<option value="${i}">From row ${s.rows.findIndex(r=>r.id===o.row)+1}</option>`).join('')}</select><pre id="calculation-preview"></pre><button id="apply-calculation" class="primary">Restore</button>`,d=>{
+      const source=d.querySelector<HTMLSelectElement>('#calculation-source')!,preview=()=>{d.querySelector('#calculation-preview')!.textContent=displayFormula(options[Number(source.value)].formula,book);};
+      source.onchange=preview;preview();d.querySelector<HTMLButtonElement>('#apply-calculation')!.onclick=()=>{apply(Number(source.value));d.close();};
+    });
+  }catch(e){flash(e);}
 }
 function dropColumns(ids:string[],boundary:number):void {
   if(!sheetAxisSelectionAllowed('Moving columns'))return;
@@ -1596,6 +1740,8 @@ function syncDraft(value:string,focus=false,literal=false):void {
   if(expandedEditor){
     if(expandedEditor.input.value!==value)expandedEditor.input.value=value;
     if(focus)expandedEditor.input.focus({preventScroll:true});
+  }else if(touchInputDevice&&beginTouchEdit(false)){
+    if(focus)formula?.focus({preventScroll:true});
   }else if(cell){
     let editor=cell.querySelector<HTMLTextAreaElement>('.cell-inline-editor');
     if(!editor){
@@ -1609,6 +1755,11 @@ function syncDraft(value:string,focus=false,literal=false):void {
 }
 function editKey(e:KeyboardEvent):void {
   if(e.isComposing||e.keyCode===229)return;
+  if(touchCell&&['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)){
+    const list=document.querySelector<HTMLElement>('.cell-dropdown [role="listbox"]');
+    if(list&&['ArrowUp','ArrowDown'].includes(e.key))dropdownOptionsKey(e,root.querySelector<HTMLInputElement>('#formula')!,list);
+    return;
+  }
   if(e.key==='Escape'){e.preventDefault();e.stopPropagation();draft=undefined;draftLiteral=false;render();(root.querySelector('#grid-scroll') as HTMLElement).focus();return;}
   if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!e.shiftKey){
     e.preventDefault();e.stopPropagation();if(!commitDraft())return;extraSelections=[];navigateSelection(e.key);root.querySelector<HTMLElement>('#grid-scroll')!.focus({preventScroll:true});return;
@@ -1616,6 +1767,7 @@ function editKey(e:KeyboardEvent):void {
   if(e.key==='Enter'&&!e.shiftKey||e.key==='Tab'){
     e.preventDefault();e.stopPropagation();
     if(!commitDraft())return;
+    if(touchCell){closeCellDropdown?.();hideTouchEditor();}
     if(e.key==='Tab')navigateSelection(e.shiftKey?'ArrowLeft':'ArrowRight');
     (root.querySelector('#grid-scroll') as HTMLElement).focus();
   }
@@ -1705,6 +1857,7 @@ function confirmAction(title:string,detail:string,fn:()=>void):void {
 function openEditor():void {
   if(busy||!editableReference()||gridReference()?.error||!inGrid(selected.r,selected.c)){flash('This cell is read-only, busy or unavailable.');return;}
   if(!commitDraft())return;
+  hideTouchEditor();
   closeCellDropdown?.();
   const s=sheet(),row=s.rows[selected.r].id,column=s.columns[selected.c].id,input=document.createElement('textarea'),controller=new AbortController();
   input.id='cell-editor';input.rows=9;input.spellcheck=false;input.setAttribute('aria-label','Expanded cell editor');
@@ -2102,6 +2255,10 @@ function openFormat():void {
   const s=sheet(),owner=scopedSelectionTable()??tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??tableAt(book,s.id,s.rows[anchor.r].id,s.columns[anchor.c].id);
   const initial=current().format,color=initial?.color??'#193c34',background=initial?.background??'#ffffff';
   dialog('Cell formatting',`<form><label>Number display<select id="number-format"><option value="">General</option><option value="decimal">Two decimals</option><option value="percent">Percent</option><option value="fraction">Fraction quantity</option><option value="date">Date</option><option value="date-compact">Date: M/DD; past years YY/M/DD</option></select></label>${owner?`<label id="date-condition-label" hidden>Date rows<select id="date-format-condition"><option value="">Every selected row</option>${owner.columns.map(field=>`<option value="${field.id}">Only when ${esc(field.name)} is filled</option>`).join('')}</select></label>`:''}<label>Text color<input type="color" id="text-color" value="${color}"></label><label>Background<input type="color" id="bg-color" value="${background}"></label><button class="primary">Apply to selection</button></form>`,d=>{
+    if(touchInputDevice&&selectionKind==='cells'&&!extraSelections.length&&anchor.r===selected.r&&anchor.c===selected.c&&root.querySelector('#restore-calculation')){
+      const restore=document.createElement('button');restore.type='button';restore.textContent='Restore calculation';
+      restore.onclick=()=>{d.close();restoreSelectedCalculation();};d.append(restore);
+    }
     const number=d.querySelector<HTMLSelectElement>('#number-format')!,condition=d.querySelector<HTMLSelectElement>('#date-format-condition');
     number.value=initial?.number??'';
     const when=initial?.dateWhen;

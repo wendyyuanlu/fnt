@@ -69,11 +69,12 @@ export function mountSelectDropdown(select:HTMLSelectElement):{refresh:()=>void}
 
 export function mountDropdownOptions<T>(panel:HTMLElement,options:{
   choices:T[];value:(choice:T)=>string;selected:(choice:T)=>boolean;choose:(choice:T)=>void;
-  name:string;searchLabel?:string;empty?:string;position:()=>void;
-}):{search:HTMLInputElement;list:HTMLDivElement}{
-  const search=document.createElement('input'),list=document.createElement('div');
-  search.type='search';search.setAttribute('aria-label',options.searchLabel??'Search dropdown options');search.placeholder='Search options…';search.autocomplete='off';
-  list.className='cell-dropdown-options';list.setAttribute('role','listbox');list.setAttribute('aria-label',options.name+' options');panel.replaceChildren(search,list);
+  name:string;searchLabel?:string;empty?:string;position:()=>void;sharedInput?:HTMLInputElement;initialQuery?:string;
+}):{search:HTMLInputElement;list:HTMLDivElement;dispose:()=>void}{
+  const search=options.sharedInput??document.createElement('input'),list=document.createElement('div');
+  if(!options.sharedInput){search.type='search';search.setAttribute('aria-label',options.searchLabel??'Search dropdown options');search.placeholder='Search options…';search.autocomplete='off';}
+  list.className='cell-dropdown-options';list.setAttribute('role','listbox');list.setAttribute('aria-label',options.name+' options');
+  panel.replaceChildren(...options.sharedInput?[list]:[search,list]);
   const normalized=options.choices.map(choice=>({choice,value:options.value(choice),lower:options.value(choice).toLowerCase()}));
   let matches=normalized,page=0,active=0;
   const pagination=document.createElement('div'),previous=document.createElement('button'),next=document.createElement('button'),count=document.createElement('span');
@@ -102,11 +103,13 @@ export function mountDropdownOptions<T>(panel:HTMLElement,options:{
     const at=focused===search?-1:Number((focused as HTMLElement)?.dataset.optionIndex??active);
     focus(key==='Home'?0:key==='End'?matches.length-1:key==='ArrowDown'?(at+1)%matches.length:at<0?matches.length-1:(at-1+matches.length)%matches.length);
   });
-  const filter=()=>{
-    const query=search.value.toLowerCase();matches=normalized.filter(choice=>choice.lower.includes(query));
+  const filter=(value:string)=>{
+    const query=value.toLowerCase();matches=normalized.filter(choice=>choice.lower.includes(query));
     active=Math.max(0,matches.findIndex(entry=>options.selected(entry.choice)));page=Math.floor(active/80);draw();
   };
-  search.oninput=filter;filter();return{search,list};
+  const onInput=()=>filter(search.value);
+  search.addEventListener('input',onInput);filter(options.initialQuery??search.value);
+  return{search,list,dispose:()=>search.removeEventListener('input',onInput)};
 }
 export function dropdownOptionsKey(e:KeyboardEvent,search:HTMLInputElement,list:HTMLElement):void{
   const focused=document.activeElement;

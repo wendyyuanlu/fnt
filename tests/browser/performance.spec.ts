@@ -1,6 +1,6 @@
 import {expect,test} from '@playwright/test';
 
-test('real Meals navigation saves only visits, retains drafts and place, and restores editable calculations',async({page})=>{
+test('real Meals navigation saves only visits, retains drafts and place, and restores editable calculations',async({page,isMobile})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
   await page.evaluate(async()=>{
@@ -32,7 +32,7 @@ test('real Meals navigation saves only visits, retains drafts and place, and res
     try{const state=await store.load(),table=state.book.tables.find((t:{name:string})=>t.name==='Meals');return{version:state.version,visits:state.book.tableActivity?.[table.id]?.visits??0};}finally{store.close();}
   });
   expect(navigation.version).toBe(baseline.version);expect(navigation.visits).toBeGreaterThan(baseline.visits);
-  await page.locator('#formula').fill('12345');
+  if(isMobile)await nutrient.click();await page.locator('#formula').fill('12345');
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();
   await expect(page.locator('#save-state')).toContainText('Saved');
   await page.getByRole('button',{name:'Meals',exact:true}).click();
@@ -42,7 +42,7 @@ test('real Meals navigation saves only visits, retains drafts and place, and res
   await page.getByRole('button',{name:'Redo',exact:true}).click();await expect(nutrient).toContainText('12345');
   await expect(page.locator('#save-state')).toContainText('Saved');
   await page.reload();await expect(nutrient).toContainText('12345');
-  await nutrient.click();await page.getByRole('button',{name:'Restore calculation',exact:true}).click();
+  await nutrient.click();if(isMobile)await page.locator('[data-action="format"]').click();await page.getByRole('button',{name:'Restore calculation',exact:true}).click();
   await expect(page.locator('#formula')).toHaveValue(formula);
   await expect(page.locator('#save-state')).toContainText('Saved');
   const formulas=await page.evaluate(async()=>{

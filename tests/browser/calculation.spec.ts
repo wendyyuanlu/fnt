@@ -1,14 +1,15 @@
 import { expect,test } from '@playwright/test';
 
-test('a manual override exposes Restore, survives reload and restores its exact user formula in one undoable step',async({page})=>{
+test('a manual override exposes Restore, survives reload and restores its exact user formula in one undoable step',async({page,isMobile})=>{
   await page.goto('/');await page.getByRole('button',{name:'Ingredients',exact:true}).click();
   const cell=page.locator('td[data-r="1"][data-c="5"]'),formula=page.locator('#formula');
   await cell.click();await expect(page.locator('#calculation-state')).toHaveText('Calculated');
   await formula.fill('=2*7');await page.locator('#formula').press('Enter');await expect(cell).toHaveText('14');
-  await formula.fill('999');await page.locator('#formula').press('Enter');await expect(cell).toHaveText('999');await expect(page.locator('#calculation-state')).toContainText('Manual');
+  if(isMobile)await cell.click();await formula.fill('999');await page.locator('#formula').press('Enter');await expect(cell).toHaveText('999');await expect(page.locator('#calculation-state')).toContainText('Manual');
   await expect(page.locator('#save-state')).toContainText('Saved');await page.reload();await cell.click();
-  await page.getByRole('button',{name:'Restore calculation',exact:true}).click();await expect(cell).toHaveText('14');await expect(formula).toHaveValue('=(2*7)');
-  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(cell).toHaveText('999');await page.getByRole('button',{name:'Restore calculation',exact:true}).click();await expect(cell).toHaveText('14');
+  const restore=async()=>{if(isMobile)await page.locator('[data-action="format"]').click();await page.getByRole('button',{name:'Restore calculation',exact:true}).click();};
+  await restore();await expect(cell).toHaveText('14');await expect(formula).toHaveValue('=(2*7)');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(cell).toHaveText('999');await restore();await expect(cell).toHaveText('14');
 });
 test('Group & move to top moves a selected ingredient owning meal and collapses only details as one undoable action',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Meals',exact:true}).click();

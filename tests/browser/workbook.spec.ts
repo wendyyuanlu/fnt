@@ -4,7 +4,7 @@ const cell=(page:Page,r:number,c:number)=>page.locator(`td[data-r="${r}"][data-c
 async function edit(page:Page,r:number,c:number,value:string){
   await cell(page,r,c).click();
   if(await page.locator('#cell-date').isVisible())await page.getByRole('button',{name:'Close date picker',exact:true}).click();
-  await page.getByRole('textbox',{name:'Cell value or formula',exact:true}).fill(value);await page.locator('#formula').press('Enter');
+  await page.getByLabel('Cell value or formula',{exact:true}).fill(value);await page.locator('#formula').press('Enter');
 }
 test('global scrollbars share four-pixel black thumbs while cell scrollbars remain hidden',async({page})=>{
   await page.goto('/');await expect(cell(page,1,0)).toBeVisible();
@@ -181,7 +181,7 @@ for(const wrappedHeader of [false,true])test(`short saved rows never clip text, 
   });
   expect(after.rows).toEqual(before.rows);expect(after.cells).toEqual(before.cells);
 });
-test('date display adapts by year without changing serials, formulas or text notes',async({page})=>{
+test('date display adapts by year without changing serials, formulas or text notes',async({page,isMobile})=>{
   await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
   const serials=await page.evaluate(async()=>{
     const storage='/src/storage.ts',dates='/src/dates.ts',{Store}=await import(/* @vite-ignore */storage) as typeof import('../../src/storage'),{excelDate}=await import(/* @vite-ignore */dates) as typeof import('../../src/dates'),store=await Store.open();
@@ -196,10 +196,10 @@ test('date display adapts by year without changing serials, formulas or text not
   await page.reload();await expect(cell(page,4,0)).toHaveText('9/29');await expect(cell(page,5,0)).toHaveText('10/02');
   await expect(cell(page,6,0)).toHaveText(`${String((serials.year-1)%100).padStart(2,'0')}/09/29`);
   await expect(cell(page,7,0)).toHaveText('Recipe note: 9/29');await expect(cell(page,8,0)).toHaveText(String(serials.values[0]));
-  await cell(page,4,0).click();await expect(page.locator('#formula')).toHaveValue(String(serials.values[0]));await page.getByRole('button',{name:'Close date picker',exact:true}).click();
-  await cell(page,5,0).click();await expect(page.locator('#formula')).toHaveValue('='+serials.values[1]);await page.getByRole('button',{name:'Close date picker',exact:true}).click();
+  await cell(page,4,0).click();await expect(page.locator('#formula')).toHaveValue(String(serials.values[0]));if(isMobile)await page.keyboard.press('Escape');else await page.getByRole('button',{name:'Close date picker',exact:true}).click();
+  await cell(page,5,0).click();await expect(page.locator('#formula')).toHaveValue('='+serials.values[1]);if(isMobile)await page.keyboard.press('Escape');else await page.getByRole('button',{name:'Close date picker',exact:true}).click();
 });
-test('meal date formatting follows filled Meal cells without rewriting serials, formulas, notes or colors',async({page})=>{
+test('meal date formatting follows filled Meal cells without rewriting serials, formulas, notes or colors',async({page,isMobile})=>{
   await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
   const before=await page.evaluate(async()=>{
     const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{blankSheet,setInput,key}=await import(p+'model.ts') as typeof import('../../src/model'),{createTable}=await import(p+'table-management.ts') as typeof import('../../src/table-management'),{excelDate}=await import(p+'dates.ts') as typeof import('../../src/dates'),store=await Store.open();
@@ -230,19 +230,26 @@ test('meal date formatting follows filled Meal cells without rewriting serials, 
   for(const r of [1,2,3,4,5]){const original=before.sheet.cells[address(r)],after=formatted.cells[address(r)];expect(after.value).toEqual(original.value);expect(after.formula).toEqual(original.formula);expect(after.note).toEqual(original.note);}
   expect(formatted.cells[address(1)].format).toMatchObject({...before.sheet.cells[address(1)].format});
   expect(formatted.cells[address(5)].format).toMatchObject({...before.sheet.cells[address(5)].format});
-  await cell(page,5,1).click();await expect(page.locator('#cell-date')).toHaveAttribute('type','date');await expect(page.locator('#cell-date')).toHaveValue(`${before.year}-11-01`);
-  await expect(page.locator('dialog:modal')).toHaveCount(0);
-  const geometry=await page.locator('.cell-date-picker').evaluate(el=>({top:el.getBoundingClientRect().top,cellBottom:document.querySelector('td[data-r="5"][data-c="1"]')!.getBoundingClientRect().bottom,gridFilter:getComputedStyle(document.querySelector('#grid-scroll')!).filter}));
-  expect(geometry.top).toBeGreaterThanOrEqual(geometry.cellBottom);expect(geometry.gridFilter).toBe('none');
-  await page.getByRole('button',{name:'Close date picker',exact:true}).click();expect((await read()).cells).toEqual(formatted.cells);
-  await cell(page,5,1).click();await page.locator('#cell-date').fill(`${before.year-1}-09-01`);
+  await cell(page,5,1).click();
+  if(isMobile){await expect(page.locator('#formula')).toBeFocused();await page.keyboard.press('Escape');}
+  else{
+    await expect(page.locator('#cell-date')).toHaveAttribute('type','date');await expect(page.locator('#cell-date')).toHaveValue(`${before.year}-11-01`);
+    await expect(page.locator('dialog:modal')).toHaveCount(0);
+    const geometry=await page.locator('.cell-date-picker').evaluate(el=>({top:el.getBoundingClientRect().top,cellBottom:document.querySelector('td[data-r="5"][data-c="1"]')!.getBoundingClientRect().bottom,gridFilter:getComputedStyle(document.querySelector('#grid-scroll')!).filter}));
+    expect(geometry.top).toBeGreaterThanOrEqual(geometry.cellBottom);expect(geometry.gridFilter).toBe('none');
+    await page.getByRole('button',{name:'Close date picker',exact:true}).click();
+  }
+  expect((await read()).cells).toEqual(formatted.cells);
+  await cell(page,5,1).click();
+  if(isMobile){await page.locator('#formula').fill(`${before.year-1}-09-01`);await page.locator('#formula').press('Enter');}
+  else await page.locator('#cell-date').fill(`${before.year-1}-09-01`);
   await expect(cell(page,5,1)).toHaveText(`${String((before.year-1)%100).padStart(2,'0')}/9/01`);
   await page.locator('[data-action="undo"]').click();await expect(cell(page,5,1)).toHaveText('11/01');
   await page.locator('[data-action="undo"]').click();await expect(page.locator('#save-state')).toContainText(/^Saved/);expect((await read()).cells).toEqual(before.sheet.cells);
   await page.locator('[data-action="redo"]').click();await expect(cell(page,1,1)).toHaveText('9/29');
   await edit(page,4,0,'A newly named meal');await expect(cell(page,4,1)).toHaveText('9/29');
-  await cell(page,4,1).click();await page.getByRole('button',{name:'Close date picker',exact:true}).click();await page.locator('#formula').fill('nov 22');await page.locator('#formula').press('Enter');await expect(cell(page,4,1)).toHaveText('11/22');
-  await cell(page,4,1).click();await page.getByRole('button',{name:'Close date picker',exact:true}).click();await page.locator('#formula').fill("'nov 22");await page.locator('#formula').press('Enter');await expect(cell(page,4,1)).toHaveText('nov 22');
+  await cell(page,4,1).click();if(!isMobile)await page.getByRole('button',{name:'Close date picker',exact:true}).click();await page.locator('#formula').fill('nov 22');await page.locator('#formula').press('Enter');await expect(cell(page,4,1)).toHaveText('11/22');
+  await cell(page,4,1).click();if(!isMobile)await page.getByRole('button',{name:'Close date picker',exact:true}).click();await page.locator('#formula').fill("'nov 22");await page.locator('#formula').press('Enter');await expect(cell(page,4,1)).toHaveText('nov 22');
   await expect(page.locator('#save-state')).toContainText(/^Saved/);expect((await read()).cells[address(4)]).toMatchObject({value:'nov 22',dateLiteral:true});
   await page.reload();await expect(cell(page,4,1)).toHaveText('nov 22');
   await edit(page,1,0,'');await expect(cell(page,1,1)).toHaveText(String(before.sheet.cells[address(1)].value));
@@ -309,7 +316,7 @@ test('real grid editing, formulas, rename/move, undo, local reload, notes and pi
   await page.locator('#cell-editor').fill('Line one\nLine two');await expect(page.locator('#cell-note,#cell-link')).toHaveCount(0);await cell(page,2,5).click();await expect(page.locator('#cell-editor')).toHaveCount(0);
   await expect(cell(page,1,5)).toHaveCSS('white-space','nowrap');await expect(cell(page,1,5)).toHaveText('Line one\nLine two');
   await cell(page,1,1).click();await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.getByRole('checkbox',{name:'Ingredients',exact:true}).check();await page.getByRole('button',{name:'Apply dropdown'}).click();
-  await cell(page,1,1).click();await page.getByRole('searchbox',{name:'Search dropdown options'}).fill('oats');await page.locator('.cell-dropdown').getByRole('option').click();
+  await cell(page,1,1).click();await page.locator('.cell-dropdown input, .formula-bar.touch-editing #formula').fill('oats');await page.locator('.cell-dropdown').getByRole('option').click();
   await expect(cell(page,1,1)).toHaveText('Example oats');await expect(cell(page,1,1)).toHaveClass(/linked/);await expect(cell(page,1,3)).toHaveText('750');
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();await edit(page,1,0,'Oats renamed');
   await page.getByRole('button',{name:'Daily log',exact:true}).click();await expect(cell(page,1,1)).toHaveText('Oats renamed');await expect(cell(page,1,3)).toHaveText('750');
@@ -377,9 +384,9 @@ test('date formatting agrees with formula serials at the 1900 boundary and persi
   await edit(page,1,1,'=DATE(1900,3,1)');await expect(cell(page,1,1)).toHaveText('00/03/01');
   await edit(page,1,1,'=DATE(1900,1,1)');await expect(cell(page,1,1)).toHaveText('00/01/01');
 });
-test('in-cell and formula-bar typing share one draft, one commit and one undo',async({page})=>{
+test('cell editors share one draft, one commit and one undo',async({page,isMobile})=>{
   await page.goto('/');await cell(page,1,2).click();await page.keyboard.type('120');
-  const bar=page.getByRole('textbox',{name:'Cell value or formula',exact:true}),inline=page.getByRole('textbox',{name:'Edit selected cell',exact:true});
+  const bar=page.getByLabel('Cell value or formula',{exact:true}),inline=isMobile?bar:page.getByRole('textbox',{name:'Edit selected cell',exact:true});
   await expect(bar).toHaveValue('120');await expect(inline).toHaveValue('120');
   await bar.fill('=60*2');await expect(inline).toHaveValue('=60*2');await expect(cell(page,1,3)).toHaveText('208.8');
   await inline.fill('=50*2');await expect(bar).toHaveValue('=50*2');
@@ -389,7 +396,8 @@ test('in-cell and formula-bar typing share one draft, one commit and one undo',a
   await cell(page,1,2).click();await page.keyboard.type('999');await inline.press('Escape');
   await expect(cell(page,1,2)).toHaveText('100');await expect(bar).toHaveValue('=(50*2)');
 });
-test('long multiline cells never show scrollbar gutters while typing and retain their full text',async({page})=>{
+test('long multiline cells never show scrollbar gutters while typing and retain their full text',async({page,isMobile})=>{
+  test.skip(isMobile,'Touch uses the compact input and expanded editor; multiline retention is covered in touch-editing.');
   await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();
   const target=cell(page,1,1),text=Array.from({length:20},(_,i)=>`Invented note ${i+1}: ${'Long text without wrapping. '.repeat(20)}`).join('\n');
   await target.click();await page.keyboard.type('x');
@@ -419,7 +427,7 @@ test('typing adjacent to a table expands formulas, while a gap remains freeform'
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();await expect(cell(page,4,5)).toHaveText('2');
   await page.getByRole('button',{name:'Daily log',exact:true}).click();await cell(page,2,1).click();
   await page.locator('[data-action="dropdown-source"]').click();await page.getByRole('button',{name:'List view',exact:true}).click();await page.getByRole('checkbox',{name:'Ingredients',exact:true}).check();await page.getByRole('button',{name:'Apply dropdown'}).click();await cell(page,2,1).click();
-  await page.getByRole('searchbox',{name:'Search dropdown options'}).fill('lentils');await page.locator('.cell-dropdown').getByRole('option').click();await edit(page,2,2,'100');
+  await page.locator('.cell-dropdown input, .formula-bar.touch-editing #formula').fill('lentils');await page.locator('.cell-dropdown').getByRole('option').click();await edit(page,2,2,'100');
   await expect(cell(page,2,3)).toHaveText('116');await expect(cell(page,2,1)).toHaveClass(/linked/);
 });
 test('header boundary controls insert and move a selected column block without losing formulas',async({page})=>{
