@@ -103,6 +103,88 @@ test('touch editor and dropdown follow visual viewport keyboard geometry and com
   expect(await savedCell(page,1,1)).toMatchObject({value:'Keyboard-dismissed entry'});
 });
 
+test('touch editor stays above a resized Chrome content viewport without mocking visualViewport',async({page,isMobile})=>{
+  test.skip(!isMobile,'Android Chrome resizes both viewports for interactive-widget=resizes-content.');
+  await fixture(page);
+  await expect(page.locator('meta[name="viewport"]')).toHaveAttribute('content',/interactive-widget=resizes-content/);
+  const input=page.locator('#formula'),bar=page.locator('#formula-form'),original=page.viewportSize()!;
+  await cell(page,1,1).tap();await input.fill('Content-resize entry');
+  await page.setViewportSize({width:original.width,height:360});
+  await expect(input).toBeFocused();await expect(input).toHaveValue('Content-resize entry');
+  await expect.poll(async()=>{const rect=(await bar.boundingBox())!;return Math.round(rect.y+rect.height);}).toBe(360);
+  const popup=(await page.locator('.cell-dropdown').boundingBox())!,bounds=(await bar.boundingBox())!;
+  expect(popup.y+popup.height).toBeLessThanOrEqual(bounds.y);
+  expect((await input.boundingBox())!.y).toBeGreaterThanOrEqual(0);
+  await page.setViewportSize(original);
+  await expect(bar).toBeHidden();
+  expect(await savedCell(page,1,1)).toMatchObject({value:'Content-resize entry'});
+});
+
+test('touch editor also avoids an overlay keyboard when viewport dimensions do not shrink',async({page,isMobile})=>{
+  test.skip(!isMobile,'Keyboard geometry fallback for an overlay keyboard.');
+  await page.addInitScript(()=>{
+    const keyboard=Object.assign(new EventTarget(),{boundingRect:new DOMRect(0,0,0,0)});
+    Object.defineProperty(navigator,'virtualKeyboard',{configurable:true,value:keyboard});
+  });
+  await fixture(page);const input=page.locator('#formula'),bar=page.locator('#formula-form');
+  await cell(page,1,1).tap();await input.fill('Overlay entry');
+  const original=await page.evaluate(()=>visualViewport!.height);
+  await page.evaluate(()=>{
+    const keyboard=(navigator as Navigator&{virtualKeyboard:EventTarget&{boundingRect:DOMRect}}).virtualKeyboard;
+    keyboard.boundingRect=new DOMRect(0,380,innerWidth,innerHeight-380);keyboard.dispatchEvent(new Event('geometrychange'));
+  });
+  expect(await page.evaluate(()=>visualViewport!.height)).toBe(original);
+  await expect.poll(async()=>{const rect=(await bar.boundingBox())!;return Math.round(rect.y+rect.height);}).toBe(380);
+  await expect(input).toBeFocused();await expect(input).toHaveValue('Overlay entry');
+  const popup=(await page.locator('.cell-dropdown').boundingBox())!,bounds=(await bar.boundingBox())!;
+  expect(popup.y+popup.height).toBeLessThanOrEqual(bounds.y);
+  await page.evaluate(()=>{
+    const keyboard=(navigator as Navigator&{virtualKeyboard:EventTarget&{boundingRect:DOMRect}}).virtualKeyboard;
+    keyboard.boundingRect=new DOMRect(0,0,0,0);keyboard.dispatchEvent(new Event('geometrychange'));
+  });
+  await expect(bar).toBeHidden();
+  expect(await savedCell(page,1,1)).toMatchObject({value:'Overlay entry'});
+});
+
+test('touch nutrition quantities default to decimals but retain full-keyboard drafts and field identity',async({page,isMobile})=>{
+  test.skip(!isMobile,'Native keyboard hints apply to compact touch editing.');
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.evaluate(async()=>{
+    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{blankSheet,key,uid}=await import(p+'model.ts') as typeof import('../../src/model'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=blankSheet('Numeric Master',30,8),headers=['Date','Weight','Food','Amount (g)','Amount','Unit','isDay'];
+      const table={id:uid(),name:'Master',sheet:s.id,header:s.rows[0].id,rows:s.rows.slice(1,3).map(r=>r.id),columns:headers.map((name,i)=>({id:uid(),column:s.columns[i].id,name}))};
+      headers.forEach((value,i)=>s.cells[key(s.rows[0].id,s.columns[i].id)]={value});
+      s.cells[key(s.rows[1].id,s.columns[0].id)]={value:46000,format:{number:'date'}};
+      s.cells[key(s.rows[1].id,s.columns[1].id)]={value:79};
+      s.cells[key(s.rows[1].id,s.columns[6].id)]={value:true};
+      state.book.sheets.unshift(s);state.book.tables.push(table);await store.save(state.book,state.version,'Synthetic keyboard field fixture');
+    }finally{store.close();}
+  });
+  await page.reload();const input=page.locator('#formula');
+  await page.getByRole('button',{name:'Ingredients',exact:true}).click();
+  await cell(page,1,1).tap();await cell(page,2,1).tap();await cell(page,2,1).dispatchEvent('dblclick');
+  await expect(page.locator('#cell-editor')).toHaveCount(0);await expect(input).toBeFocused();await input.press('Escape');
+  for(const [name,columns]of [['Numeric Master',[1,3,4]],['Meals',[2]],['Ingredients',[1,2,3]]] as const){
+    await page.getByRole('button',{name,exact:true}).click();
+    for(const column of columns){await cell(page,1,column).tap();await expect(input).toHaveAttribute('inputmode','decimal');await input.press('Escape');}
+  }
+  await cell(page,1,1).tap();await input.fill('1/2');
+  await input.evaluate(input=>(input as HTMLInputElement).setSelectionRange(1,2));
+  await page.getByRole('button',{name:'Use full keyboard',exact:true}).tap();
+  await expect(input).toHaveAttribute('inputmode','text');await expect(input).toHaveValue('1/2');await expect(input).toBeFocused();
+  expect(await input.evaluate(input=>[(input as HTMLInputElement).selectionStart,(input as HTMLInputElement).selectionEnd])).toEqual([1,2]);
+  await page.getByRole('button',{name:'Use number keyboard',exact:true}).tap();
+  await expect(input).toHaveAttribute('inputmode','decimal');await expect(input).toHaveValue('1/2');
+  await input.press('Escape');await cell(page,1,0).tap();await expect(input).toHaveAttribute('inputmode','text');
+  await expect(page.locator('.touch-keyboard-toggle')).toBeHidden();await input.press('Escape');
+  await page.evaluate(async()=>{
+    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{renameColumn}=await import(p+'model.ts') as typeof import('../../src/model'),store=await Store.open();
+    try{const state=(await store.load())!,table=state.book.tables.find(t=>t.name==='Ingredients')!;renameColumn(state.book,table,table.columns[1].id,'Portion mass');await store.save(state.book,state.version,'Rename keyboard field');}finally{store.close();}
+  });
+  await page.reload();await cell(page,1,1).tap();await expect(input).toHaveAttribute('inputmode','decimal');
+});
+
 test('touch scrolling retains the original draft and explicit range selection does not open the editor',async({page,isMobile})=>{
   test.skip(!isMobile,'Touch-only selection and virtualized editing.');
   await fixture(page);const input=page.locator('#formula'),grid=page.locator('#grid-scroll');

@@ -64,6 +64,8 @@ dialog .picker-results{max-height:none}
 .touch-input-device .formula-bar input{font-size:16px;padding:7px;min-width:0}
 .touch-input-device .touch-dropdown-toggle{flex-shrink:0;min-width:36px;min-height:36px}
 .touch-dropdown-toggle[hidden]{display:none}
+.touch-input-device .touch-keyboard-toggle{flex-shrink:0;min-width:36px;min-height:36px;font-size:11px}
+.touch-keyboard-toggle[hidden]{display:none}
 .grid-shell{margin:0 8px;flex:1;min-height:0;overflow:hidden}
 .grid-scroll{height:100%;min-height:0}
 .grid-footer{margin:0 8px;padding:3px 7px;flex-shrink:0}

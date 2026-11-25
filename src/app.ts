@@ -36,6 +36,7 @@ import { mountGroupControls } from './grouping-ui';
 import {createTextSearch} from './find';
 import {loadPublishedTesting,publishedTestingId,untouchedStarter} from './published';
 import {migrateDropdownData} from './dd-storage';
+import {numericKeyboardFields,numericKeyboardCell} from './touch-keyboard';
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
@@ -111,6 +112,7 @@ document.addEventListener('pointerdown',e=>{
 let touchCell:{sheet:string;row:string;column:string}|undefined;
 let touchViewportHeight=0,touchKeyboardSeen=false;
 let touchTap:{pointer:number;x:number;y:number;r:number;c:number}|undefined,touchTapHandled=-Infinity;
+let touchPreviousTap:{cell:string;time:number}|undefined,touchDoubleTap=false;
 let touchOutsideGesture=false;
 let fillSource:ReturnType<typeof bounds>|undefined,fillPointer:number|undefined;
 let status = 'Opening local workbook...', error = '', busy = false, token = '';
@@ -909,6 +911,7 @@ let captureViewport:(()=>{row:string;index:number;offset:number}|undefined)|unde
 function render(options?:{preserveViewport:boolean}): void {
   const restoreTouchFocus=!!touchCell&&document.activeElement?.id==='formula';
   hideTouchEditor();
+  if(touchInputDevice)rememberTouchNumericFields();
   closeMoveAutoScroll?.();closeMoveAutoScroll=undefined;
   groupEdgeTargets=undefined;edgeMoveGroups=undefined;
   cancelAnimationFrame(selectionPaintFrame);selectionPaintFrame=0;
@@ -1089,7 +1092,7 @@ function render(options?:{preserveViewport:boolean}): void {
       ${referenceId?'':`<div class="tool-set"><button class="icon-button" data-action="convert-table" aria-label="Convert to table" title="Create a table, or join selected rows/columns to their surrounding table">${toolbarIcon('convert-table')}</button><button class="icon-button" data-action="move-to-top" data-toolbar-before="action:tables" aria-label="Move to top" title="Move selected rows or a summary group below the table header">${toolbarIcon('move-to-top')}</button><button class="icon-button" data-action="tables" aria-label="Table manager" title="Table manager; rename the table containing the selected cell">${toolbarIcon('tables')}</button><button data-action="block">Meal / day</button></div>`}
       <div class="tool-set toolbar-layout-controls"><button class="icon-button" data-action="toolbar-layout" aria-label="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar'}" aria-pressed="${arrangingToolbar}" title="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar: drag tools or use Alt+Left/Right'}">${toolbarIcon('toolbar-layout')}</button></div>
     </nav>
-    <form class="formula-bar" id="formula-form"><span class="address">${letters(selected.c)}${selected.r+1}</span><span class="fx">fx</span><input id="formula" aria-label="Cell value or formula" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(draft??inputText(current()))}"><button type="button" class="icon-button touch-dropdown-toggle" aria-label="Show cell choices" aria-expanded="false" hidden><span class="format-caret">${dropdownArrowHtml}</span></button><span id="calculation-state"></span></form>
+    <form class="formula-bar" id="formula-form"><span class="address">${letters(selected.c)}${selected.r+1}</span><span class="fx">fx</span><input id="formula" aria-label="Cell value or formula" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(draft??inputText(current()))}"><button type="button" class="touch-keyboard-toggle" aria-label="Use full keyboard" hidden>ABC</button><button type="button" class="icon-button touch-dropdown-toggle" aria-label="Show cell choices" aria-expanded="false" hidden><span class="format-caret">${dropdownArrowHtml}</span></button><span id="calculation-state"></span></form>
     ${view&&(view.error||referenceNotice)?`<div class="reference-notice" id="reference-notice" role="${view.error?'alert':'status'}">${esc(view.error||referenceNotice)}</div>`:''}
     <div class="grid-shell"><div id="grid-scroll" class="grid-scroll" tabindex="0" aria-label="Spreadsheet, use arrow keys to navigate">
     <table class="grid spreadsheet-grid option-a-outline ${tree?'tree-outline ':''}${hasPlainColumnControls?'plain-column-controls ':''}selection-${selectionKind} ${touchSelection?'touch-select':''}" role="grid" aria-label="${esc(activeReference()?.name??s.name)}" aria-rowcount="${s.rows.length}" aria-colcount="${s.columns.length}" style="--outline-gutter:${gutter}px;--column-header-height:${columnHeaderHeight}px;--grid-insert-width:${columns.reduce((w,c)=>w+(c.width??145),gutter)}px;--grid-insert-height:${layout.offsets.at(-1)!+estimatedHeaderHeight}px"><colgroup><col style="width:${gutter}px">${columns.map(c=>`<col style="width:${c.width??145}px">`).join('')}</colgroup>
@@ -1224,13 +1227,41 @@ function hideTouchEditor():void{
   root.style.removeProperty('height');root.style.removeProperty('padding-bottom');
   root.querySelector<HTMLElement>('#grid-scroll')?.style.removeProperty('padding-bottom');
 }
+const touchKeyboard=(navigator as Navigator&{virtualKeyboard?:EventTarget&{readonly boundingRect:DOMRectReadOnly}}).virtualKeyboard;
+let touchNumericBook='',touchNumericFields=new Set<string>(),touchFullKeyboard=false;
+function rememberTouchNumericFields():void{
+  const storageKey=`fnt-numeric-keyboard:${book.id}`;
+  if(touchNumericBook!==book.id){
+    touchNumericBook=book.id;touchNumericFields=new Set();
+    try{
+      const raw=sessionStorage.getItem(storageKey);
+      if(raw){
+        const ids:unknown=JSON.parse(raw);
+        if(!Array.isArray(ids)||ids.length>20000||ids.some(id=>typeof id!=='string'||!/^[a-zA-Z0-9_.-]{1,128}:[a-zA-Z0-9_.-]{1,128}$/.test(id)))throw Error('Invalid saved field identities.');
+        touchNumericFields=new Set(ids);
+      }
+    }catch(e){error=`Numeric-keyboard preference could not be read: ${String(e)}`;}
+  }
+  const fields=numericKeyboardFields(book,touchNumericFields);
+  if(fields.size!==touchNumericFields.size||[...fields].some(id=>!touchNumericFields.has(id))){
+    touchNumericFields=fields;
+    try{sessionStorage.setItem(storageKey,JSON.stringify([...fields]));}
+    catch(e){error=`Numeric-keyboard preference could not be remembered: ${String(e)}`;}
+  }
+}
+function touchViewport(){
+  const viewport=window.visualViewport,top=viewport?.offsetTop??0,left=viewport?.offsetLeft??0,width=viewport?.width??innerWidth;
+  let bottom=Math.min(top+(viewport?.height??innerHeight),document.documentElement.clientHeight||innerHeight);
+  const keyboard=touchKeyboard?.boundingRect;
+  if(keyboard&&keyboard.height>0&&keyboard.width>0&&keyboard.left<left+width&&keyboard.right>left)bottom=Math.min(bottom,keyboard.top);
+  return{top,left,width,bottom:Math.max(top,bottom),height:Math.max(0,bottom-top)};
+}
 function positionTouchEditor(reveal=false):void{
   if(!touchTargetSelected())return;
-  const form=root.querySelector<HTMLElement>('#formula-form')!,viewport=window.visualViewport;
-  const top=viewport?.offsetTop??0,left=viewport?.offsetLeft??0,height=viewport?.height??innerHeight,width=viewport?.width??innerWidth;
+  const form=root.querySelector<HTMLElement>('#formula-form')!,{top,left,bottom:viewportBottom,width}=touchViewport();
   const editorHeight=form.getBoundingClientRect().height;
-  root.style.height=top+height+'px';root.style.paddingBottom=editorHeight+'px';
-  form.style.left=left+'px';form.style.width=width+'px';form.style.top=top+height-editorHeight+'px';
+  root.style.height=viewportBottom+'px';root.style.paddingBottom=editorHeight+'px';
+  form.style.left=left+'px';form.style.width=width+'px';form.style.top=Math.max(top,viewportBottom-editorHeight)+'px';
   const grid=root.querySelector<HTMLElement>('#grid-scroll')!,bottom=form.getBoundingClientRect().top;
   grid.style.paddingBottom=Math.max(0,grid.getBoundingClientRect().bottom-bottom+8)+'px';
   if(reveal){
@@ -1245,10 +1276,17 @@ function beginTouchEdit(focus=true):boolean{
   if(!touchInputDevice||busy||expandedEditor||!editableReference()||gridReference()?.error||!inGrid(selected.r,selected.c)||extraSelections.length||selectionKind!=='cells'||anchor.r!==selected.r||anchor.c!==selected.c)return false;
   const input=root.querySelector<HTMLInputElement>('#formula')!,s=sheet(),form=root.querySelector<HTMLElement>('#formula-form')!;
   const starting=!touchCell;
+  if(!touchCell||touchCell.sheet!==s.id||touchCell.row!==s.rows[selected.r].id||touchCell.column!==s.columns[selected.c].id)touchFullKeyboard=false;
   if(starting){touchViewportHeight=Math.max(window.visualViewport?.height??innerHeight,innerHeight);touchKeyboardSeen=false;}
   touchCell={sheet:sheetId,row:s.rows[selected.r].id,column:s.columns[selected.c].id};
   form.classList.add('touch-editing');
   input.enterKeyHint='done';
+  rememberTouchNumericFields();
+  const numeric=numericKeyboardCell(book,s.id,touchCell.row,touchCell.column,touchNumericFields);
+  input.inputMode=numeric&&!touchFullKeyboard?'decimal':'text';
+  const keyboardToggle=form.querySelector<HTMLButtonElement>('.touch-keyboard-toggle')!;
+  keyboardToggle.hidden=!numeric;keyboardToggle.textContent=touchFullKeyboard?'123':'ABC';
+  keyboardToggle.setAttribute('aria-label',touchFullKeyboard?'Use number keyboard':'Use full keyboard');
   const toggle=form.querySelector<HTMLButtonElement>('.touch-dropdown-toggle')!;
   toggle.hidden=!cellValidation(s,touchCell.row,touchCell.column);
   if(toggle.hidden){input.removeAttribute('role');input.removeAttribute('aria-expanded');input.removeAttribute('aria-controls');}
@@ -1262,7 +1300,7 @@ function openTouchCell(cell:HTMLElement):void{
 }
 function touchViewportChanged():void{
   if(!touchCell)return;
-  const viewport=window.visualViewport,height=viewport?.height??innerHeight;
+  const viewport=window.visualViewport,{height}=touchViewport();
   if(!viewport||viewport.scale===1){
     if(touchViewportHeight-height>100)touchKeyboardSeen=true;
     else if(touchKeyboardSeen&&height>=touchViewportHeight-40){
@@ -1276,6 +1314,7 @@ function touchViewportChanged():void{
 window.visualViewport?.addEventListener('resize',touchViewportChanged);
 window.visualViewport?.addEventListener('scroll',()=>positionTouchEditor());
 window.addEventListener('resize',touchViewportChanged);
+touchKeyboard?.addEventListener('geometrychange',touchViewportChanged);
 document.addEventListener('pointerdown',e=>{
   if(!touchCell||(e.target as HTMLElement).closest('#formula-form,.cell-dropdown,td[data-r]'))return;
   touchOutsideGesture=true;
@@ -1299,6 +1338,9 @@ document.addEventListener('pointerup',e=>{
   if(!tap||tap.pointer!==e.pointerId||tap.r!==selected.r||tap.c!==selected.c)return;
   const cell=(e.target as HTMLElement).closest<HTMLElement>('td[data-r]');
   if(!cell||Number(cell.dataset.r)!==tap.r||Number(cell.dataset.c)!==tap.c)return;
+  const identity=`${book.id}:${sheetId}:${sheet().rows[tap.r].id}:${sheet().columns[tap.c].id}`;
+  touchDoubleTap=e.pointerType!=='touch'||touchPreviousTap?.cell===identity&&e.timeStamp-touchPreviousTap.time<600;
+  touchPreviousTap={cell:identity,time:e.timeStamp};
   if(beginTouchEdit()){touchTapHandled=e.timeStamp;openCellDropdown(cell,false);}
 },{capture:true});
 function refreshDropdownControl():void{
@@ -1424,6 +1466,7 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
     window.addEventListener('resize',position,{signal:controller.signal});
     window.visualViewport?.addEventListener('resize',position,{signal:controller.signal});
     window.visualViewport?.addEventListener('scroll',position,{signal:controller.signal});
+    touchKeyboard?.addEventListener('geometrychange',position,{signal:controller.signal});
     if(sharedInput){if(query!==undefined){sharedInput.value=query;sharedInput.dispatchEvent(new Event('input',{bubbles:true}));}sharedInput.focus({preventScroll:true});}
     else if(query!==undefined){
       const search=panel.querySelector<HTMLInputElement>('input')!;search.value=query;search.dispatchEvent(new Event('input',{bubbles:true}));search.focus({preventScroll:true});
@@ -1491,7 +1534,7 @@ function bindRowControls():void {
       refreshSelection();(root.querySelector('#grid-scroll') as HTMLElement).focus({preventScroll:true});
     };
     el.onclick=e=>{if(touchInputDevice&&e.timeStamp-touchTapHandled<100)return;if(!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!extraSelections.length&&e.detail<2&&!(e.target as HTMLElement).closest('a,textarea,input,button')&&anchor.r===selected.r&&anchor.c===selected.c){if(touchInputDevice)openTouchCell(el);else if(!openCellDatePicker(el))openCellDropdown(el,false);}};
-    el.ondblclick=()=>{closeCellDropdown?.();openEditor();};
+    el.ondblclick=()=>{if(touchInputDevice&&!touchDoubleTap)return;closeCellDropdown?.();openEditor();};
   });
   root.querySelector<HTMLButtonElement>('[data-fill-handle]')?.addEventListener('pointerdown',e=>{
     e.preventDefault();e.stopPropagation();if(!commitDraft())return;if(calendarPlan){flash('Use One page for drag fill across rows.');return;}const range=requireRectangle('Fill');if(!range)return;extraSelections=[];anchor={r:range.r1,c:range.c1};selected={r:range.r2,c:range.c2};fillSource={...range};fillPointer=e.pointerId;(root.querySelector('#grid-scroll') as HTMLElement).setPointerCapture(e.pointerId);
@@ -1640,6 +1683,14 @@ function bind(): void {
     toggle.onclick=()=>{
       if(closeCellDropdown)closeCellDropdown();else openCellDropdown(undefined,true);
       root.querySelector<HTMLInputElement>('#formula')?.focus({preventScroll:true});
+    };
+    const keyboardToggle=root.querySelector<HTMLButtonElement>('.touch-keyboard-toggle')!;
+    keyboardToggle.onpointerdown=e=>e.preventDefault();
+    keyboardToggle.onclick=()=>{
+      const start=formula.selectionStart,end=formula.selectionEnd;
+      touchFullKeyboard=!touchFullKeyboard;beginTouchEdit(false);
+      formula.blur();formula.focus({preventScroll:true});
+      if(start!==null&&end!==null)formula.setSelectionRange(start,end);
     };
   }
   const rowJump=document.querySelector<HTMLInputElement>('#row-jump');if(rowJump)rowJump.onchange=e=>{

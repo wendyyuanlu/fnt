@@ -268,8 +268,9 @@ remain viewable only in history.
   Long in-cell drafts still scroll to the caret; double-click opens the full editor.
   Editing notes does not change wrapping. Formula-column cells can be manually overridden.
   On touch devices, the formula bar starts hidden. Tap one cell to focus a compact
-  bottom input in the same gesture; it follows the visual viewport above the native
-  keyboard. Assigned dropdowns appear above that input, which also filters their
+  bottom input in the same gesture. Android Chrome is asked to resize the content
+  viewport for its keyboard; the editor also follows visual-viewport and supported
+  keyboard-boundary changes. Assigned dropdowns appear above that input, which also filters their
   choices without a second search field. The shared chevron hides/reopens choices
   for direct entry; source tabs, Custom entry and choice identities are retained.
   Enter or dismissing the keyboard applies the draft; Escape cancels. Explicit
@@ -277,6 +278,13 @@ remain viewable only in history.
   still opens the multiline editor without changing wrapping. Desktop editing is unchanged.
   On touch, **123 > Restore calculation** retains access to a manually overridden formula
   without adding status controls to the compact input.
+  Master **Weight / Amount (g) / Amount**, Meals **Amount (g) / Amount**, and
+  Ingredients **Serving (g) / Conversion Amount / Calories (kcal) / Protein (g) /
+  Fat (g) / Carbs (g) / Sugar (g) / Sodium (mg)** request the native decimal keyboard.
+  **ABC / 123** switches between full and number keyboards without changing the draft.
+  These are keyboard hints, not numeric-only cell restrictions: formulas, fractions,
+  and text placeholders remain supported. Field identities are remembered in this
+  tab across reloads, moves, and renames without changing or syncing workbook content.
   The formula bar marks **Calculated** versus **Manual**; **Restore** recovers
   the exact previous formula (or asks which existing column calculation to use).
   Overrides/default formulas survive save, copy/fill, moves and native backups.
