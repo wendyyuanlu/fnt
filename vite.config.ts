@@ -51,13 +51,15 @@ self.addEventListener('message',event=>{
 self.addEventListener('fetch',event=>{
   if(event.request.method!=='GET'||new URL(event.request.url).origin!==self.location.origin)return;
   if(event.request.mode==='navigate'||['./testing-workbook.json','./testing-workbook-version.json'].some(file=>new URL(event.request.url).pathname===new URL(file,self.registration.scope).pathname)){
-    event.respondWith(fetch(event.request).then(async response=>{
+    event.respondWith(fetch(event.request,{cache:'no-store'}).then(async response=>{
       if(!response.ok)throw Error('Website update returned '+response.status);
       const cache=await caches.open(CACHE);await cache.put(event.request,response.clone());return response;
     }).catch(async error=>{
       const cache=await caches.open(CACHE);
       const page=await cache.match(event.request)||(event.request.mode==='navigate'&&await cache.match(new URL('./index.html',self.registration.scope)));
-      if(!page)throw error;return page;
+      if(!page)throw error;
+      const headers=new Headers(page.headers);headers.set('X-Fnt-Offline-Cache','1');
+      return new Response(page.body,{status:page.status,statusText:page.statusText,headers});
     }));return;
   }
   event.respondWith(caches.open(CACHE).then(cache=>cache.match(event.request,{ignoreVary:true})).then(async hit=>hit||await caches.match(event.request,{ignoreVary:true})||fetch(event.request)));

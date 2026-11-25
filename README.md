@@ -857,6 +857,29 @@ authorization to migrate a personal workbook. Tokens must be reentered after
 reload; offline local editing remains available without them.
 GitHub history is not an independent backup.
 
+While a private connection is authenticated, local commits trigger an automatic
+sync after a one-second pause. Visible tabs check remote revisions every 15 seconds,
+and immediately on resume or reconnection; offline edits remain durably pending.
+Unchanged remote revisions do not download/decompress the workbook blob or create
+another full local checkpoint. Response headers time out after 30 seconds; a
+90-second overall deadline also covers stalled response bodies and aborts transfers
+rather than leaving editing locked indefinitely. Navigation-only visit journals do not create
+remote commits or content conflicts; incoming content retains the larger saved
+visit counts, which are batched with the next actual content edit.
+Real content divergence pauses automatic sync until the user chooses a version.
+Exact remote conflict checkpoints are not substituted with the local journal.
+
+**Publication is not device sync.** An edited local workbook is never replaced
+by a website snapshot. A browser with no private connection is explicitly local-only.
+An authenticated connection cannot survive a reload under the current memory-only
+token policy; the status asks the user to sign in again. Latest-on-startup private
+sync therefore requires authentication first. No personal workbook migration or
+new destination is authorized by the synthetic integration checks above.
+Publication/HTML requests bypass HTTP cache; offline manifest fallback is labeled
+and cannot be treated as a verified latest revision. Automatic Page settings
+initialization does not make an otherwise untouched testing starter ineligible
+for publication updates.
+
 ## Excel import and current limits
 
 All ZIP/XML processing happens locally. Imports preserve every original XLSX
@@ -916,7 +939,7 @@ Other remaining work before migration:
   intentionally refused to protect record identities. Cross-page touch
   autoscrolling and advanced multi-seed numeric-series inference remain missing;
   explicit range selection and fill down work across pages.
-- Automatic nonconflicting cross-device merging, unattended/background sync,
+- Automatic nonconflicting content merging, closed-app/background sync,
   and physical-device credential setup. Live synthetic authenticated integration
   passed; current conflict resolution is conservative and user-directed.
 - OCR/photo entry and tailored workflows for secondary sheets remain deferred.

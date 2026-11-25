@@ -6,6 +6,16 @@ import { parseArchive,stringifyArchive } from '../src/archive';
 import {getHypotheticalStyle} from '../src/hypothetical';
 
 describe('recoverable local storage',()=>{
+  it('preserves an exact divergent remote checkpoint instead of substituting a newer local journal',async()=>{
+    const store=await Store.open(uid()),book=createDemo();
+    try{
+      const state=await store.save(book,0,'Initial');
+      await store.saveChanges(book.id,1,state.version,'Local edit',[{patch:[{path:['title'],exists:true,value:'Latest local title'}]}],{undo:[],redo:[]});
+      await store.checkpoint('Remote conflict',book,[],true);
+      expect((await store.history()).find(entry=>entry.label==='Remote conflict')!.book.title).toBe(book.title);
+      expect((await store.load())!.book.title).toBe('Latest local title');
+    }finally{store.close();}
+  });
   it('saves visits independently without content versions, migrates counters, merges tabs and carries them through backup and sync metadata',async()=>{
     const name=uid(),store=await Store.open(name),other=await Store.open(name),book=createDemo(),table=book.tables[0].id;
     book.tableActivity={[table]:{visits:20,editedAt:42}};
@@ -156,6 +166,40 @@ describe('recoverable local storage',()=>{
 describe('private opt-in sync',()=>{
   const setup=():LocalState=>({book:createDemo(),version:1,pending:[{id:'op1',label:'Edit',time:'now'}],updated:'now',sync:{owner:'example',repo:'data',branch:'main',path:'book.json'}});
   const response=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});
+  it('checks acknowledged revisions without downloading unchanged blobs or writing another commit',async()=>{
+    const state=setup();state.remoteSha='base';state.pending=[];
+    const paths:string[]=[];
+    const result=await syncGitHub(state,'test',async url=>{
+      paths.push(String(url));
+      return paths.length===1?response({private:true,has_pages:false}):response({sha:'base',encoding:'none',size:90000000});
+    });
+    expect(result).toEqual({sha:'base'});expect(paths).toHaveLength(2);
+  });
+  it('does not let navigation-only journals create remote commits or conflict with newer workbook content',async()=>{
+    const state=setup();state.remoteSha='base';state.pending[0].label='Visit table';
+    const remote=createDemo();let calls=0;
+    const result=await syncGitHub(state,'test',async(_url,init)=>{
+      expect(init?.cache).toBe('no-store');expect(init?.method).not.toBe('PUT');calls++;
+      return calls===1?response({private:true,has_pages:false}):response({sha:'new',content:encode64(JSON.stringify({format:'fnt-sync-v1',book:remote,operations:[]}))});
+    });
+    expect(result.remote).toEqual(remote);expect(calls).toBe(2);expect(state.pending).toHaveLength(1);
+  });
+  it('times out stalled requests and keeps pending edits for reconnection',async()=>{
+    vi.useFakeTimers();
+    try{
+      const state=setup();
+      const failed=expect(syncGitHub(state,'test',async()=>new Promise<Response>(()=>{}))).rejects.toThrow('timed out');
+      await vi.advanceTimersByTimeAsync(30000);await failed;expect(state.pending).toHaveLength(1);
+    }finally{vi.useRealTimers();}
+  });
+  it('also bounds a stalled response body after headers have arrived',async()=>{
+    vi.useFakeTimers();
+    try{
+      const state=setup(),body=new ReadableStream<Uint8Array>();
+      const failed=expect(syncGitHub(state,'test',async()=>new Response(body))).rejects.toThrow('transferring data');
+      await vi.advanceTimersByTimeAsync(90000);await failed;expect(state.pending).toHaveLength(1);
+    }finally{vi.useRealTimers();}
+  });
   it('refuses public repositories without reading or uploading data',async()=>{
     let calls=0;await expect(syncGitHub(setup(),'test',async()=>{calls++;return response({private:false});})).rejects.toThrow('PRIVATE');expect(calls).toBe(1);
   });

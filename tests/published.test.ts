@@ -10,7 +10,7 @@ it('only upgrades untouched starters, never user edits, sync copies, empty journ
   expect(untouchedStarter({...state,pending:[]},0)).toBe(false);
   expect(untouchedStarter({...state,sync:{owner:'example',repo:'data',branch:'main',path:'book.json'}},0)).toBe(false);
   expect(untouchedStarter(state,1)).toBe(false);
-  const migrated={...state,pending:[...state.pending,{id:'migration',label:'Move dropdown records into DD storage',time:''},{id:'visit',label:'Visit table',time:''}]};
+  const migrated={...state,pending:[...state.pending,{id:'migration',label:'Move dropdown records into DD storage',time:''},{id:'visit',label:'Visit table',time:''},{id:'page-init',label:'Initialize Master date pages',time:''}]};
   expect(untouchedStarter(migrated,0)).toBe(true);
   expect(untouchedStarter({...migrated,pending:[...migrated.pending,{id:'edit',label:'Edit cell',time:''}]},0)).toBe(false);
 });
@@ -35,4 +35,10 @@ it('rejects invalid version checks and publication changes rather than replacing
   await expect(publishedTestingId((async()=>new Response('',{status:503})) as typeof fetch)).rejects.toThrow('503');
   await expect(publishedTestingId((async()=>new Response('{}')) as typeof fetch)).rejects.toThrow('Invalid published testing version');
   await expect(loadPublishedTesting((async()=>new Response(JSON.stringify({format:'fnt-published-testing',version:1,id:'changed',book:createDemo()}))) as typeof fetch,'expected')).rejects.toThrow('changed while loading');
+});
+it('bypasses HTTP cache and refuses to treat an offline cached manifest as a verified latest revision',async()=>{
+  await expect(publishedTestingId(async(_url,init)=>{
+    expect(init?.cache).toBe('no-store');
+    return new Response(JSON.stringify({format:'fnt-published-version',version:1,id:'old'}),{headers:{'X-Fnt-Offline-Cache':'1'}});
+  })).rejects.toThrow('not a verified latest version');
 });

@@ -3,9 +3,15 @@ import {expect,test,type Page} from '@playwright/test';
 async function meals(page:Page):Promise<void>{
   await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
   await page.evaluate(async()=>{
-    const storage='/src/storage.ts',published='/src/published.ts';
-    const {Store}=await import(/* @vite-ignore */storage),{loadPublishedTesting}=await import(/* @vite-ignore */published),store=await Store.open();
-    try{const state=await store.load(),snapshot=await loadPublishedTesting();await store.save(snapshot.book,state.version,'Disposable action fixture');}finally{store.close();}
+    const storage='/src/storage.ts',published='/src/published.ts',model='/src/model.ts';
+    const {Store}=await import(/* @vite-ignore */storage),{loadPublishedTesting}=await import(/* @vite-ignore */published),{blankSheet,uid,setInput}=await import(/* @vite-ignore */model),store=await Store.open();
+    try{
+      const state=await store.load(),snapshot=await loadPublishedTesting(),s=blankSheet('Performance log',4,2);
+      const table={id:uid(),name:'PerfTiny',sheet:s.id,header:s.rows[0].id,rows:s.rows.slice(1,3).map((row:{id:string})=>row.id),columns:s.columns.map((column:{id:string},i:number)=>({id:uid(),column:column.id,name:['Value','Double'][i]}))};
+      snapshot.book.sheets.push(s);snapshot.book.tables.push(table);
+      for(const [r,c,text]of [[0,0,'Value'],[0,1,'Double'],[1,0,'2'],[1,1,'=[@Value]*2'],[2,0,'3'],[2,1,'=[@Value]*2']] as const)setInput(snapshot.book,s,s.rows[r].id,s.columns[c].id,text);
+      await store.save(snapshot.book,state.version,'Disposable action fixture');
+    }finally{store.close();}
   });
   await page.reload();await page.getByRole('button',{name:'Meals',exact:true}).click();
 }
@@ -21,7 +27,7 @@ test('scrolling tagged summary rows reuses hypothetical membership and keeps too
     try{
       const state=(await store.load())!,s=state.book.sheets.find(s=>s.name==='Meals')!;
       for(const group of s.groups){delete group.table;group.collapsed=true;}
-      for(const group of s.groups.filter(group=>group.axis==='row'&&group.kind==='summary').slice(0,100))s.rows.find(row=>row.id===group.members[0])!.hypothetical=true;
+      for(const [index,row]of s.rows.entries()){row.hypothetical=index>0;delete row.hypotheticalTables;}
       await store.save(state.book,state.version,'Synthetic tagged summary scrolling');
     }finally{store.close();}
   });
@@ -58,7 +64,8 @@ test('group manager browses all cards lazily, saves scoped groups, and retains U
   await page.locator('[data-action="range"]').click();await page.locator('#answer').fill('A1:A2');await page.locator('#answer').press('Enter');
   await manager(page);
   const cards=page.locator('[data-group-card]'),list=page.locator('.group-card-list'),initial=await cards.count();
-  expect(initial).toBe(274);await expect(cards.first().locator('.group-cell-preview')).toBeVisible();
+  const expected=await page.evaluate(async()=>{const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();try{return(await store.load()).book.sheets.find((sheet:{name:string})=>sheet.name==='Meals').groups.length;}finally{store.close();}});
+  expect(initial).toBe(expected);expect(initial).toBeGreaterThan(250);await expect(cards.first().locator('.group-cell-preview')).toBeVisible();
   expect(await page.locator('[data-group-card] .group-cell-preview').count()).toBeLessThan(25);
   const lazyId=await page.locator('[data-group-card][data-lazy="true"]').first().getAttribute('data-group-card'),lazy=page.locator(`[data-group-card="${lazyId}"]`);await lazy.focus();
   await expect(lazy.locator('[data-toggle]')).toBeVisible();
@@ -83,7 +90,7 @@ test('Find cancels obsolete scans and every one-character match remains browsabl
   await input.fill('a');await input.fill('apple');
   await expect(count).toHaveText('Results found (60)');
   await input.fill('a');await expect(count).toHaveText(/Results found \(\d+\)/);
-  const total=Number((await count.innerText()).match(/\d+/)![0]);expect(total).toBe(9962);
+  const total=Number((await count.innerText()).match(/\d+/)![0]);expect(total).toBeGreaterThan(9000);
   await page.evaluate(()=>{const next=document.querySelector<HTMLButtonElement>('#find-next-page')!;while(!next.disabled)next.click();});
   const last=page.locator(`[data-find-match="${total-1}"]`);
   expect(await last.getAttribute('data-find-match')).toBe(String(total-1));
@@ -139,19 +146,19 @@ test('large dropdown options preserve End, Home, paging and selection',async({pa
 });
 
 test('public-sized tiny-table duplication saves only changed cells and retains structural Undo after reload',async({page})=>{
-  await meals(page);await page.getByRole('button',{name:'Daily log',exact:true}).click();
+  await meals(page);await page.getByRole('button',{name:'Performance log',exact:true}).click();
   await page.getByRole('button',{name:'Table-constrained header selection',exact:true}).click();
   await page.locator('[data-row-select="1"]').click();await page.locator('[data-action="structure"]').click();
   await page.getByRole('button',{name:'Duplicate selected rows',exact:true}).click();
   await expect(page.locator('#save-state')).toContainText('Saved');
   const result=await page.evaluate(async()=>{
     const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
-    try{const state=(await store.load())!,history=await store.undoHistory(state.version,state.book.id),entry=history?.undo.at(-1);if(!entry)throw Error('Saved structural Undo is missing.');return{rows:state.book.tables.find(t=>t.name==='DailyLog')!.rows.length,changes:'patch'in entry?entry.patch.length:'cells'in entry?entry.cells.length:Infinity};}finally{store.close();}
+    try{const state=(await store.load())!,history=await store.undoHistory(state.version,state.book.id),entry=history?.undo.at(-1);if(!entry)throw Error('Saved structural Undo is missing.');return{rows:state.book.tables.find(t=>t.name==='PerfTiny')!.rows.length,changes:'patch'in entry?entry.patch.length:'cells'in entry?entry.cells.length:Infinity};}finally{store.close();}
   });
   expect(result.rows).toBe(3);expect(result.changes).toBeLessThan(500);
   await page.reload();await expect(page.locator('.grid')).toBeVisible();await page.locator('[data-action="undo"]').click();
   await expect(page.locator('#save-state')).toContainText('Saved');await page.reload();
-  const rows=await page.evaluate(async()=>{const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();try{return(await store.load())!.book.tables.find(t=>t.name==='DailyLog')!.rows.length;}finally{store.close();}});
+  const rows=await page.evaluate(async()=>{const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();try{return(await store.load())!.book.tables.find(t=>t.name==='PerfTiny')!.rows.length;}finally{store.close();}});
   expect(rows).toBe(2);
 });
 

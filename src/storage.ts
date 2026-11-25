@@ -10,6 +10,7 @@ export interface LocalState {
   sync?: SyncConfig; remoteSha?: string;
   publishedSnapshot?:string;
 }
+export const hasPendingContent=(state:LocalState):boolean=>state.pending.some(operation=>operation.label!=='Visit table');
 export interface Checkpoint { id: string; label: string; time: string; book: Workbook; backup?: string }
 export interface Backup {
   format: 'fnt-backup'; version: 1; state: LocalState;
@@ -317,6 +318,9 @@ export class Store {
   async originalCount():Promise<number>{
     return request(this.db.transaction('originals').objectStore('originals').count());
   }
+  async originals():Promise<Original[]>{
+    return await request(this.db.transaction('originals').objectStore('originals').getAll()) as Original[];
+  }
   async undoHistory(version:number,book:string):Promise<UndoHistory|undefined>{
     const saved=await request(this.db.transaction('state').objectStore('state').get('undo')) as {version:number;book:string;history:UndoHistory}|undefined;
     if(!saved||saved.version!==version||saved.book!==book)return;
@@ -377,7 +381,7 @@ export class Store {
     try { await done; } catch (e) { if (conflict) throw Error('Workbook changed during this operation. Retry after saving.'); throw failure??e; }
     return result!;
   }
-  async checkpoint(label: string, book: Workbook, originals:Original[]=[]): Promise<void> {
+  async checkpoint(label: string, book: Workbook, originals:Original[]=[],exact=false): Promise<void> {
     book=clone(book);originals=clone(originals);
     const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx),store=tx.objectStore('state');
     let failure:unknown;
@@ -385,8 +389,8 @@ export class Store {
       const navigation=store.get(navigationKey(book.id));
       navigation.onsuccess=()=>{
         try{
-          const current=head?.count&&state?.book.id===book.id&&book.revision<=head.revision?state.book:book;
-          const snapshot=withNavigation({book:current,pending:[],version:0,updated:''},navigation.result).book;
+          const current=!exact&&head?.count&&state?.book.id===book.id&&book.revision<=head.revision?state.book:book;
+          const snapshot=exact?current:withNavigation({book:current,pending:[],version:0,updated:''},navigation.result).book;
           tx.objectStore('history').put({ id:uid(), label, time:new Date().toISOString(), book:snapshot } satisfies Checkpoint);
           for(const original of originals)tx.objectStore('originals').put(original);
         }catch(e){failure=e;tx.abort();}
@@ -447,47 +451,66 @@ export class SyncConflict extends Error {
   constructor(public remote: Workbook, public sha: string,public originals:Original[]=[]) { super('Remote changes found. Both versions are preserved in recovery. No upload was made.'); }
 }
 export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[]): Promise<{sha:string;remote?:Workbook;originals?:Original[]}> {
+  const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
+  try{
+    return await Promise.race([
+      privateSync(state,token,(url,init)=>fetcher(url,{...init,signal:controller.signal}),originals),
+      new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('Private sync timed out while transferring data. Local edits are retained.')),90000);}),
+    ]);
+  }finally{clearTimeout(timer);controller.abort();}
+}
+async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[]):Promise<{sha:string;remote?:Workbook;originals?:Original[]}>{
   const cfg = state.sync;
   if (!cfg || !token) throw Error('Connect a private repository and enter a token for this browser session.');
   if (!/^[\w.-]+$/.test(cfg.owner) || !/^[\w.-]+$/.test(cfg.repo) || !cfg.branch || !cfg.path || cfg.path.split('/').some(s => s === '..') || !cfg.path.endsWith('.json')) throw Error('Invalid sync destination. Use a JSON file in a private data repository.');
   if(`${cfg.owner}/${cfg.repo}`.toLowerCase()==='wendyyuanlu/fnt')throw Error('The website source repository cannot be used for nutrition data. Choose a separate private data repository with no Pages publishing.');
   const root = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}`;
   const headers = { Authorization:`Bearer ${token}`, Accept:'application/vnd.github+json', 'X-GitHub-Api-Version':'2022-11-28' };
-  const repo = await fetcher(root,{headers,redirect:'error'});
+  const request=async(url:string,init:RequestInit):Promise<Response>=>{
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    try{
+      return await Promise.race([fetcher(url,init),new Promise<Response>((_,reject)=>{
+        timer=setTimeout(()=>{reject(Error('Private sync request timed out. Local edits are retained.'));},30000);
+      })]);
+    }finally{clearTimeout(timer);}
+  };
+  const repo = await request(root,{headers,cache:'no-store',redirect:'error'});
   if (!repo.ok) throw Error(`Cannot verify private repository (${repo.status}). Nothing uploaded.`);
   const info = await repo.json() as {private:boolean;has_pages?:boolean};
   if (!info.private) throw Error('Sync requires a PRIVATE repository. Nothing uploaded.');
   if(info.has_pages!==false)throw Error('Sync requires a private data repository with GitHub Pages disabled. Nothing uploaded.');
   const url = `${root}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}`;
-  const response = await fetcher(url,{headers,cache:'no-store',redirect:'error'});
+  const response = await request(url,{headers,cache:'no-store',redirect:'error'});
   let sha: string | undefined, remote: Workbook | undefined;
   if (response.ok) {
     let data = await response.json() as {sha:string;content:string;encoding?:string;size?:number};
     sha = data.sha;
-    if(data.encoding==='none'||(!data.content&&data.size)){
-      const blob=await fetcher(`${root}/git/blobs/${encodeURIComponent(sha)}`,{headers,cache:'no-store',redirect:'error'});
-      if(!blob.ok)throw Error(`Cannot read larger remote workbook (${blob.status}). Nothing overwritten.`);
-      data=await blob.json() as typeof data;
-    }
-    if(typeof data.content!=='string')throw Error('GitHub did not return file content. Nothing overwritten.');
-    let envelope = JSON.parse(decode64(data.content)) as {format:string;book:Workbook;operations:string[];payload?:string;originals?:Original[]};
-    if(envelope.format==='fnt-sync-v2'&&typeof envelope.payload==='string')envelope=decompressArchive(envelope.payload) as typeof envelope;
-    if (envelope.format !== 'fnt-sync-v1') throw Error('Remote file is not an Fnt sync file. Nothing overwritten.');
-    validateBook(envelope.book); remote = envelope.book;
-    const remoteOriginals=envelope.originals??[];
-    validateOriginals(remote,remoteOriginals);
-    if (sha !== state.remoteSha) {
-      if (!state.pending.length) return {sha,remote,originals:remoteOriginals};
+    if(typeof sha!=='string'||!sha)throw Error('GitHub did not return a file revision. Nothing overwritten.');
+    if(sha===state.remoteSha&&!hasPendingContent(state))return{sha};
+    if(sha!==state.remoteSha){
+      if(data.encoding==='none'||(!data.content&&data.size)){
+        const blob=await request(`${root}/git/blobs/${encodeURIComponent(sha)}`,{headers,cache:'no-store',redirect:'error'});
+        if(!blob.ok)throw Error(`Cannot read larger remote workbook (${blob.status}). Nothing overwritten.`);
+        data=await blob.json() as typeof data;
+      }
+      if(typeof data.content!=='string')throw Error('GitHub did not return file content. Nothing overwritten.');
+      let envelope = JSON.parse(decode64(data.content)) as {format:string;book:Workbook;operations:string[];payload?:string;originals?:Original[]};
+      if(envelope.format==='fnt-sync-v2'&&typeof envelope.payload==='string')envelope=decompressArchive(envelope.payload) as typeof envelope;
+      if (envelope.format !== 'fnt-sync-v1') throw Error('Remote file is not an Fnt sync file. Nothing overwritten.');
+      validateBook(envelope.book); remote = envelope.book;
+      const remoteOriginals=envelope.originals??[];
+      validateOriginals(remote,remoteOriginals);
+      if (!hasPendingContent(state)) return {sha,remote,originals:remoteOriginals};
       const pendingIds = state.pending.map(p => p.id);
       if (Array.isArray(envelope.operations) && pendingIds.every(id => envelope.operations.includes(id)) && stringifyArchive(remote) === stringifyArchive(state.book)) return {sha};
       throw new SyncConflict(remote,sha,remoteOriginals);
     }
   } else if (response.status !== 404) throw Error(`Cannot read sync file (${response.status}). Local edits retained.`);
   else if (state.remoteSha) throw Error('Remote file was removed. Local edits retained; refusing to recreate it silently.');
-  if (!state.pending.length && sha) return {sha};
+  if (!hasPendingContent(state) && sha) return {sha};
   validateOriginals(state.book,originals);
   const packed={format:'fnt-sync-v2',payload:compressArchive({format:'fnt-sync-v1',book:state.book,operations:state.pending.map(p=>p.id),originals})};
-  const upload = await fetcher(url,{method:'PUT',headers:{...headers,'Content-Type':'application/json'},redirect:'error',body:JSON.stringify({
+  const upload = await request(url,{method:'PUT',headers:{...headers,'Content-Type':'application/json'},redirect:'error',body:JSON.stringify({
     message:`Fnt: save ${state.pending.length} local changes`, branch:cfg.branch, ...(sha ? {sha} : {}),
     content:encode64(JSON.stringify(packed)),
   })});
