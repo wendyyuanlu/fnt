@@ -6,6 +6,42 @@ import { parseArchive,stringifyArchive } from '../src/archive';
 import {getHypotheticalStyle} from '../src/hypothetical';
 
 describe('recoverable local storage',()=>{
+  it('rejects stale automatic sync sources after complete or journaled saves',async()=>{
+    const store=await Store.open(uid());
+    try{
+      const state=await store.save(createDemo(),0,'Initial');
+      await store.assertVersion(state.version);
+      const change=await store.saveChanges(state.book.id,1,state.version,'Journal edit',[{patch:[{path:['title'],exists:true,value:'Newer local workbook'}]}],{undo:[],redo:[]});
+      await expect(store.assertVersion(state.version)).rejects.toThrow('Another tab');
+      await store.assertVersion(change.version);
+      const updated=await store.metadata(change.version,s=>s);
+      await expect(store.assertVersion(change.version)).rejects.toThrow('Another tab');
+      await store.assertVersion(updated.version);
+    }finally{store.close();}
+  });
+  it('remembers device credentials only for the exact destination and excludes them from backups and recovery',async()=>{
+    const name=uid(),store=await Store.open(name),config={owner:'example',repo:'private',branch:'main',path:'book.json'},token='invented-device-only-credential';
+    try{
+      let state=await store.save(createDemo(),0,'Initial');
+      state=await store.metadata(state.version,s=>({...s,sync:config}));
+      await store.rememberSyncToken(config,token);
+      const reopened=await Store.open(name);
+      try{
+        expect(await reopened.syncToken(config)).toBe(token);
+        for(const field of ['owner','repo','branch','path'] as const)expect(await reopened.syncToken({...config,[field]:'different'})).toBeUndefined();
+      }finally{reopened.close();}
+      const backup=await store.backup(state);
+      await store.checkpoint('Independent recovery',state.book);
+      expect(stringifyArchive(backup).includes(token)).toBe(false);
+      expect(stringifyArchive(await store.history()).includes(token)).toBe(false);
+      await store.rememberSyncToken();expect(await store.syncToken(config)).toBeUndefined();
+      await store.rememberSyncToken(config,token);
+      state=await store.restore(backup,state.version);expect(await store.syncToken(config)).toBeUndefined();
+      await store.rememberSyncToken(config,token);
+      await store.save(createDemo(),state.version,'Local import',false,undefined,{localOnly:true});
+      expect(await store.syncToken(config)).toBeUndefined();
+    }finally{store.close();}
+  });
   it('preserves an exact divergent remote checkpoint instead of substituting a newer local journal',async()=>{
     const store=await Store.open(uid()),book=createDemo();
     try{

@@ -29,6 +29,7 @@ interface JournalHead {
 }
 interface JournalEntry {version:number;book:string;revision:number;forward:History[]}
 const journalHeadKey='journal:head';
+const syncCredentialKey='device:sync-credential';
 const journalRange=()=>IDBKeyRange.bound('journal:entry:','journal:entry:\uffff');
 const journalKey=(version:number)=>`journal:entry:${String(version).padStart(16,'0')}`;
 const journalError=()=>Error('Saved change journal is damaged. Restore from recovery before continuing.');
@@ -242,6 +243,12 @@ export class Store {
     readState(tx.objectStore('state'),state=>{result=state;},e=>{failure=e;tx.abort();});
     try{await done;}catch(e){throw failure??e;}return result;
   }
+  async assertVersion(expected:number):Promise<void>{
+    const tx=this.db.transaction('state'),done=complete(tx),store=tx.objectStore('state'),head=store.get(journalHeadKey),current=store.get('current');
+    await done;
+    if(head.result)validateHead(head.result);
+    if((head.result?.state.version??current.result?.version)!==expected)throw Error('Another tab changed this workbook. Sync paused; preserve this tab before reloading.');
+  }
   /** Append forward patches and independent undo/redo together; complete replacements use save(). */
   async saveChanges(bookId:string,revision:number,expected:number,label:string,forward:History[],undoHistory:UndoHistory):Promise<{version:number;pending:Pending[];updated:string}>{
     validateForward(forward);
@@ -321,6 +328,18 @@ export class Store {
   async originals():Promise<Original[]>{
     return await request(this.db.transaction('originals').objectStore('originals').getAll()) as Original[];
   }
+  async syncToken(config:SyncConfig):Promise<string|undefined>{
+    const saved=await request(this.db.transaction('state').objectStore('state').get(syncCredentialKey)) as {config?:SyncConfig;token?:unknown}|undefined;
+    if(!saved||!saved.config||!(['owner','repo','branch','path'] as const).every(field=>saved.config![field]===config[field]))return;
+    if(typeof saved.token!=='string'||!saved.token)throw Error('Remembered sync credential is damaged. Reconnect private sync on this device.');
+    return saved.token;
+  }
+  async rememberSyncToken(config?:SyncConfig,token?:string):Promise<void>{
+    const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
+    if(config&&token)store.put({config:clone(config),token},syncCredentialKey);
+    else store.delete(syncCredentialKey);
+    await done;
+  }
   async undoHistory(version:number,book:string):Promise<UndoHistory|undefined>{
     const saved=await request(this.db.transaction('state').objectStore('state').get('undo')) as {version:number;book:string;history:UndoHistory}|undefined;
     if(!saved||saved.version!==version||saved.book!==book)return;
@@ -344,7 +363,7 @@ export class Store {
         priorNavigation.onsuccess=()=>{try{if(priorNavigation.result)store.put({...priorNavigation.result,pending:[]},navigationKey(previous.book.id));}catch(e){failure=e;tx.abort();}};
       }
       if(navigation.result)store.put({...navigation.result,pending:[]},navigationKey(snapshot.id));
-      if(options?.localOnly){delete result.sync;delete result.remoteSha;}
+      if(options?.localOnly){delete result.sync;delete result.remoteSha;store.delete(syncCredentialKey);}
       if(options?.publishedSnapshot)result.publishedSnapshot=options.publishedSnapshot;
       if (checkpoint && previous) tx.objectStore('history').put({id:uid(),label:`Before ${label}`,time:new Date().toISOString(),book:previous.book,...(options?.recoveryArchive?{backup:options.recoveryArchive}:{})} satisfies Checkpoint);
       if (original) tx.objectStore('originals').put(original);
@@ -430,6 +449,7 @@ export class Store {
       result = { ...previous, book:clone(backup.state.book), version:expected+1, updated:new Date().toISOString(),
         pending:[...new Map([...previous.pending,...backup.state.pending].map(p=>[p.id,p])).values(), {id:uid(),label:'Restore backup',time:new Date().toISOString()}] };
       delete result.sync;delete result.remoteSha;
+      store.delete(syncCredentialKey);
       store.put(result,'current');
       resetJournal(store,result);
       store.delete(navigationKey(previous.book.id));store.delete(navigationKey(result.book.id));

@@ -835,8 +835,9 @@ Private GitHub sync is optional, configured only in **File > Private GitHub
 sync**. Supply an existing **separate private data repository and branch with no
 Pages publishing**, and a fine-grained token scoped to that repository with
 Contents read/write. The website source repository is explicitly rejected as a
-data destination. Tokens remain in tab memory, never IndexedDB, backups, logs,
-or source. No repository/account is provisioned automatically.
+data destination. Tokens stay in tab memory unless explicitly remembered on a
+trusted device, and never enter backups, logs, or source. No repository/account
+is provisioned automatically.
 
 Save batches pending edits; there is no per-keystroke network upload. Uploads
 check repository privacy, require GitHub Pages to be disabled, and use the remote
@@ -854,7 +855,8 @@ The credential remained in a bounded keyring-authenticated Node process behind
 an allowlisted test transport, not in browser storage. This is not physical-device
 credential setup, proof of fine-grained token permissions on a user's device, or
 authorization to migrate a personal workbook. Tokens must be reentered after
-reload; offline local editing remains available without them.
+reload unless the user opts into remembering a repository-only token on that
+trusted device; offline local editing remains available without authentication.
 GitHub history is not an independent backup.
 
 While a private connection is authenticated, local commits trigger an automatic
@@ -871,9 +873,15 @@ Exact remote conflict checkpoints are not substituted with the local journal.
 
 **Publication is not device sync.** An edited local workbook is never replaced
 by a website snapshot. A browser with no private connection is explicitly local-only.
-An authenticated connection cannot survive a reload under the current memory-only
-token policy; the status asks the user to sign in again. Latest-on-startup private
-sync therefore requires authentication first. No personal workbook migration or
+Tokens stay in tab memory by default. **Remember on this trusted device** stores
+the token in a separate IndexedDB record bound to the exact repository/branch/path,
+never in workbook data, backups, recovery snapshots or Git. It is not encrypted
+against someone with browser access or malicious same-origin app code. Use only a
+fine-grained token restricted to the private data repository. Disconnect, local
+workbook replacement and backup restore forget the saved credential. Authenticated
+online startup checks the remote revision immediately; offline startup retains
+pending edits and retries on reconnection. Without a remembered credential, the
+status asks the user to sign in again. No personal workbook migration or
 new destination is authorized by the synthetic integration checks above.
 Publication/HTML requests bypass HTTP cache; offline manifest fallback is labeled
 and cannot be treated as a verified latest revision. Automatic Page settings

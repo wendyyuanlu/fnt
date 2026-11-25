@@ -14,10 +14,11 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
       content?{json:{sha,content,encoding:'base64'}}:{status:404,json:{message:'Not found'}}:
       {json:{private:true,has_pages:false}});
   });
-  const connect=async(target:typeof page)=>{
+  const connect=async(target:typeof page,remember=false)=>{
     await target.getByRole('button',{name:'Workbook and backups',exact:true}).click();
     await target.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
     for(const [name,value]of [['owner','example'],['repo','private-test'],['branch','main'],['path','synthetic.json'],['token','synthetic-test-token']])await target.locator(`#sync-${name}`).fill(value);
+    if(remember)await target.locator('#sync-remember').check();
     await target.getByRole('button',{name:'Connect & sync now',exact:true}).click();
   };
   const edit=async(target:typeof page,value:string)=>{
@@ -34,7 +35,7 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
     await route(page.context());await route(other);
     await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');await connect(page);
     await expect(page.locator('#save-state')).toHaveText('Synced with private repository');
-    await second.goto(page.url());await expect(second.locator('#save-state')).toContainText('Saved');await connect(second);
+    await second.goto(page.url());await expect(second.locator('#save-state')).toContainText('Saved');await connect(second,true);
     await second.getByRole('button',{name:'Use remote version on this device',exact:true}).click();
     await expect(second.locator('#save-state')).toContainText('Synced');
     await second.locator('td[data-r="1"][data-c="0"]').click();
@@ -49,7 +50,7 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
     expect((await local(page)).value).toBe(802);expect((await local(page)).pending).toBeGreaterThan(0);
     failure=false;await page.evaluate(()=>window.dispatchEvent(new Event('online')));
     await expect.poll(()=>local(page)).toEqual({pending:0,value:802});
-    await second.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+    await second.reload();await expect(second.locator('#save-state')).toContainText('Synced');
     await expect(second.locator('td[data-r="1"][data-c="2"]')).toHaveText('802');
     await page.context().setOffline(true);await edit(page,'901');await expect(page.locator('#save-state')).toContainText('Saved locally');
     expect((await local(page)).pending).toBeGreaterThan(0);
@@ -59,6 +60,12 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
     expect((await local(page)).value).toBe(901);expect((await local(second)).value).toBe(902);expect(revision).toBe(before);
     await page.reload();await expect(page.locator('#save-state')).toContainText('sign in to resume private sync');
     expect((await local(page)).value).toBe(901);expect((await local(page)).pending).toBeGreaterThan(0);
+    await second.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+    await second.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
+    await expect(second.locator('#sync-remember')).toBeChecked();
+    await second.getByRole('button',{name:'Disconnect',exact:true}).click();
+    await expect(second.locator('#save-state')).toHaveText('Disconnected - local only');
+    await second.reload();await expect(second.locator('#save-state')).toContainText('local only');
   }finally{await page.context().setOffline(false);await other.close();}
 });
 

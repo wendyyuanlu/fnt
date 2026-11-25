@@ -722,6 +722,7 @@ async function compactSavedChanges():Promise<void>{
 }
 let privateSyncTimer:ReturnType<typeof setTimeout>|undefined;
 let privateSyncConflict=false;
+let rememberPrivateSync=false;
 function schedulePrivateSync(delay=15000):void{
   clearTimeout(privateSyncTimer);
   if(!state?.sync||!token||privateSyncConflict||!navigator.onLine)return;
@@ -740,6 +741,7 @@ async function manualSave(automatic=false): Promise<void> {
     if(navigationError)generation++;
     await flush('Manual save');
     if(savedGeneration!==generation)return;
+    if(automatic)await store.assertVersion(state.version);
     const captured=automatic?state:await store.compact(state.version,state.sync?undefined:'Manual save');
     if(!automatic)compactionWrites=0;
     if(!captured)throw Error('Saved workbook is missing. Restore from recovery before continuing.');
@@ -3705,15 +3707,20 @@ async function openHistory():Promise<void> {
 }
 function openSync():void {
   const cfg=state.sync;
-  dialog('Optional private GitHub sync',`<p>Opt-in only. This uploads workbook data to the private repository you choose. Never use your website source or a public repository. Existing remote files are not overwritten on conflict.</p><form id="sync-form"><label>Personal repository owner<input id="sync-owner" value="${esc(cfg?.owner)}" required autocomplete="off"></label><label>Private data repository<input id="sync-repo" value="${esc(cfg?.repo)}" required></label><label>Existing branch<input id="sync-branch" value="${esc(cfg?.branch??'main')}" required></label><label>JSON path<input id="sync-path" value="${esc(cfg?.path??'workbook.json')}" required></label><label>Fine-grained token: Contents read/write, only this data repository<input id="sync-token" type="password" autocomplete="off" required></label><p class="muted">Token stays in memory for this tab, never in backups or local storage: sign in again after reloading. While connected, saved edits sync automatically after a short pause; active tabs check for remote updates every 15 seconds and on resume/reconnection. Save also syncs immediately. GitHub must already contain the branch. Large files may exceed the Contents API limit.</p><button class="primary">Connect & sync now</button><button id="disconnect" type="button">Disconnect</button></form>`,d=>{
+  dialog('Optional private GitHub sync',`<p>Opt-in only. This uploads workbook data to the private repository you choose. Never use your website source or a public repository. Existing remote files are not overwritten on conflict.</p><form id="sync-form"><label>Personal repository owner<input id="sync-owner" value="${esc(cfg?.owner)}" required autocomplete="off"></label><label>Private data repository<input id="sync-repo" value="${esc(cfg?.repo)}" required></label><label>Existing branch<input id="sync-branch" value="${esc(cfg?.branch??'main')}" required></label><label>JSON path<input id="sync-path" value="${esc(cfg?.path??'workbook.json')}" required></label><label>Fine-grained token: Contents read/write, only this data repository<input id="sync-token" type="password" autocomplete="off" required></label><label class="inline"><input id="sync-remember" type="checkbox" ${rememberPrivateSync?'checked':''}>Remember on this trusted device</label><p class="muted">Unchecked: token stays in this tab's memory; sign in again after reloading. Checked: token is stored in this browser's IndexedDB, separately from workbook data, never in backups or Git. Anyone with access to this browser or malicious app code could read it. Use only a fine-grained token restricted to this data repository. Disconnect forgets it on this device.</p><p class="muted">Saved edits sync automatically after a short pause; active tabs check every 15 seconds and on startup/resume/reconnection when authenticated. Save also syncs immediately. GitHub must already contain the branch. Large files may exceed the Contents API limit.</p><button class="primary">Connect & sync now</button><button id="disconnect" type="button">Disconnect</button></form>`,d=>{
     d.querySelector('form')!.onsubmit=async e=>{
       e.preventDefault();await flush();if(savedGeneration!==generation)return;
       const read=(id:string)=>d.querySelector<HTMLInputElement>(id)!.value.trim();
       const next={owner:read('#sync-owner'),repo:read('#sync-repo'),branch:read('#sync-branch'),path:read('#sync-path')};
-      try{state=await store.metadata(state.version,s=>({...s,sync:next,remoteSha:JSON.stringify(next)===JSON.stringify(s.sync)?s.remoteSha:undefined}));token=read('#sync-token');privateSyncConflict=false;d.close();await manualSave();}catch(e){flash(e);}
+      try{
+        state=await store.metadata(state.version,s=>({...s,sync:next,remoteSha:JSON.stringify(next)===JSON.stringify(s.sync)?s.remoteSha:undefined}));
+        const remember=d.querySelector<HTMLInputElement>('#sync-remember')!.checked,nextToken=read('#sync-token');
+        await store.rememberSyncToken(remember?next:undefined,remember?nextToken:undefined);
+        token=nextToken;rememberPrivateSync=remember;privateSyncConflict=false;d.close();await manualSave();
+      }catch(e){flash(e);}
     };
     d.querySelector<HTMLButtonElement>('#disconnect')!.onclick=async()=>{
-      try{await flush();state=await store.metadata(state.version,s=>({...s,sync:undefined,remoteSha:undefined}));token='';status='Disconnected - local only';renderStatus();d.close();}catch(e){flash(e);}
+      try{await flush();await store.rememberSyncToken();state=await store.metadata(state.version,s=>({...s,sync:undefined,remoteSha:undefined}));token='';rememberPrivateSync=false;clearTimeout(privateSyncTimer);status='Disconnected - local only';renderStatus();d.close();}catch(e){flash(e);}
     };
   });
 }
@@ -3905,6 +3912,10 @@ async function start():Promise<void> {
       book=clone(state.book);for(const entry of undo)if('book'in entry)entry.book=migrateDropdownData(entry.book).book;
       channel?.postMessage({version:state.version});
     }
+    if(state.sync){
+      try{token=await store.syncToken(state.sync)??'';rememberPrivateSync=!!token;}
+      catch(e){error=String(e);}
+    }
     const savedUndo=await store.undoHistory(state.version,book.id);
     if(savedUndo){undo.splice(0,undo.length,...savedUndo.undo);redo.splice(0,redo.length,...savedUndo.redo);}
     let remembered:string|null=null;try{remembered=sessionStorage.getItem('fnt-current-sheet');}catch(e){error=`Selected-tab preference unavailable: ${String(e)}`;}
@@ -3930,6 +3941,7 @@ async function start():Promise<void> {
         return registration.update();
       }).catch(e=>{flash(`Offline app cache failed: ${String(e)}`);});
     }
+    if(token&&navigator.onLine)await manualSave(true);
   }catch(e){root.innerHTML=`<main class="startup"><h1>Could not finish ${esc(stage)}</h1><p>${esc(String(e))}</p><p>Your browser data has not been cleared. Do not delete site data. ${stage==='rendering the spreadsheet'?'Reload after the application error is fixed.':'Check browser storage access, or restore a complete independent backup.'}</p></main>`;}
 }
 void start();
