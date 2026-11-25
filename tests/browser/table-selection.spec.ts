@@ -83,7 +83,7 @@ test('table summary tree toggles local indentation and rails without changing ad
   await nested.click();
   const colors=await nested.evaluate(cell=>{
     const rail=cell.querySelector('.row-outline-rail')!,button=document.querySelector('.grid .group-control[data-group-id="scoped-outer"]')!,tab=document.querySelector('.sheet-tab.current')!;
-    return{rail:getComputedStyle(rail).borderLeftColor,button:getComputedStyle(button).borderColor,tab:getComputedStyle(tab).borderBottomColor,active:getComputedStyle(document.querySelector('.grid td.active')!).outlineColor};
+    return{rail:getComputedStyle(rail).borderLeftColor,button:getComputedStyle(button).borderColor,tab:getComputedStyle(tab,'::after').backgroundColor,active:getComputedStyle(document.querySelector('.grid td.active')!).outlineColor};
   });
   expect(colors.rail).toBe(colors.button);expect(colors.tab).toBe(colors.active);
   await page.getByRole('button',{name:'Group controls',exact:true}).click();
@@ -751,20 +751,20 @@ test('Auto table selection without an owning table can both expand and collapse 
   await page.getByRole('button',{name:'Table-constrained header selection',exact:true}).click();
   await chooseTarget(page,'');
   await page.locator('td[data-r="0"][data-c="0"]').click();
-  await page.getByRole('button',{name:'Expand Scoped child rows in Middle',exact:true}).click();
-  await expect(page.getByRole('button',{name:'Collapse Scoped child rows in Middle',exact:true})).toBeVisible();
-  await page.getByRole('button',{name:'Collapse Scoped child rows in Middle',exact:true}).click();
+  await page.getByRole('button',{name:'Expand Middle 2 Name rows in Middle',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Collapse Middle 2 Name rows in Middle',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Collapse Middle 2 Name rows in Middle',exact:true}).click();
   await expect(page.locator('#error')).toBeHidden();
-  await expect(page.getByRole('button',{name:'Expand Scoped child rows in Middle',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Expand Middle 2 Name rows in Middle',exact:true})).toBeVisible();
   const after=await snapshot(page);
   expect(after.sheets[0].groups.find(group=>group.id==='scoped-inner')!.collapsed).toBe(true);
   expect(after.sheets.map(sheet=>sheet.cells)).toEqual(before.sheets.map(sheet=>sheet.cells));
   await page.locator('[data-action="undo"]').click();
-  await expect(page.getByRole('button',{name:'Collapse Scoped child rows in Middle',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Collapse Middle 2 Name rows in Middle',exact:true})).toBeVisible();
   await page.locator('[data-action="redo"]').click();
-  await expect(page.getByRole('button',{name:'Expand Scoped child rows in Middle',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Expand Middle 2 Name rows in Middle',exact:true})).toBeVisible();
   await snapshot(page);await page.reload();
-  await expect(page.getByRole('button',{name:'Expand Scoped child rows in Middle',exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Expand Middle 2 Name rows in Middle',exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'Table-constrained header selection',exact:true})).toHaveAttribute('aria-pressed','true');
 });
 test('hypo visibility compacts only tagged table records and fields without changing stored data',async({page})=>{
@@ -798,11 +798,11 @@ test('direct group controls cannot toggle a neighboring table while selection is
     }finally{store.close();}
   });
   await page.reload();await chooseTarget(page,'scope-middle');await page.locator('[data-row-select="10"] .row-index').click();
-  await page.getByRole('button',{name:'Collapse Right details rows in Right',exact:true}).click();
+  await page.getByRole('button',{name:'Collapse Right 1 Name rows in Right',exact:true}).click();
   await expect(page.locator('#error')).toContainText('another table or sheet scope');
   expect((await snapshot(page)).sheets[0].groups.find(group=>group.id==='right-summary')!.collapsed).toBe(false);
   await chooseTarget(page,'scope-right');await page.locator('th[data-col="6"] .column-index').click();
-  await page.getByRole('button',{name:'Collapse Right details rows in Right',exact:true}).click();
+  await page.getByRole('button',{name:'Collapse Right 1 Name rows in Right',exact:true}).click();
   expect((await snapshot(page)).sheets[0].groups.find(group=>group.id==='right-summary')!.collapsed).toBe(true);
 });
 async function insertOne(page:Page){
@@ -813,7 +813,7 @@ for(const axis of ['row','column'] as const)for(const kind of ['summary','range'
   test(`toolbar ${kind} ${axis} toggle creates and removes only the selected table group`,async({page,isMobile})=>{
     await fixture(page);const before=await snapshot(page);
     await scopedSelection(page,axis,isMobile);
-    const toggle=page.getByRole('button',{name:`Create/remove ${kind==='summary'?'summary':'plain'} group`,exact:true});
+    const toggle=page.locator(kind==='summary'?'button[data-action="summary-group"]':'button[data-action="plain-group"]');
     await expect(toggle).toHaveAttribute('aria-pressed','false');
     const styling=(button:HTMLElement)=>{
       const style=getComputedStyle(button);
@@ -903,6 +903,12 @@ test('table headers remain sticky through virtual scrolling, align horizontally 
     return{top:Math.abs(button.getBoundingClientRect().top-grid.querySelector('thead')!.getBoundingClientRect().bottom),left:Math.abs(button.getBoundingClientRect().left-target.getBoundingClientRect().left),column};
   });
   expect(alignment.top).toBeLessThan(2);expect(alignment.left).toBeLessThan(2);
+  await grid.evaluate(el=>{
+    const edge=el.querySelector('thead')!.getBoundingClientRect().bottom;
+    const row=[...el.querySelectorAll<HTMLElement>('tbody th')].find(th=>th.getBoundingClientRect().bottom>edge)!;
+    const rect=row.getBoundingClientRect();el.scrollTop+=rect.top-edge+rect.height/2;
+  });
+  await expect.poll(()=>grid.evaluate(el=>{const edge=el.querySelector('thead')!.getBoundingClientRect().bottom;return[...el.querySelectorAll<HTMLElement>('tbody th')].some(th=>{const rect=th.getBoundingClientRect();return rect.top<edge-5&&rect.bottom>edge;});})).toBe(true);
   const layering=await grid.evaluate(el=>{
     const head=el.querySelector<HTMLElement>('thead')!,edge=head.getBoundingClientRect().bottom;
     const row=[...el.querySelectorAll<HTMLElement>('tbody th')].find(th=>{

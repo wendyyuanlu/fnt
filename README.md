@@ -282,8 +282,22 @@ remain viewable only in history.
   cells, not table records or fields. Existing space and contents are preserved;
   newly needed space is autosaved locally.
   Ctrl/Cmd+G creates a summary group; Ctrl/Cmd+Shift+G ungroups it.
+  The summary toolbar split control creates/removes the current matching group
+  on the left. The whole split control shows its active state; **+** is enabled
+  only while grouped and adds another, nested group without removing the parent.
+  Cell selections prompt for rows or columns. Identical
+  duplicate groups are refused without removing the existing group.
+  The first cell of the first visible row has a master chevron to collapse or
+  expand all summary groups, including nested groups, in one undoable action.
+  It shares ordinary chevron styling and text padding, respects Table selection,
+  and leaves plain eye-controlled groups unchanged. Row chevrons center on the
+  first text line; the master control remains available in its sticky table header.
+  Table headers use the regular default row height; explicit row heights and
+  wrapped-content growth remain intact.
   Select the summary row/column along with its details: the topmost row or
   leftmost column stays visible on collapse. Moving it moves its group together.
+  Wrapped cells can grow beyond an imported/fixed row height to display every
+  line; the stored height remains unchanged. Unwrapped cells retain clipping.
   Ctrl/Cmd+Alt+G creates a plain range group (all members hide);
   Ctrl/Cmd+Alt+Shift+G ungroups plain ranges.
   **Ungroup all plain groups (workbook)** in the group manager removes only plain
@@ -296,6 +310,8 @@ remain viewable only in history.
   clears and asks whether to overwrite them with automatic inheritance or
   cancel. Overwriting removes child flags rather than
   stamping them, so future parent changes and move-out behavior remain dynamic.
+  Scrolling reuses the grid's hypothetical membership for toolbar state instead
+  of rescanning grouped rows; edits and tag changes refresh that membership.
   The confirmation uses one table with shared headers and complete row/column
   contents, including calculated values and multiline notes. Manually tagged
   rows/columns reuse their configured hypothetical treatment; manual exclusions
@@ -394,9 +410,14 @@ remain viewable only in history.
   groups; only the table's cells move, with neighboring data unchanged.
   Tree view and hint preferences are stored with each sheet in autosave, manual
   saves, native backups and optional private sync, not as a global setting.
-  Plain-range hints sit on the preceding visible row/column; a summary-row
-  collision uses the first data cell so row numbers and summary controls remain
-  separate. Group controls never add totals or rewrite formulas.
+  Plain-group eye controls stay in row/column headers at the boundary where the
+  group begins, never in data cells. Column headers reserve a middle row between
+  drag handles and column letters for these controls. Groups sharing a boundary use one eye and
+  a small chooser. Row labels include the first cell's displayed value; column
+  labels list each member's first-cell value, separated by an interpunct.
+  Summary chevron labels likewise use the summary row's displayed first-cell
+  value or the member column labels instead of imported outline names.
+  Group controls never add totals or rewrite formulas.
   Rows and columns can belong to both group types. A plain group containing a
   summary identity hides that summary and its entire current group, including
   nested summary details. Showing it again preserves the summary's independent
@@ -415,11 +436,35 @@ remain viewable only in history.
 - **Rows & columns** inserts, deletes, hides, resizes, and moves records/columns.
   Hover headers to reveal grab handles and boundary **+** buttons. Moving does
   not require selecting the header first; drag, or tap a handle then a boundary.
+  Native drags scroll continuously near the grid's top/bottom (rows) or left/right
+  (columns), including across virtual row windows. A dashed overlay shows the
+  destination group without changing layout, and stays visible beside the
+  insertion line within a group. Summary targets outline the entire sheet axis,
+  or only the owning table's axis. Drop just inside a group's trailing edge to
+  append; shared nested edges ask which group to join before changing anything.
+  Drop just beyond the edge to remain outside. Cancelling leaves data unchanged.
   Shift-select headers to move multiple rows/columns together. Inserting with
   multiple same-axis headers selected adds the same number in one undoable step.
   Drag header edges to resize; double-click an edge to auto-fit without changing
-  wrapping. Sheet tabs support drag reordering, double-click rename and a
-  right-click command menu.
+  wrapping. Saved row heights are display minimums: wrapped and unwrapped text
+  can grow the row to prevent vertical clipping without rewriting saved heights.
+  Long unwrapped values scroll horizontally inside the cell with hidden
+  scrollbars; sticky headers retain the cell's wrapping.
+  Auto-fit includes nested summary controls and indentation, including
+  values outside the current viewport. Sheet tabs support drag reordering,
+  double-click rename and a right-click command menu.
+  Scrollbars share `--scrollbar-size` (4px), `--scrollbar-color` (RGB channels
+  `0,0,0`), and `--scrollbar-opacity` (`.5`), combined in `--scrollbar-thumb`;
+  existing hidden-scrollbar rules remain. Firefox uses native thin
+  sizing because it does not support exact pixel scrollbar widths.
+  Bottom navigation uses the approved 02 padding/spacing variables on
+  `.sheet-bar`, green/purple nested categories and rounded selection underlines.
+  Add follows the final tab inside the scrolling rail in workbook and DD modes;
+  Settings remains outside it, with the same 4px gap to the first tab as between
+  the final tab and Add. Add and DD share a 32px button box and 18px glyphs. The native scrollbar does
+  not reproduce the prototype's separate overlay padding or inset hit area;
+  no custom scrollbar behavior is added. The conditional right-edge fade is a
+  CSS enhancement for browsers supporting scroll timelines.
   **Fill down** copies formulas with relative/absolute reference handling and
   increments trailing text numbers (`Raisin 1`, `Raisin 2`, ...).
   The selected range's corner handle also supports mouse/touch drag-fill,
@@ -452,10 +497,12 @@ remain viewable only in history.
   stale decisions or changed connection impact block application.
   Manual nutrition, original formula expressions, notes, formats, outlines and
   non-Food validations remain intact; sync is disconnected on application.
-  Ingredients, Convert and Units can remain workbook-only navigation sources:
+  Ingredients and Convert can remain workbook-only navigation sources:
   their existing backing sheets and tables stay intact, while source definitions,
   dropdown choices and bindings remain available. This preference survives DD
   migration and reload; it does not delete or duplicate the underlying records.
+  Convert owns its From/To unit names directly, as in Excel. Supporting imports
+  and conversion editing do not create an additional Units registry.
 - **File > Import Meals and link matching Ingredients** adds the Excel Meals
   sheet without replacing other sheets. The previous Meals table keeps its
   identities under `Meals_PreImport`. Existing Ingredients and conversion tables
@@ -629,7 +676,9 @@ remain viewable only in history.
   have explicit pagination. Case, entire-cell matching, `*`, `?`, escaped
   wildcards and upward/downward Find next are supported. Replace/Replace all are
   undoable and only change literal text, never formula source or linked cells.
-- Top/Bottom, row navigation, and temporary selected-column pinning keep large
+- Bottom places the last row containing an entered value, linked choice or note
+  at the viewport bottom, ignoring formula-only trailing rows. Top, row
+  navigation, and temporary selected-column pinning keep large
   sheets navigable. All rows occupy one continuous scrollable sheet; a bounded
   rendering window keeps large sheets responsive without paging. Column moves
   retain the current vertical and horizontal viewport.

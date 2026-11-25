@@ -4,6 +4,181 @@ const cell=(page:Page,r:number,c:number)=>page.locator(`td[data-r="${r}"][data-c
 async function edit(page:Page,r:number,c:number,value:string){
   await cell(page,r,c).click();await page.getByRole('textbox',{name:'Cell value or formula',exact:true}).fill(value);await page.locator('#formula').press('Enter');
 }
+test('global scrollbars share four-pixel black thumbs while cell scrollbars remain hidden',async({page})=>{
+  await page.goto('/');await expect(cell(page,1,0)).toBeVisible();
+  const styles=await page.evaluate(()=>{
+    const generic=document.createElement('div'),find=document.createElement('div'),tabs=document.createElement('div');
+    generic.style.cssText='width:80px;height:80px;overflow:auto';generic.innerHTML='<div style="width:200px;height:200px"></div>';
+    find.className='find-results-scroll';tabs.className='dropdown-source-tabs';tabs.innerHTML='<div role="tablist"></div>';document.body.append(generic,find,tabs);
+    const appearance=(el:Element)=>({nativeWidth:getComputedStyle(el).scrollbarWidth,width:getComputedStyle(el,'::-webkit-scrollbar').width,height:getComputedStyle(el,'::-webkit-scrollbar').height,thumb:getComputedStyle(el,'::-webkit-scrollbar-thumb').backgroundColor,display:getComputedStyle(el,'::-webkit-scrollbar').display});
+    return{visible:[generic,find,tabs.firstElementChild!,document.querySelector('.toolbar')!].map(appearance),hidden:[document.querySelector('td[data-r="1"][data-c="0"]')!,document.querySelector('td[data-r="1"][data-c="0"] .cell-display')!].map(appearance)};
+  });
+  for(const style of styles.visible){expect(style.nativeWidth).toBe('auto');expect(style.width).toBe('4px');expect(style.height).toBe('4px');expect(style.thumb).toBe('rgba(0, 0, 0, 0.5)');}
+  for(const style of styles.hidden){expect(style.nativeWidth).toBe('none');expect(style.display).toBe('none');expect(style.width).toBe('0px');expect(style.thumb).toBe('rgba(0, 0, 0, 0.5)');}
+});
+test('Bottom aligns the last entered value with the viewport bottom, ignoring formula-only and empty tails',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0];
+      s.cells[`${s.rows[80].id}:${s.columns[1].id}`]={value:0};s.rows[80].height=80;
+      s.cells[`${s.rows[90].id}:${s.columns[1].id}`]={formula:{kind:'literal',value:42}};
+      s.cells[`${s.rows[99].id}:${s.columns[1].id}`]={value:''};
+      await store.save(state.book,state.version,'Synthetic bottom target');
+    }finally{store.close();}
+  });
+  await page.reload();await page.locator('[data-action="bottom"]').click();
+  await expect(cell(page,80,1)).toBeVisible();await expect(cell(page,80,1)).toHaveText('0');
+  const gap=()=>cell(page,80,1).evaluate(td=>{const grid=document.querySelector<HTMLElement>('#grid-scroll')!;return td.closest('tr')!.getBoundingClientRect().bottom-grid.getBoundingClientRect().top-grid.clientTop-grid.clientHeight;});
+  await expect.poll(gap).toBeCloseTo(0,0);
+  await page.locator('[data-action="top"]').click();await expect(cell(page,0,0)).toBeVisible();
+  await page.locator('[data-action="bottom"]').click();await expect.poll(gap).toBeCloseTo(0,0);
+});
+for(const scope of ['sheet','table'] as const)test(`column-divider auto-fit clears dates in nested ${scope} summaries, including offscreen values`,async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const before=await page.evaluate(async scope=>{
+    const storage='/src/storage.ts',dates='/src/dates.ts',{Store}=await import(/* @vite-ignore */storage) as typeof import('../../src/storage'),{excelDate}=await import(/* @vite-ignore */dates) as typeof import('../../src/dates'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0],owner=state.book.tables.find(table=>table.sheet===s.id)!,year=new Date().getFullYear();
+      owner.rows=s.rows.slice(1,96).map(row=>row.id);s.columns[0].width=50;
+      s.groups=[
+        {id:'date-parent',axis:'row',kind:'summary',members:s.rows.slice(2,90).map(row=>row.id),collapsed:false,label:'Date parent',...(scope==='table'?{table:owner.id}:{})},
+        {id:'date-child',axis:'row',kind:'summary',members:s.rows.slice(82,89).map(row=>row.id),collapsed:false,label:'Date child',...(scope==='table'?{table:owner.id}:{})}
+      ];
+      s.cells[`${s.rows[3].id}:${s.columns[0].id}`]={value:excelDate(year-1,11,30)!,format:{number:'date'}};
+      s.cells[`${s.rows[82].id}:${s.columns[0].id}`]={formula:{kind:'literal',value:excelDate(year-2,12,31)!},format:{number:'date',bold:true}};
+      s.cells[`${s.rows[83].id}:${s.columns[0].id}`]={value:excelDate(year,12,31)!,format:{number:'date',italic:true}};
+      for(const i of [3,82,83])s.rows[i].height=27.75;
+      await store.save(state.book,state.version,'Synthetic date auto-fit');return s;
+    }finally{store.close();}
+  },scope);
+  const clipped=async(r:number)=>cell(page,r,0).evaluate(td=>{
+    const display=td.querySelector('.cell-display')!,value=td.querySelector('.cell-value')!,range=document.createRange();range.selectNodeContents(value);
+    return range.getBoundingClientRect().right>display.getBoundingClientRect().right-parseFloat(getComputedStyle(display).paddingRight)+.5;
+  });
+  await page.reload();await expect(cell(page,3,0)).toBeVisible();expect(await clipped(3)).toBe(true);
+  await page.locator('[data-resize-column="0"]').dblclick({position:{x:4,y:24}});await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  expect(await clipped(3)).toBe(false);
+  await page.locator('#row-jump').fill('83');await page.locator('#row-jump').press('Enter');
+  await expect(cell(page,82,0)).toBeVisible();expect(await clipped(82)).toBe(false);expect(await clipped(83)).toBe(false);
+  await page.reload();await expect(cell(page,82,0)).toBeVisible();expect(await clipped(82)).toBe(false);
+  const after=await page.evaluate(async()=>{
+    const storage='/src/storage.ts',{Store}=await import(/* @vite-ignore */storage) as typeof import('../../src/storage'),store=await Store.open();
+    try{return(await store.load())!.book.sheets[0];}finally{store.close();}
+  });
+  expect(after.columns[0].width).toBeGreaterThan(before.columns[0].width!);
+  expect(after.rows).toEqual(before.rows);expect(after.cells).toEqual(before.cells);expect(after.groups).toEqual(before.groups);
+});
+test('table header rows share the regular default height without overriding explicit heights',async({page})=>{
+  await page.goto('/');await expect(cell(page,0,0)).toBeVisible();
+  const height=(r:number)=>cell(page,r,0).evaluate(td=>td.closest('tr')!.getBoundingClientRect().height);
+  expect(await height(0)).toBe(await height(2));expect(await height(0)).toBe(33);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0];s.rows[0].height=45;
+      await store.save(state.book,state.version,'Synthetic explicit header height');
+    }finally{store.close();}
+  });
+  await page.reload();await expect(cell(page,0,0)).toBeVisible();expect(await height(0)).toBe(60);expect(await height(2)).toBe(33);
+});
+test('fixed-height wrapped cells grow without clipping, preserve row formats, and keep summary text clear of controls',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const before=await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0];
+      s.groups=[{id:'fixed-summary',axis:'row',kind:'summary',members:s.rows.slice(2,7).map(r=>r.id),collapsed:false,label:'Fixed summary'}];
+      s.columns[0].width=160;s.columns[1].width=130;
+      for(const i of [2,3,4,5,6])s.rows[i].height=27.75;
+      s.cells[`${s.rows[2].id}:${s.columns[0].id}`]={value:'Summary'};
+      const texts=['First line\nSecond line','A very long wrapped sentence that needs several visual lines in a narrow column.','One\nTwo\nThree\nFour'];
+      texts.forEach((value,i)=>s.cells[`${s.rows[i+3].id}:${s.columns[1].id}`]={value,format:{wrap:true}});
+      s.cells[`${s.rows[6].id}:${s.columns[1].id}`]={value:'No wrap\nKeep the row height',format:{wrap:false}};
+      await store.save(state.book,state.version,'Synthetic fixed wrapped rows');return s;
+    }finally{store.close();}
+  });
+  await page.reload();await expect(cell(page,3,1)).toBeVisible();
+  const geometry=async()=>page.evaluate(()=>{
+    const wrapped=[3,4,5].map(r=>{
+      const display=document.querySelector<HTMLElement>(`td[data-r="${r}"][data-c="1"] .cell-display`)!;
+      const range=document.createRange();range.selectNodeContents(display.querySelector('.cell-value')!);
+      const bounds=display.getBoundingClientRect(),style=getComputedStyle(display),rects=[...range.getClientRects()];
+      return {height:display.closest('tr')!.getBoundingClientRect().height,clipped:rects.some(rect=>rect.bottom>bounds.bottom-parseFloat(style.paddingBottom)+.5)};
+    });
+    const summary=document.querySelector('td[data-r="2"][data-c="0"]')!,button=summary.querySelector('.summary-chevron')!,range=document.createRange();
+    range.selectNodeContents(summary.querySelector('.cell-value')!);
+    return {wrapped,overlap:button.getBoundingClientRect().right>range.getBoundingClientRect().left,nowrapHeight:document.querySelector('td[data-r="6"][data-c="1"]')!.closest('tr')!.getBoundingClientRect().height};
+  });
+  const initial=await geometry();expect(initial.wrapped.every(r=>!r.clipped&&r.height>37)).toBe(true);expect(initial.overlap).toBe(false);expect(initial.nowrapHeight).toBeCloseTo(37,0);
+  await page.locator('#row-jump').fill('70');await page.locator('#row-jump').press('Enter');
+  await page.locator('#row-jump').fill('4');await page.locator('#row-jump').press('Enter');
+  await expect(cell(page,3,1)).toBeVisible();expect(await geometry()).toEqual(initial);
+  const after=await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{return(await store.load())!.book.sheets[0];}finally{store.close();}
+  });
+  expect(after.rows).toEqual(before.rows);expect(after.cells).toEqual(before.cells);expect(after.groups).toEqual(before.groups);
+});
+for(const wrappedHeader of [false,true])test(`short saved rows never clip text, retain horizontal access and sticky wrapping (${wrappedHeader?'wrapped':'unwrapped'} header)`,async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const before=await page.evaluate(async wrappedHeader=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0],table=state.book.tables.find(t=>t.sheet===s.id)!;
+      table.rows=s.rows.slice(1,96).map(row=>row.id);s.columns[1].width=130;s.rows[0].height=6;
+      if(wrappedHeader){
+        table.columns[1].name='A wrapped header\nwith descenders gypqj';
+        s.cells[`${table.header}:${table.columns[1].column}`]={value:table.columns[1].name,format:{wrap:true}};
+      }
+      const cases=[
+        {value:'gypqj \u00e9',format:{wrap:false,bold:true,italic:true,underline:true}},
+        {value:'One line\nAnother gypqj line\nFinal \u00e9 line',format:{wrap:true}},
+        {value:'https://example.invalid/a-very-long-invented-link-with-a-readable-final-segment',format:{wrap:false}},
+        {value:'https://example.invalid/a-very-long-invented-link-with-a-readable-final-segment',format:{wrap:true}},
+        {value:'Keep the taller saved row',format:{wrap:false}}
+      ];
+      cases.forEach((cell,i)=>{s.rows[i+2].height=i===4?60:6;s.cells[`${s.rows[i+2].id}:${s.columns[1].id}`]=cell;});
+      await store.save(state.book,state.version,'Synthetic short cells');return s;
+    }finally{store.close();}
+  },wrappedHeader);
+  await page.reload();await expect(cell(page,2,1)).toBeVisible();
+  const geometry=()=>page.evaluate(()=>{
+    const cells=[2,3,4,5,6].map(r=>{
+      const display=document.querySelector<HTMLElement>(`td[data-r="${r}"][data-c="1"] .cell-display`)!,range=document.createRange();
+      range.selectNodeContents(display.querySelector('.cell-value')!);
+      const bounds=display.getBoundingClientRect(),style=getComputedStyle(display);
+      return{clipped:[...range.getClientRects()].some(rect=>rect.top<bounds.top+parseFloat(style.paddingTop)-.5||rect.bottom>bounds.bottom-parseFloat(style.paddingBottom)+.5),verticalOverflow:display.scrollHeight>display.clientHeight+1,height:display.closest('tr')!.getBoundingClientRect().height};
+    });
+    const display=document.querySelector<HTMLElement>('td[data-r="4"][data-c="1"] .cell-display')!,text=document.createTreeWalker(display.querySelector('.cell-value')!,NodeFilter.SHOW_TEXT).nextNode()!,range=document.createRange();
+    display.scrollLeft=display.scrollWidth;range.setStart(text,text.textContent!.length-1);range.setEnd(text,text.textContent!.length);
+    const end=range.getBoundingClientRect(),bounds=display.getBoundingClientRect();
+    return{cells,nowrap:getComputedStyle(display).whiteSpace,horizontalAccess:display.scrollLeft>0&&end.left>=bounds.left&&end.right<=bounds.right+.5};
+  });
+  const initial=await geometry();expect(initial.cells.every(cell=>!cell.clipped&&!cell.verticalOverflow)).toBe(true);expect(initial.cells[4].height).toBe(80);
+  expect(initial.nowrap).toBe('nowrap');expect(initial.horizontalAccess).toBe(true);
+  const longDisplay=cell(page,4,1).locator('.cell-display');
+  await expect(longDisplay).toHaveCSS('overflow-x','auto');await expect(longDisplay).toHaveCSS('scrollbar-width','none');
+  await longDisplay.evaluate(el=>{el.scrollLeft=0;});await longDisplay.hover();await page.mouse.wheel(1000,0);
+  await expect.poll(()=>longDisplay.evaluate(el=>el.scrollLeft)).toBeGreaterThan(0);
+  await page.locator('#row-jump').fill('70');await page.locator('#row-jump').press('Enter');
+  const header=page.locator('.sticky-table-header[data-column="'+before.columns[1].id+'"]');
+  await expect(header).toBeVisible();await expect(header).toHaveCSS('white-space',wrappedHeader?'pre-wrap':'nowrap');
+  expect(await header.evaluate(el=>{
+    const range=document.createRange();range.selectNodeContents(el);
+    const bounds=el.getBoundingClientRect(),style=getComputedStyle(el);
+    return [...range.getClientRects()].every(rect=>rect.top>=bounds.top+parseFloat(style.paddingTop)-.5&&rect.bottom<=bounds.bottom-parseFloat(style.paddingBottom)+.5);
+  })).toBe(true);
+  await page.locator('#row-jump').fill('3');await page.locator('#row-jump').press('Enter');
+  await expect(cell(page,2,1)).toBeVisible();expect(await geometry()).toEqual(initial);
+  await page.reload();await expect(cell(page,2,1)).toBeVisible();expect(await geometry()).toEqual(initial);
+  const after=await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{return(await store.load())!.book.sheets[0];}finally{store.close();}
+  });
+  expect(after.rows).toEqual(before.rows);expect(after.cells).toEqual(before.cells);
+});
 test('date display adapts by year without changing serials, formulas or text notes',async({page})=>{
   await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
   const serials=await page.evaluate(async()=>{

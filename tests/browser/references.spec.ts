@@ -5,6 +5,71 @@ const dd=async(p:Page,name?:string)=>{await p.locator('[data-action="references"
 async function edit(p:Page,text:string){await p.locator('#formula').fill(text);await p.locator('#formula').press('Enter');}
 async function snapshot(p:Page){await saved(p);return p.evaluate(async()=>{const path='/src/',{Store}=await import(path+'storage.ts') as typeof import('../../src/storage'),s=await Store.open();try{return await s.backup((await s.load())!);}finally{s.close();}});}
 
+test('approved 02 navigation preserves actions, exact spacing, nested styling and native scrolling',async({page})=>{
+  await page.goto('/');await saved(page);
+  const before=await page.evaluate(async()=>{
+    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{createReference,addReferenceValue,setReferencePresentation}=await import(p+'references.ts') as typeof import('../../src/references'),{allSheets}=await import(p+'model.ts') as typeof import('../../src/model'),store=await Store.open();
+    try{
+      const state=(await store.load())!,a=createReference(state.book,'Synthetic first'),b=createReference(state.book,'Synthetic second');
+      addReferenceValue(state.book,a,'First choice');addReferenceValue(state.book,b,'Second choice');
+      setReferencePresentation(state.book,a,'Synthetic first','Preview / Mid / Deep');setReferencePresentation(state.book,b,'Synthetic second','Preview / Mid');
+      await store.save(state.book,state.version,'Synthetic nested tabs');return allSheets(state.book).map(s=>s.cells);
+    }finally{store.close();}
+  });
+  await page.reload();
+  const add=page.locator('.sheet-bar [data-action="new-sheet"]'),toggle=page.locator('.sheet-bar [data-action="references"]');
+  expect(await add.evaluate(el=>el.parentElement!.className)).toBe('tabs');
+  expect(await add.evaluate(el=>el.previousElementSibling!.matches('.sheet-tab,.reference-tab-group'))).toBe(true);
+  expect(await add.evaluate(el=>el.nextElementSibling!.className)).toBe('tab-drop-marker');
+  const size=(locator:ReturnType<Page['locator']>)=>locator.evaluate(el=>{const r=el.getBoundingClientRect();return{width:r.width,height:r.height};});
+  const expectActionGaps=async()=>{
+    const gaps=await page.locator('.sheet-bar').evaluate(bar=>{
+      const rail=bar.querySelector<HTMLElement>('.tabs')!,settings=bar.querySelector('.tab-actions button')!,add=rail.querySelector('.tab-add-action')!,dd=bar.querySelector('.reference-manager')!;
+      rail.scrollLeft=0;
+      return{leading:rail.firstElementChild!.getBoundingClientRect().left-settings.getBoundingClientRect().right,trailing:add.getBoundingClientRect().left-add.previousElementSibling!.getBoundingClientRect().right,dd:dd.getBoundingClientRect().left-rail.getBoundingClientRect().right};
+    });
+    expect(gaps.leading).toBeCloseTo(gaps.trailing,5);expect(gaps.trailing).toBe(4);expect(gaps.dd).toBe(8);
+  };
+  await expectActionGaps();
+  expect(await size(toggle)).toEqual(await size(add));expect(await size(add)).toEqual({width:32,height:32});
+  await page.locator('.sheet-bar [data-action="sheet-settings"]').click();await expect(page.getByRole('dialog')).toContainText('Sheet settings');await page.keyboard.press('Escape');
+  await add.click();await expect(page.getByRole('dialog')).toContainText('New sheet');await page.keyboard.press('Escape');
+  await toggle.click();await page.locator('.sheet-bar button[data-reference]').filter({hasText:/^Synthetic first$/}).click();
+  await expectActionGaps();
+  const root=page.locator('[data-reference-group="Preview"]'),middle=page.locator('[data-reference-group="Preview / Mid"]'),deep=page.locator('[data-reference-group="Preview / Mid / Deep"]'),selected=page.locator('.sheet-bar .sheet-tab.current');
+  for(const category of [root,middle,deep]){
+    await expect(category).toHaveCSS('padding','4px 4px 5px 6px');await expect(category).toHaveCSS('gap','1px');
+    await expect(category).toHaveCSS('line-height','16px');await expect(category).toHaveCSS('font-size','12px');
+  }
+  await expect(selected).toHaveCSS('padding','4px 5px 5px');await expect(selected).toHaveCSS('line-height','14px');await expect(selected).toHaveCSS('border-radius','10px');
+  const styles=await page.evaluate(()=>{
+    const bar=document.querySelector('.sheet-bar')!,current=bar.querySelector('.current')!,deep=bar.querySelector('[data-reference-group="Preview / Mid / Deep"]')!,middle=bar.querySelector('[data-reference-group="Preview / Mid"]')!;
+    const expected=(percent:number)=>{const el=document.createElement('span');el.style.backgroundColor=`color-mix(in srgb,#e4d7ed ${percent}%,white)`;bar.append(el);const color=getComputedStyle(el).backgroundColor;el.remove();return color;};
+    const icon=bar.querySelector('.reference-manager svg')!;
+    return{barPadding:getComputedStyle(bar).padding,groupGap:getComputedStyle(bar.querySelector('.tabs')!).gap,itemGap:getComputedStyle(deep.parentElement!).gap,underline:getComputedStyle(current,'::after').height,deep:getComputedStyle(deep).backgroundColor,expectedDeep:expected(45),middle:getComputedStyle(middle).backgroundColor,expectedMiddle:expected(65),divider:getComputedStyle(deep.parentElement!,'::after').height,trailingDivider:getComputedStyle(bar.querySelector('.tabs')!.lastElementChild!.previousElementSibling!,'::after').content,paths:[...icon.querySelectorAll('path')].map(path=>path.getAttribute('d')),stroke:icon.getAttribute('stroke-width')};
+  });
+  expect(styles.barPadding).toBe('0px 8px');expect(styles.groupGap).toBe('4px');expect(styles.itemGap).toBe('3px');expect(styles.underline).toBe('2.5px');
+  expect(styles.deep).toBe(styles.expectedDeep);expect(styles.middle).toBe(styles.expectedMiddle);expect(styles.divider).toBe('12px');expect(styles.trailingDivider).toBe('none');
+  expect(styles.paths).toEqual(['M7 16H3V4h5a6 6 0 0 1 4.472 2','M9 8h5a6 6 0 0 1 0 12H9Z']);expect(styles.stroke).toBe('1');
+  expect(await size(toggle)).toEqual(await size(page.locator('.sheet-bar [data-action="new-reference"]')));
+  const ddAdd=page.locator('.sheet-bar [data-action="new-reference"]');
+  expect(await ddAdd.evaluate(el=>el.parentElement!.className)).toBe('tabs');
+  expect(await ddAdd.evaluate(el=>el.previousElementSibling!.matches('.sheet-tab,.reference-tab-group'))).toBe(true);
+  await deep.click();await expect(deep).toHaveAttribute('aria-expanded','false');
+  expect(await deep.evaluate(el=>getComputedStyle(el,'::after').height)).toBe('2.5px');
+  await deep.click();await expect(selected).toBeVisible();
+  await page.locator('.sheet-bar [data-action="reference-settings"]').click();await expect(page.getByRole('dialog')).toContainText('Dropdown settings');await page.keyboard.press('Escape');
+  await page.locator('.sheet-bar').evaluate(el=>{(el as HTMLElement).style.width='200px';});
+  const rail=page.locator('.sheet-bar>.tabs');await rail.evaluate(el=>{el.scrollLeft=0;});
+  const fade=()=>page.locator('.sheet-bar').evaluate(el=>getComputedStyle(el,'::after').opacity);
+  await expect.poll(fade).toBe('1');
+  await rail.evaluate(el=>{el.scrollLeft=el.scrollWidth;});await expect.poll(fade).toBe('0');
+  expect(await rail.evaluate(el=>el.scrollLeft)).toBeGreaterThan(0);
+  await expect(ddAdd).toBeVisible();await ddAdd.click();await expect(page.getByRole('dialog')).toContainText('New dropdown list or conversions');await page.keyboard.press('Escape');
+  const after=await page.evaluate(async()=>{const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{allSheets}=await import(p+'model.ts') as typeof import('../../src/model'),store=await Store.open();try{return allSheets((await store.load())!.book).map(s=>s.cells);}finally{store.close();}});
+  expect(after).toEqual(before);
+});
+
 test('DD uses the same grid, maintains duplicate identities and formats across row movement, archive, undo and reload',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();await page.locator('td[data-r="1"][data-c="1"]').click();
   await dd(page);await page.locator('[data-action="new-reference"]').click();await page.locator('#answer').fill('Invented types');await page.getByRole('button',{name:'Create',exact:true}).click();

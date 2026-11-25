@@ -1,6 +1,5 @@
 import { compile,type Ast } from './formula';
 import { allTables,allSheets, clone,key,mapAst,uid,type Named,type ReferenceSource,type Sheet,type Workbook } from './model';
-import { addReferenceValue,referenceChoices,unitsSource } from './references';
 import { validateBook } from './storage';
 import { dropdownCatalog,matchesDropdownCatalog } from './dropdown-catalog';
 import {migrateDropdownData} from './dd-storage';
@@ -129,16 +128,6 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
   const deferredNames:Named[]=source.names.filter(n=>n.sheet&&['MealDD','IngredientDD'].includes(n.name)).map(n=>({...clone(n),formula:remapAst(n.formula)}));
   const derived:ReferenceSource={id:uid(),name:'MealDD',kind:'derived',archivedRows:[],origin:{original,definition:anchor[1].original},derived:{table:nodes[0].table,column:nodes[0].columns[0],filter:{column:nodes[1].columns[0],value:true}},anchor:{sheet:to.id,row:remap(r),column:remap(c)},nameId:name?remap(name.id):undefined,deferredNames};
   book.references.push(derived);
-  const unitList=unitsSource(book),units=new Map(referenceChoices(book,unitList,true).map(choice=>[choice.value,choice.binding]));
-  for(const ref of book.references.filter(ref=>ref.kind==='conversions'&&ref.origin?.original===original)){
-    const table=allTables(book).find(t=>t.id===ref.table)!,sheet=allSheets(book).find(s=>s.id===table.sheet)!;
-    for(const row of table.rows)for(const id of[ref.conversion!.from,ref.conversion!.to]){
-      const column=table.columns.find(c=>c.id===id)!.column,cell=sheet.cells[key(row,column)],label=cell?.value;
-      if(typeof label!=='string'||!label)continue;
-      if(!units.has(label)){const record=addReferenceValue(book,unitList,label);units.set(label,{table:unitList.table!,row:record,column:unitList.column!});}
-      sheet.cells[key(row,column)]={...cell,value:undefined,binding:units.get(label)};
-    }
-  }
   for(const s of allSheets(book))for(const v of s.validations)if(v.originalSource){
     // Rebind only named/table auxiliary sources from the byte-verified original.
     if(!known)continue;
@@ -148,11 +137,6 @@ export function mergeReferences(current:Workbook,source:Workbook,original:string
       return n;
     });
     v.source=JSON.stringify(remapAst(ast));
-  }
-  for(const table of allTables(book)){
-    for(const column of table.columns.filter(c=>['Unit','Conversion Unit'].includes(c.name))){
-      book.pickerSources[`${table.sheet}:${column.column}`]??=`${unitList.table}:${unitList.column}`;
-    }
   }
   book.revision++;validateBook(book);
   return{book:current.dropdownData?migrateDropdownData(book).book:book,changed:true,counts,derivedUnavailable:!allTables(book).some(t=>t.id===derived.derived!.table)};

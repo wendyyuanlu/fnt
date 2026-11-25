@@ -7,6 +7,12 @@ Use 14px by 14px glyphs for row/column header icons and 18px by 18px glyphs for 
 Reuse shared header and toolbar styles rather than adding per-icon size, stroke, or color overrides. Button hit areas can differ for their layout or touch target independently of the glyph size.
 
 Every toolbar button, including new group controls, must reuse `.icon-button` styling.
+The summary-group split control uses `toolbarIcon('add')` at 14px by 14px on
+its right side, matching the shared chevron glyph size.
+Use the shared toggle tokens for the whole split control's active styling.
+Enable its plus action only while the summary toggle is on, retaining the
+standard disabled opacity. Reuse the table-selection split divider; do not add
+a permanently bordered outer shell. Plus and caret SVGs share their sizing rule.
 
 All `span.format-caret` chevrons reuse `dropdownArrowHtml` from
 `src/dropdown-ui.ts`, rendered at 14px by 14px. Keep its existing `0 0 12 12`

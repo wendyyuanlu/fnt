@@ -14,6 +14,44 @@ async function manager(page:Page):Promise<void>{
   await page.getByRole('button',{name:'Manage groups',exact:true}).click();
 }
 
+test('scrolling tagged summary rows reuses hypothetical membership and keeps toolbar state current',async({page})=>{
+  await meals(page);
+  await page.evaluate(async()=>{
+    const storage='/src/storage.ts',{Store}=await import(/* @vite-ignore */storage) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets.find(s=>s.name==='Meals')!;
+      for(const group of s.groups){delete group.table;group.collapsed=true;}
+      for(const group of s.groups.filter(group=>group.axis==='row'&&group.kind==='summary').slice(0,100))s.rows.find(row=>row.id===group.members[0])!.hypothetical=true;
+      await store.save(state.book,state.version,'Synthetic tagged summary scrolling');
+    }finally{store.close();}
+  });
+  await page.reload();const scope=page.locator('.corner [data-action="table-selection"]');if(await scope.getAttribute('aria-pressed')==='true')await scope.click();
+  const first=await page.locator('tbody .summary-chevron').first().evaluate(el=>el.closest('tr')!.dataset.row!);
+  await page.locator(`[data-row-select="${first}"] .row-index`).click();
+  const tag=page.locator('[data-action="hypothetical"]');await expect(tag).toHaveAttribute('aria-pressed','true');
+  await expect(page.locator('td.hypothetical-cell').first()).toBeVisible();
+  const timings=await page.evaluate(async()=>{
+    const grid=document.querySelector<HTMLElement>('#grid-scroll')!,samples:number[]=[];
+    for(const top of [99,0,99,0,99,0]){
+      const start=performance.now();
+      await new Promise<void>((resolve,reject)=>{
+        const timer=setTimeout(()=>{observer.disconnect();reject(Error('No virtual row redraw.'));},2000);
+        const observer=new MutationObserver(records=>{
+          if(!records.some(record=>record.target===grid.querySelector('tbody')))return;
+          observer.disconnect();clearTimeout(timer);resolve();
+        });
+        observer.observe(grid,{childList:true,subtree:true});grid.scrollTop=top;
+      });
+      samples.push(performance.now()-start);await new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));
+    }
+    return samples;
+  });
+  await test.info().attach('hypothetical-scroll-timings',{body:JSON.stringify(timings),contentType:'application/json'});
+  expect([...timings].sort((a,b)=>a-b)[Math.floor(timings.length/2)]).toBeLessThan(150);
+  await expect(tag).toHaveAttribute('aria-pressed','true');
+  await page.locator('td[data-r="0"][data-c="0"]').click();await expect(tag).toHaveAttribute('aria-pressed','false');
+});
+
 test('group manager browses all cards lazily, saves scoped groups, and retains Undo after reload',async({page})=>{
   const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
   await meals(page);

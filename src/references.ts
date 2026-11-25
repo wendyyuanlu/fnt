@@ -1,5 +1,5 @@
 import { compare,compile,displayFormula,Engine,flatten,scalar,type Ast } from './formula';
-import { allTables,allSheets, addRow,blankSheet,clone,deleteRows,duplicateSheet,getCell,isFault,key,mapAst,move,moveRows,setInput,uid,uniqueName,type Cell,type ReferenceSource,type Scalar,type Sheet,type Table,type Validation,type Workbook } from './model';
+import { allTables,allSheets, addRow,blankSheet,clone,deleteRows,duplicateSheet,getCell,isFault,key,mapAst,move,moveRows,replaceTables,setInput,uid,uniqueName,type Cell,type ReferenceSource,type Scalar,type Sheet,type Table,type Validation,type Workbook } from './model';
 import {editTableAxis} from './table-operations';
 
 export interface ReferenceChoice {row:string;value:string;binding:{table:string;row:string;column:string}}
@@ -338,9 +338,32 @@ export function referenceFormula(source:ReferenceSource):Ast{
 export function unitsSource(book:Workbook):ReferenceSource{
   return book.references?.find(s=>s.kind==='units'&&!s.archived)??createReference(book,uniqueName((book.references??[]).map(s=>s.name),'Units'),'units');
 }
+export function removeUnitsSource(book:Workbook,source:ReferenceSource):number{
+  if(source.kind!=='units'||!book.references?.some(ref=>ref.id===source.id))throw Error('Choose an existing Units source.');
+  const usage=referenceUsages(book,source),{table,sheet}=referenceTable(book,source);
+  if(usage.formulas||usage.dropdowns)throw Error('Units is still used by formulas or dropdowns. Update those references before removing it.');
+  if(book.references.some(ref=>ref.id!==source.id&&(ref.table===table.id||ref.derived?.table===table.id)))throw Error('Another dropdown source uses this table.');
+  const rows=new Set([table.header,...table.rows]),columns=new Set(table.columns.map(field=>field.column));
+  if(allTables(book).some(other=>other.id!==table.id&&other.sheet===sheet.id&&[other.header,...other.rows].some(row=>rows.has(row))&&other.columns.some(field=>columns.has(field.column))))throw Error('Another table shares Units cells.');
+  if(Object.entries(sheet.cells).some(([address,cell])=>{const[row,column]=address.split(':');return rows.has(row)&&columns.has(column)&&(cell.note||cell.link);}))throw Error('Units contains notes or links. Preserve them before removing it.');
+  const engine=new Engine(book),changes:{sheet:Sheet;address:string;cell:Cell;value:string}[]=[];
+  for(const owner of allSheets(book))for(const[address,cell]of Object.entries(owner.cells))if(cell.binding?.table===table.id){
+    const[row,column]=address.split(':'),value=scalar(engine.cell(owner.id,row,column));
+    if(cell.formula||cell.calculation||typeof value!=='string'||!value.trim())throw Error('A Units link cannot be safely converted to text. Nothing was changed.');
+    changes.push({sheet:owner,address,cell,value});
+  }
+  for(const change of changes){const cell={...change.cell,value:change.value};delete cell.binding;change.sheet.cells[change.address]=cell;}
+  for(const row of rows)for(const column of columns)delete sheet.cells[key(row,column)];
+  replaceTables(book,allTables(book).filter(other=>other.id!==table.id));
+  book.references=book.references.filter(ref=>ref.id!==source.id);
+  for(const[address,value]of Object.entries(book.pickerSources))if(value===source.id||value.startsWith(table.id+':'))delete book.pickerSources[address];
+  if(book.tableActivity)delete book.tableActivity[table.id];
+  return changes.length;
+}
 export function upsertConversion(book:Workbook,source:ReferenceSource,row:string|undefined,from:string,to:string,factorText:string,confirmed=false):string{
-  const units=unitsSource(book),choices=referenceChoices(book,units,true),a=choices.find(o=>o.row===from),b=choices.find(o=>o.row===to);
-  if(!a||!b)throw Error('Choose explicit named unit identities.');
+  const units=book.references?.find(s=>s.kind==='units'&&!s.archived),choices=units?referenceChoices(book,units,true):[];
+  const a=units?choices.find(o=>o.row===from):{value:from.trim(),binding:undefined},b=units?choices.find(o=>o.row===to):{value:to.trim(),binding:undefined};
+  if(!a?.value||!b?.value)throw Error('Choose nonempty unit names.');
   const {table,sheet}=referenceTable(book,source),roles=source.conversion;
   if(source.kind!=='conversions'||!roles||row&&!table.rows.includes(row))throw Error('Choose an existing conversion source and rule.');
   const fields={from:table.columns.find(c=>c.id===roles.from),to:table.columns.find(c=>c.id===roles.to),factor:table.columns.find(c=>c.id===roles.factor)};
@@ -357,7 +380,7 @@ export function upsertConversion(book:Workbook,source:ReferenceSource,row:string
     if(changed&&(usages.formulas||usages.linked))throw Error(`Confirm conversion change: ${usages.formulas} formula/source and ${usages.linked} linked cell usages may recalculate, including historical records. No values are frozen automatically.`);
   }
   if(!row){const at=Math.max(sheet.rows.findIndex(r=>r.id===table.header),...table.rows.map(id=>sheet.rows.findIndex(r=>r.id===id)))+1;row=addRow(book,sheet,at,table).id;}
-  for(const [field,choice]of [[fields.from,a],[fields.to,b]] as const)sheet.cells[key(row,field.column)]={...getCell(sheet,row,field.column),value:undefined,formula:undefined,binding:choice.binding};
+  for(const [field,choice]of [[fields.from,a],[fields.to,b]] as const)sheet.cells[key(row,field.column)]={...getCell(sheet,row,field.column),value:choice.binding?undefined:choice.value,formula:undefined,binding:choice.binding};
   setInput(book,sheet,row,fields.factor.column,factorText);
   return row;
 }

@@ -64,6 +64,70 @@ test('hiding a selected hypo row preserves the nearby viewport through hide and 
   await page.locator('[data-action="hypothetical-visibility"]').click();
   await expect.poll(topRow).toBe('4001');
 });
+test('a stationary row drag scrolls beyond the original virtual window in both directions and drops with Undo',async({page,isMobile})=>{
+  test.skip(isMobile,'Native HTML dragging is desktop-only; mobile retains tap-then-destination moves.');
+  await openLongSheet(page);const grid=page.locator('#grid-scroll');await grid.evaluate(el=>{el.scrollTop=33*300;});
+  const read=()=>page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();
+    try{return(await store.load()).book.sheets[0];}finally{store.close();}
+  });
+  const before=await read(),source=before.rows[310].id;
+  await page.locator('[data-row-select="310"] .row-index').click();
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  const sourceHandle=page.locator('[data-move-row="310"]');await expect(sourceHandle).toBeVisible();
+  const handle=await sourceHandle.evaluate(el=>el.getBoundingClientRect().toJSON()),bounds=(await grid.boundingBox())!,start=await grid.evaluate(el=>el.scrollTop);
+  await page.mouse.move(handle.x+handle.width/2,handle.y+handle.height/2);await page.mouse.down();
+  await page.mouse.move(handle.x+handle.width/2+12,handle.y+handle.height/2+4,{steps:4});
+  await page.mouse.move(bounds.x+90,bounds.y+bounds.height-6,{steps:5});
+  await expect.poll(()=>grid.evaluate(el=>el.scrollTop)).toBeGreaterThan(start+500);
+  const down=await grid.evaluate(el=>el.scrollTop);
+  await page.mouse.move(bounds.x+90,bounds.y+6,{steps:5});
+  await expect.poll(()=>grid.evaluate(el=>el.scrollTop)).toBeLessThan(down-350);
+  await page.mouse.move(bounds.x+90,bounds.y+bounds.height/2,{steps:5});await page.mouse.up();
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await expect.poll(async()=>(await read()).rows.findIndex((row:{id:string})=>row.id===source)).not.toBe(310);
+  expect((await read()).cells).toEqual(before.cells);
+  await page.getByRole('button',{name:'Undo',exact:true}).click();await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  expect((await read()).rows).toEqual(before.rows);expect((await read()).cells).toEqual(before.cells);
+});
+test('column dragging auto-scrolls left and right and pauses away from edges',async({page,isMobile})=>{
+  test.skip(isMobile,'Native HTML dragging is desktop-only.');
+  await openLongSheet(page);const grid=page.locator('#grid-scroll');await grid.evaluate(el=>{el.scrollLeft=200;});
+  await page.locator('th[data-col="3"] .column-index').click();
+  const handle=(await page.locator('[data-move-column="3"]').boundingBox())!,bounds=(await grid.boundingBox())!,start=await grid.evaluate(el=>el.scrollLeft);
+  await page.mouse.move(handle.x+handle.width/2,handle.y+handle.height/2);await page.mouse.down();
+  await page.mouse.move(handle.x+handle.width/2+12,handle.y+handle.height/2+4,{steps:4});
+  await page.mouse.move(bounds.x+bounds.width-6,bounds.y+15,{steps:5});
+  await expect.poll(()=>grid.evaluate(el=>el.scrollLeft)).toBeGreaterThan(start+400);
+  const right=await grid.evaluate(el=>el.scrollLeft);
+  await page.mouse.move(bounds.x+6,bounds.y+15,{steps:5});
+  await expect.poll(()=>grid.evaluate(el=>el.scrollLeft)).toBeLessThan(right-300);
+  await page.mouse.move(bounds.x+bounds.width/2,bounds.y+15,{steps:5});await page.waitForTimeout(100);
+  const paused=await grid.evaluate(el=>el.scrollLeft);await page.waitForTimeout(150);expect(await grid.evaluate(el=>el.scrollLeft)).toBe(paused);
+  await page.mouse.move(bounds.x+bounds.width-6,bounds.y+15,{steps:5});
+  await expect.poll(()=>grid.evaluate(el=>el.scrollLeft)).toBeGreaterThan(paused+100);
+  await page.keyboard.press('Escape');await page.mouse.up();
+});
+test('application edge scrolling continues without repeated dragover events and cancels on both axes',async({page})=>{
+  await openLongSheet(page);const grid=page.locator('#grid-scroll');
+  await page.evaluate(()=>document.fonts.ready);
+  for(const axis of ['row','column'] as const){
+    await grid.evaluate(el=>{el.scrollTop=33*300;el.scrollLeft=0;});await page.waitForTimeout(100);
+    await page.locator(axis==='row'?'[data-row-select="310"] .row-index':'th[data-col="3"] .column-index').click();
+    const start=await grid.evaluate((el,axis)=>axis==='row'?el.scrollTop:el.scrollLeft,axis);
+    await page.evaluate(axis=>{
+      const grid=document.querySelector<HTMLElement>('#grid-scroll')!,source=document.querySelector<HTMLElement>(axis==='row'?'[data-move-row="310"]':'[data-move-column="3"]')!;
+      const transfer=new DataTransfer();source.dispatchEvent(new DragEvent('dragstart',{bubbles:true,dataTransfer:transfer}));
+      const bounds=grid.getBoundingClientRect();grid.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:transfer,clientX:axis==='row'?bounds.left+90:bounds.right-6,clientY:axis==='row'?bounds.bottom-6:bounds.top+15}));
+      grid.addEventListener('dragend',()=>source.dispatchEvent(new DragEvent('dragend')),{once:true});
+    },axis);
+    await expect.poll(()=>grid.evaluate((el,axis)=>axis==='row'?el.scrollTop:el.scrollLeft,axis)).toBeGreaterThan(start+150);
+    await page.keyboard.press('Escape');await grid.dispatchEvent('dragend');await page.waitForTimeout(50);
+    const stopped=await grid.evaluate((el,axis)=>axis==='row'?el.scrollTop:el.scrollLeft,axis);
+    await page.waitForTimeout(150);expect(await grid.evaluate((el,axis)=>axis==='row'?el.scrollTop:el.scrollLeft,axis)).toBe(stopped);
+    await expect(page.locator('.grid.rearranging')).toHaveCount(0);
+  }
+});
 test('column drag/tap moves, pinning and undo retain the actual mid-sheet viewport rather than revealing the selection end',async({page,isMobile})=>{
   await openLongSheet(page);const scroller=page.locator('#grid-scroll');
   const position=()=>scroller.evaluate(el=>{

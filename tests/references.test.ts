@@ -1,6 +1,6 @@
 import { expect,it } from 'vitest';
 import { compile,Engine } from '../src/formula';
-import { addReferenceValue,createReference,duplicateReference,moveReferenceGroup,moveReferenceValue,referenceChoices,referenceFormula,referenceNavigation,referenceTable,referenceUsages,removeReferenceValue,renameReferenceGroup,renameReferenceValue,reorderReferenceSelection,reorderReferenceTabs,setDerivedSource,setReferencePresentation,unitsSource,upsertConversion,validationChoiceGroups,validationChoices,validationReference } from '../src/references';
+import { addReferenceValue,createReference,duplicateReference,moveReferenceGroup,moveReferenceValue,referenceChoices,referenceFormula,referenceNavigation,referenceTable,referenceUsages,removeReferenceValue,removeUnitsSource,renameReferenceGroup,renameReferenceValue,reorderReferenceSelection,reorderReferenceTabs,setDerivedSource,setReferencePresentation,unitsSource,upsertConversion,validationChoiceGroups,validationChoices,validationReference } from '../src/references';
 import { mergeReferences } from '../src/references-import';
 import { addRow,blankSheet,clone,createDemo,key,setInput,uid,type Workbook } from '../src/model';
 import { validateBook } from '../src/storage';
@@ -21,6 +21,44 @@ function source(){
   b.names.push({id:uid(),name:'MealDD',context:derived.id,original,formula:compile(original,b,derived.id,derived.rows[0].id,derived.columns[0].id)},{id:uid(),name:'MealDD',sheet:meals.id,context:meals.id,original,formula:compile(original,b,meals.id,meals.rows[0].id,meals.columns[0].id)});
   return b;
 }
+function legacyUnits(book:Workbook){
+  const units=unitsSource(book),rule=book.references!.find(s=>s.kind==='conversions')!,{table,sheet}=referenceTable(book,rule);
+  for(const field of table.columns.slice(0,2)){
+    const address=key(table.rows[0],field.column),cell=sheet.cells[address],row=addReferenceValue(book,units,String(cell.value));
+    sheet.cells[address]={...cell,value:undefined,binding:{table:units.table!,column:units.column!,row}};
+  }
+  return units;
+}
+it('imports Convert labels directly and edits conversion rules without creating Units',()=>{
+  const b=mergeReferences(createDemo(),source(),'invented-original').book,rule=b.references!.find(s=>s.kind==='conversions')!,{table,sheet}=referenceTable(b,rule);
+  expect(b.references!.some(s=>s.kind==='units')).toBe(false);
+  expect(table.columns.slice(0,2).map(field=>sheet.cells[key(table.rows[0],field.column)])).toEqual([{value:'tbsp'},{value:'tsp'}]);
+  upsertConversion(b,rule,table.rows[0],'tbsp','tsp','6',true);
+  expect(new Engine(b).cell(sheet.id,table.rows[0],table.columns[2].column)).toBe(6);
+  expect(b.references!.some(s=>s.kind==='units')).toBe(false);
+});
+it('removes legacy Units while preserving current labels, Convert identities, formulas and formats',()=>{
+  const b=mergeReferences(createDemo(),source(),'invented-original').book,units=legacyUnits(b),rule=b.references!.find(s=>s.kind==='conversions')!,{table,sheet}=referenceTable(b,rule);
+  const from=referenceChoices(b,units).find(choice=>choice.value==='tbsp')!;
+  renameReferenceValue(b,units,from.row,'Spoon');
+  const address=key(table.rows[0],table.columns[0].column);sheet.cells[address].format={bold:true,wrap:false};
+  const notes=b.sheets[3];setInput(b,notes,notes.rows[1].id,notes.columns[1].id,'=XLOOKUP("Spoon",Convert[From Unit],Convert[Conversion Factor],0)');
+  const formula=clone(notes.cells[key(notes.rows[1].id,notes.columns[1].id)]),identity=clone(table);
+  expect(removeUnitsSource(b,units)).toBe(2);
+  expect(b.references!.some(ref=>ref.kind==='units')).toBe(false);expect(b.tables.some(t=>t.id===units.table)).toBe(false);
+  expect(table).toEqual(identity);expect(sheet.cells[address]).toEqual({value:'Spoon',format:{bold:true,wrap:false}});
+  expect(notes.cells[key(notes.rows[1].id,notes.columns[1].id)]).toEqual(formula);
+  expect(new Engine(b).cell(notes.id,notes.rows[1].id,notes.columns[1].id)).toBe(3);
+  expect(()=>validateBook(b)).not.toThrow();
+});
+it('refuses Units removal atomically when formulas or unresolved bindings still use it',()=>{
+  const b=mergeReferences(createDemo(),source(),'invented-original').book,units=legacyUnits(b),notes=b.sheets[3];
+  notes.cells[key(notes.rows[1].id,notes.columns[1].id)]={formula:referenceFormula(units)};
+  let before=clone(b);expect(()=>removeUnitsSource(b,units)).toThrow('formulas');expect(b).toEqual(before);
+  delete notes.cells[key(notes.rows[1].id,notes.columns[1].id)];
+  notes.cells[key(notes.rows[2].id,notes.columns[1].id)]={binding:{table:units.table!,column:units.column!,row:uid()}};
+  before=clone(b);expect(()=>removeUnitsSource(b,units)).toThrow('safely');expect(b).toEqual(before);
+});
 it('table-local DD replacement preserves shared rows, exact links and archived option identities',()=>{
   const b=createDemo(),source=createReference(b,'Synthetic local options');
   const first=addReferenceValue(b,source,'Synthetic first option'),replacement=addReferenceValue(b,source,'Synthetic replacement'),archived=addReferenceValue(b,source,'Synthetic archived');
@@ -187,7 +225,7 @@ it('later original supporting import reuses bundled catalogs and keeps edited/ar
   renameReferenceValue(before,ref,choice.row,'Edited category');ref.archivedRows.push(choice.row);
   const log=before.sheets[0];log.cells[key(log.rows[2].id,log.columns[0].id)]={binding:choice.binding};
   const copied=clone(before),merged=mergeReferences(before,incoming,'original-package').book;
-  expect(merged.references).toHaveLength(10);
+  expect(merged.references).toHaveLength(9);
   expect(merged.references!.find(r=>r.id===ref.id)?.archivedRows).toEqual([choice.row]);
   expect(new Engine(merged).cell(log.id,log.rows[2].id,log.columns[0].id)).toBe('Edited category');
   for(const t of copied.tables)expect(merged.tables.find(table=>table.id===t.id)).toEqual(t);
@@ -198,7 +236,7 @@ it('imports auxiliary records only, hides supporting presentation, preserves mis
   const before=createDemo(),original=clone(before),incoming=source(),merged=mergeReferences(before,incoming,'invented-original'),b=merged.book;
   expect(before).toEqual(original);expect(merged.counts.map(t=>t.rows)).toEqual([2,2,2,2,2,2,2,1]);expect(merged.derivedUnavailable).toBe(true);
   expect(b.sheets.find(s=>s.id===before.sheets[1].id)).toEqual(before.sheets[1]);
-  expect(b.sheets.filter(s=>s.supporting).map(s=>s.name)).toEqual(['Dropdowns','Convert','MealDD','Lists']);
+  expect(b.sheets.filter(s=>s.supporting).map(s=>s.name)).toEqual(['Dropdowns','Convert','MealDD']);
   const derived=b.references!.find(s=>s.kind==='derived')!;expect(()=>referenceChoices(b,derived)).toThrow('Original derived source unavailable');
   expect(derived.deferredNames).toHaveLength(1);expect(b.tables.filter(t=>t.name==='Meals')).toHaveLength(1);
   expect(mergeReferences(b,source(),'invented-original',true)).toMatchObject({changed:false});
@@ -219,7 +257,7 @@ it('keeps linked options distinct through duplicate labels, rename, reorder and 
   removeReferenceValue(b,ref,c,a);expect(new Engine(b).cell(log.id,r,col)).toBe('Same label');
 });
 it('shares unit identities with conversion rules and requires an explicit impact confirmation for factor changes',()=>{
-  const b=mergeReferences(createDemo(),source(),'invented-original').book,units=unitsSource(b),rule=b.references!.find(s=>s.kind==='conversions')!,choices=referenceChoices(b,units),from=choices.find(o=>o.value==='tbsp')!,to=choices.find(o=>o.value==='tsp')!,{table,sheet}=referenceTable(b,rule),row=table.rows[0];
+  const b=mergeReferences(createDemo(),source(),'invented-original').book,units=legacyUnits(b),rule=b.references!.find(s=>s.kind==='conversions')!,choices=referenceChoices(b,units),from=choices.find(o=>o.value==='tbsp')!,to=choices.find(o=>o.value==='tsp')!,{table,sheet}=referenceTable(b,rule),row=table.rows[0];
   renameReferenceValue(b,units,from.row,'Spoon');
   expect(new Engine(b).cell(sheet.id,row,table.columns[0].column)).toBe('Spoon');
   const notes=b.sheets[3];setInput(b,notes,notes.rows[1].id,notes.columns[1].id,'=SUM(Convert[Conversion Factor])');
@@ -249,7 +287,7 @@ it('reuses verified legacy Ingredients dependencies without replacing formats, b
   expect(()=>mergeReferences(formatted,incoming,'legacy-original',true)).toThrow('not overwritten');
 });
 it('persists authored factor formula changes even when their current result is equal, and refuses nonformula expressions',()=>{
-  const b=mergeReferences(createDemo(),source(),'invented-original').book,units=unitsSource(b),rule=b.references!.find(s=>s.kind==='conversions')!,choices=referenceChoices(b,units),{table,sheet}=referenceTable(b,rule),row=table.rows[0],from=choices.find(o=>o.value==='tbsp')!,to=choices.find(o=>o.value==='tsp')!,factor=table.columns[2].column;
+  const b=mergeReferences(createDemo(),source(),'invented-original').book,units=legacyUnits(b),rule=b.references!.find(s=>s.kind==='conversions')!,choices=referenceChoices(b,units),{table,sheet}=referenceTable(b,rule),row=table.rows[0],from=choices.find(o=>o.value==='tbsp')!,to=choices.find(o=>o.value==='tsp')!,factor=table.columns[2].column;
   upsertConversion(b,rule,row,from.row,to.row,'=1+2',true);expect(new Engine(b).cell(sheet.id,row,factor)).toBe(3);
   upsertConversion(b,rule,row,from.row,to.row,'3',true);expect(sheet.cells[key(row,factor)].formula).toBeUndefined();expect(sheet.cells[key(row,factor)].value).toBe(3);
   expect(()=>upsertConversion(b,rule,row,from.row,to.row,'1+2',true)).toThrow('start a formula');

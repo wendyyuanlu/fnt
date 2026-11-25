@@ -37,7 +37,7 @@ export function mountToolbar(toolbar:HTMLElement,host:ToolbarHost):()=>void{
   groups.forEach(group=>group.remove());
   toolbar.classList.toggle('arranging-toolbar',host.editing);
   if(!host.editing)return()=>{};
-  for(const tool of tools){tool.draggable=false;if(tool instanceof HTMLButtonElement||tool instanceof HTMLSelectElement)tool.disabled=false;tool.title='Drag selected tools; Shift-click a range, Ctrl/Cmd-click to toggle; Alt+Left/Right to move';}
+  for(const tool of tools){tool.draggable=false;if(tool instanceof HTMLButtonElement||tool instanceof HTMLSelectElement)tool.disabled=false;if(tool.classList.contains('toolbar-split'))tool.tabIndex=0;tool.querySelectorAll<HTMLButtonElement|HTMLSelectElement>('button,select').forEach(control=>control.disabled=false);tool.title='Drag selected tools; Shift-click a range, Ctrl/Cmd-click to toggle; Alt+Left/Right to move';}
   const controller=new AbortController(),options={signal:controller.signal};
   const visible=()=>order.filter(id=>!identities.get(id)!.hidden);
   const selection=host.selection;

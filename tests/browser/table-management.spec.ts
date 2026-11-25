@@ -164,7 +164,7 @@ test('create-table errors stay editable and overlapping tables or cancel leave e
   await page.locator('#table-name').fill('Retry_Table');await page.getByRole('button',{name:'Create table',exact:true}).click();const before=await snapshot(page);
   await page.keyboard.press('Control+t');await page.locator('#table-name').fill('Overlap_Table');await page.getByRole('button',{name:'Create table',exact:true}).click();
   await expect(page.locator('#table-create-error')).toContainText('overlap');await page.keyboard.press('Escape');expect(await snapshot(page)).toEqual(before);
-  await page.getByRole('button',{name:'Collapse Recovery group rows',exact:true}).click();
+  await page.getByRole('button',{name:'Collapse (blank) rows',exact:true}).click();
   expect((await snapshot(page)).sheets.find(sheet=>sheet.name==='Table lab')!.groups.find(group=>group.id==='recovery-group')!.collapsed).toBe(true);
 });
 
