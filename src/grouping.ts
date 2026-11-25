@@ -1,4 +1,4 @@
-import { allSheets,allTables,outlineMembers,summaryMoveMembers,type Group,type Sheet,type Workbook} from './model';
+import { allSheets,allTables,outlineMembers,setHypotheticalTag,summaryMoveMembers,type Group,type Sheet,type Workbook} from './model';
 
 const memberships=new WeakMap<ReturnType<typeof allTables>[number],{signature:string;value:{owner:ReturnType<typeof allTables>[number];rows:Set<string>;columns:Set<string>;hiddenRows:Set<string>;hiddenColumns:Set<string>}}>();
 export function tableGroupMembership(book:Workbook,sheet:Sheet){
@@ -69,6 +69,33 @@ export function groupContainsCell(book:Workbook,sheet:Sheet,group:Pick<Group,'ta
   if(!group.table)return true;
   const table=allTables(book).find(t=>t.id===group.table&&t.sheet===sheet.id);
   return!!table&&(table.header===row||table.rows.includes(row))&&table.columns.some(c=>c.column===column);
+}
+export function joinPrecedingGroups(book:Workbook,sheet:Sheet,axis:Group['axis'],ids:string[],table?:string,previous?:string):number{
+  const items=axis==='row'?sheet.rows:sheet.columns,positions=new Map(items.map((item,i)=>[item.id,i])),chosen=new Set(ids);
+  if(!ids.length||chosen.size!==ids.length||ids.some(id=>!positions.has(id)))throw Error('Select existing row or column headers to add to a group.');
+  const owner=table?allTables(book).find(owner=>owner.id===table&&owner.sheet===sheet.id):undefined;
+  if(table&&(!owner||ids.some(id=>!(axis==='row'?owner.rows:owner.columns.map(field=>field.column)).includes(id))))throw Error('Add only members of the selected table to its groups.');
+  const first=ids.reduce((first,id)=>Math.min(first,positions.get(id)!),items.length);
+  previous??=items[first-1]?.id;
+  const groups=sheet.groups.filter(group=>group.table===table&&group.axis===axis);
+  const coverage=(group:Group)=>new Set(group.kind==='summary'?summaryMoveMembers({...sheet,groups},axis,group.members,table):outlineMembers(group,groups));
+  const targets=previous&&!chosen.has(previous)?groups.filter(group=>coverage(group).has(previous!)):[];
+  if(!targets.length)throw Error(`There is no plain or summary group immediately ${axis==='row'?'above':'to the left of'} the selection.`);
+  const projection=table?hypotheticalProjection(book,sheet,axis):undefined,global=hypotheticalMembers(sheet,axis);
+  const tagged=(id:string)=>owner&&projection?(axis==='row'?projection(id,owner.columns[0].column):projection(owner.header,id)):global.has(id);
+  const summaryTag=targets.some(group=>group.kind==='summary'&&tagged(group.members[0]));
+  const plainTag=targets.some(group=>group.kind!=='summary'&&[...coverage(group)].every(tagged));
+  const joining=new Set(summaryMoveMembers({...sheet,groups},axis,ids,table));
+  if(targets.some(group=>group.kind==='summary'&&joining.has(group.members[0])))throw Error('A summary cannot be added to itself or one of its descendants.');
+  if(owner&&[...joining].some(id=>!(axis==='row'?owner.rows:owner.columns.map(field=>field.column)).includes(id)))throw Error('The selected summary contains members outside this table.');
+  for(const group of targets){
+    const members=new Set([...group.members,...joining]),header=group.kind==='summary'?group.members[0]:undefined;
+    group.members=[...(header?[header]:[]),...items.filter(item=>item.id!==header&&members.has(item.id)).map(item=>item.id)];
+  }
+  if(summaryTag){
+    for(const item of items)if(chosen.has(item.id)){if(table)delete item.hypotheticalTables?.[table];else delete item.hypothetical;}
+  }else if(plainTag)setHypotheticalTag(sheet,axis,ids,true,false,table);
+  return targets.length;
 }
 export function hypotheticalProjection(book:Workbook,sheet:Sheet,axis:Group['axis']):(row:string,column:string)=>boolean{
   const global=hypotheticalMembers(sheet,axis),items=axis==='row'?sheet.rows:sheet.columns;

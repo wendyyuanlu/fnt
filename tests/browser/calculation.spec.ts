@@ -15,7 +15,7 @@ test('Group & move to top moves a selected ingredient owning meal and collapses 
   const cell=(r:number,c=0)=>page.locator(`td[data-r="${r}"][data-c="${c}"]`);
   await cell(2,1).click();await page.getByRole('button',{name:'Meal / day',exact:true}).click();
   await page.locator('#block-label').fill('Invented second meal');await page.getByRole('button',{name:'Create explicit meal',exact:true}).click();await expect(cell(3)).toHaveText('Invented second meal');await expect(cell(3,3)).toHaveText('0');
-  await page.getByRole('button',{name:'+ Add entry',exact:true}).click();await page.locator('#formula').fill('');await page.locator('#formula').press('Enter');
+  await page.locator('[data-row-select="3"]').hover();await page.locator('[data-insert-row="4"]').click();
   await cell(4,1).click();await page.locator('#formula').fill('Example lentils');await page.locator('#formula').press('Enter');
   await cell(4,2).click();await page.locator('#formula').fill('50');await page.locator('#formula').press('Enter');await expect(cell(4,3)).toHaveText('58');await expect(cell(3,3)).toHaveText('58');
   await cell(4,1).click();await page.getByRole('button',{name:'Meal / day',exact:true}).click();await page.getByRole('button',{name:'Group & move to top',exact:true}).click();

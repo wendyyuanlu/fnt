@@ -9,7 +9,7 @@ import { parseTsv,serializeTsv } from './clipboard';
 import { cutCells, shiftCells } from './cell-operations';
 import { displayExcelDate,excelDate,excelDateText,parseDateInput } from './dates';
 import { RowViewport } from './row-viewport';
-import {captureSelection,headerSelectionTables,nearestHeaderTables,tableHeaderBounds,selectionCount,selectionRanges,type SelectionArea,type SelectionBounds} from './selection';
+import {captureSelection,headerSelectionTables,nearestHeaderTables,tableHeaderBounds,selectionCount,selectionRanges,mergeSelectionRanges,type SelectionArea,type SelectionBounds} from './selection';
 import { defaultHeaderFormula,groupBlockToTop,positionalBlock } from './meal-block';
 import { applyTableColumnFormula,columnCalculations,quantityDiagnostic,restoreCalculation,tableColumnFormulas } from './calculation';
 import { groupReference,mountGroupPicker,newReference,referenceSettings,type ReferenceHost } from './reference-ui';
@@ -18,17 +18,18 @@ import { duplicateReference,moveReferenceGroup,referenceCaption,referenceChoices
 import { appendReferenceOption,conversionEditImpact,deleteReferenceColumns,referenceView,writeGridCell } from './reference-grid';
 import { hexToHsv,hsvToHex,normalizeHex } from './colors';
 import { dropdownCatalog,dropdownFormatMigration,dropdownGroupMigration,seedDropdownCatalog,verifiedCatalogOrigins } from './dropdown-catalog';
-import { constantSummaryRowLayout,groupContainsCell,hypotheticalProjection,hypotheticalMembers,outlineGroups,outlineGutter,precedingGroupMember,tableGroupMembership,tableGroupProjection,ungroupPlainGroups } from './grouping';
+import { constantSummaryRowLayout,groupContainsCell,hypotheticalProjection,hypotheticalMembers,joinPrecedingGroups,outlineGroups,outlineGutter,precedingGroupMember,tableGroupMembership,tableGroupProjection,ungroupPlainGroups } from './grouping';
 import {getHypotheticalStyle,hypotheticalBadgeCss,hypotheticalCss,hypotheticalTextCss} from './hypothetical';
 import {openHypotheticalSettings} from './hypothetical-ui';
-import {toolbarIcon} from './icons';
+import {navigationIcon,toolbarIcon} from './icons';
 import {mountToolbar} from './toolbar';
 import {mountTableSelection} from './table-selection-ui';
 import type {TableAxisEdit} from './table-operations';
 import {planTableAxisEdit} from './table-edit-plan';
 import {confirmTableExpansion} from './table-expansion-ui';
 import {mountStickyTableHeaders} from './sticky-table-headers';
-import {ensureTableSheetSpace} from './sheet-space';
+import {ensureTableSheetSpace,isMasterSheet,sheetTableTail} from './sheet-space';
+import {addMasterFood,anchorMasterDates,createMasterDay,editMasterDayInput,editMasterDayInputs,isMasterDayInput,localToday,masterLogging,refreshMasterFoodDates,validateDayLogging} from './day-logging';
 import {createTable,recordTableEdits,recordTableVisit,renameTable,sortedTables} from './table-management';
 import { mountGroupControls } from './grouping-ui';
 import {createTextSearch} from './find';
@@ -96,7 +97,7 @@ let book: Workbook, state: LocalState, store: Store, engine: Engine;
 let sheetId = '', selected = {r:1,c:0}, anchor = {...selected}, page = 0, showHypothetical=true;
 let selectionKind:'cells'|'rows'|'columns'='cells';
 let extraSelections:SelectionArea[]=[];
-let renderedSheet='',renderedTarget='',scrollTarget:number|{row:number;contextRows:number;align?:'bottom'}|undefined,drawRowWindow:((force?:boolean)=>void)|undefined;
+let renderedSheet='',renderedTarget='',scrollTarget:number|{row:number;contextRows:number;align?:'bottom';afterRows?:number}|undefined,drawRowWindow:((force?:boolean)=>void)|undefined;
 let navigationRows:number[]=[],navigationColumns:number[]=[];
 const measuredRowHeights=new Map<string,number>();
 const pinnedColumns=new Map<string,string[]>();
@@ -157,7 +158,111 @@ const sheet = () => allSheets(book).find(s => s.id === sheetId)!;
 const current = () => getCell(sheet(),sheet().rows[selected.r].id,sheet().columns[selected.c].id);
 const bounds = () => ({r1:Math.min(anchor.r,selected.r),r2:Math.max(anchor.r,selected.r),c1:Math.min(anchor.c,selected.c),c2:Math.max(anchor.c,selected.c)});
 const scopedSelectionTable=()=>allTables(book).find(table=>table.id===selectionScope&&table.sheet===sheetId);
-const currentSelections=()=>selectionRanges(sheet(),bounds(),extraSelections,scopedSelectionTable(),allTables(book));
+const currentSelections=()=>{
+  const ranges=selectionRanges(sheet(),bounds(),extraSelections,scopedSelectionTable(),allTables(book));
+  if(!calendarRows||selectionKind==='columns')return ranges;
+  const visibleRows=calendarRows;
+  return mergeSelectionRanges(ranges.flatMap(range=>{
+    const first=visibleRows.indexOf(range.r1),last=visibleRows.indexOf(range.r2);
+    const visible=first<0||last<0?visibleRows.filter(r=>r>=range.r1&&r<=range.r2):visibleRows.slice(Math.min(first,last),Math.max(first,last)+1);
+    return visible.map(row=>({...range,r1:row,r2:row}));
+  }));
+};
+let datePage=0,calendarRows:number[]|undefined,calendarPlan:DatePages|undefined,calendarContext='',calendarTail:number[]=[];
+let masterBottomPending=false,masterLandingScroll:number|undefined;
+type SavedGridView={scroll:number;left:number;atBottom?:boolean;datePage?:number};
+let datePageCache:{generation:number;book:Workbook;sheet:string;config:string;day:string;plan:DatePages}|undefined;
+const pagination=()=>referenceId?undefined:sheet().pagination??paginationDefault(book,sheet());
+function getDatePlan(s:Sheet,config:DatePagination):DatePages{
+  const key=JSON.stringify(config),day=new Date().toDateString();
+  if(datePageCache?.generation===generation&&datePageCache.book===book&&datePageCache.sheet===s.id&&datePageCache.config===key&&datePageCache.day===day)return datePageCache.plan;
+  const plan=buildDatePages(book,s,config,engine);datePageCache={generation,book,sheet:s.id,config:key,day,plan};return plan;
+}
+function goDatePage(index:number):void{
+  if(!calendarPlan)return;
+  datePage=Math.max(0,Math.min(index,calendarPlan.pages.length));
+  const rows=datePage===calendarPlan.pages.length?calendarPlan.unassigned:calendarPlan.pages[datePage];
+  selected.r=rows[0]??calendarPlan.header;anchor={...selected};selectionKind='cells';extraSelections=[];scrollTarget=selected.r;
+  masterBottomPending=datePage===0&&isMasterSheet(book,sheet());render();
+}
+function renderRestoredView(view?:SavedGridView):void{
+  const master=!referenceId&&isMasterSheet(book,sheet()),restore=master&&view?.atBottom===false;
+  masterBottomPending=master&&!restore;scrollTarget=undefined;
+  if(master){datePage=restore?view.datePage??0:0;calendarContext=sheetId;}
+  render();
+  if(view){
+    const grid=root.querySelector<HTMLElement>('#grid-scroll')!;
+    if(!master||restore)grid.scrollTop=calendarPlan&&!master?0:view.scroll;
+    grid.scrollLeft=view.left;drawRowWindow?.();rememberView();
+  }
+}
+function openDatePagePicker():void{
+  const plan=calendarPlan,anchor=root.querySelector<HTMLElement>('[data-action="date-range"]');
+  if(!plan?.ranges.length||!anchor)return;
+  closeCellDropdown?.();
+  const popup=document.createElement('div'),controller=new AbortController(),range=plan.ranges[datePage]??plan.ranges[0],owner=sheetId;
+  popup.className='cell-dropdown cell-date-picker date-page-picker';popup.setAttribute('role','group');popup.setAttribute('aria-label','Date page picker');
+  popup.innerHTML=`<div class="dropdown-panel"><form><div class="button-row"><input id="date-page-jump" aria-label="Go to date" type="date" min="${excelDateText(plan.ranges.at(-1)!.start)}" max="${excelDateText(plan.ranges[0].end)}" value="${excelDateText(range.end)}" required><button class="icon-button" type="button" aria-label="Close date page picker">${toolbarIcon('close')}</button></div><p class="dropdown-source-error" role="alert" hidden></p></form></div>`;
+  const input=popup.querySelector<HTMLInputElement>('input')!,message=popup.querySelector<HTMLElement>('[role="alert"]')!;
+  const close=()=>{controller.abort();popup.remove();if(closeCellDropdown===close)closeCellDropdown=undefined;};
+  const position=()=>{
+    if(!anchor.isConnected){close();return;}
+    const rect=anchor.getBoundingClientRect(),viewport=visualViewport,left=viewport?.offsetLeft??0,top=viewport?.offsetTop??0,width=viewport?.width??innerWidth,height=viewport?.height??innerHeight;
+    popup.style.width=Math.min(300,width-12)+'px';const box=popup.getBoundingClientRect();
+    popup.style.left=Math.max(left+6,Math.min(rect.left,left+width-box.width-6))+'px';
+    popup.style.top=Math.max(top+6,Math.min(rect.bottom+4,top+height-box.height-6))+'px';
+  };
+  const apply=()=>{
+    if(!input.value||!input.reportValidity())return;
+    try{
+      if(owner!==sheetId||pagination()?.mode!=='calendar')throw Error('The sheet view changed. Open the date picker again.');
+      const serial=parseDateInput(input.value),index=serial===undefined?-1:pageForDate(getDatePlan(sheet(),pagination()!),serial);
+      if(index<0)throw Error('Choose a date within the logged calendar range.');
+      close();goDatePage(index);
+    }catch(e){message.hidden=false;message.textContent=String(e);position();}
+  };
+  closeCellDropdown=close;
+  input.onchange=apply;popup.querySelector('form')!.onsubmit=e=>{e.preventDefault();apply();};
+  popup.querySelector('button')!.onclick=close;
+  popup.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();close();anchor.focus({preventScroll:true});}e.stopPropagation();};
+  document.addEventListener('pointerdown',e=>{if(!popup.contains(e.target as Node)&&!anchor.contains(e.target as Node))close();},{capture:true,signal:controller.signal});
+  document.addEventListener('scroll',position,{capture:true,signal:controller.signal});window.addEventListener('resize',position,{signal:controller.signal});visualViewport?.addEventListener('resize',position,{signal:controller.signal});
+  document.body.append(popup);position();input.focus({preventScroll:true});
+  if(input.showPicker)try{input.showPicker();}catch(e){message.hidden=false;message.textContent=`Use the date field to choose a page. ${String(e)}`;position();}
+}
+function openPageSettings():void{
+  const s=sheet(),tables=allTables(book).filter(t=>t.sheet===s.id),config=pagination(),owner=tables.find(t=>t.id===config?.table)??tables.find(t=>t.columns.some(c=>c.name==='Date'))??tables[0];
+  if(!owner){flash('Create a table with a Date field before enabling date pages. One page remains available.');return;}
+  dialog('Page settings',`<form><label>Display<select id="page-display"><option value="one">One page</option><option value="calendar">Date pages</option></select></label><label>Date table<select id="page-table">${tables.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></label><label>Date column<select id="page-date"></select></label><label>Day header marker<select id="page-marker"></select></label><label>Calendar days per page<input id="page-days" type="number" min="1" max="2958466" step="1" value="${config?.days??90}" required></label><p class="muted">Pages start with the latest calendar window, with entries oldest-to-newest inside each page. Next goes to older windows. Day headers keep their following rows together. Missing dates remain accessible separately; records are never reordered.</p><button class="primary">Apply page settings</button></form>`,d=>{
+    const mode=d.querySelector<HTMLSelectElement>('#page-display')!,table=d.querySelector<HTMLSelectElement>('#page-table')!,date=d.querySelector<HTMLSelectElement>('#page-date')!,marker=d.querySelector<HTMLSelectElement>('#page-marker')!;
+    mode.value=config?.mode??'one';table.value=owner.id;
+    const fields=()=>{const owner=tables.find(t=>t.id===table.value)!;date.innerHTML=owner.columns.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');marker.innerHTML='<option value="">Each row has its own date</option>'+owner.columns.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');date.value=owner.columns.find(c=>c.id===config?.column)?.id??owner.columns.find(c=>c.name==='Date')?.id??owner.columns[0].id;marker.value=owner.columns.find(c=>c.id===config?.marker)?.id??owner.columns.find(c=>c.name==='isDay'||c.name==='Meal')?.id??'';};
+    table.onchange=fields;fields();
+    d.querySelector('form')!.onsubmit=e=>{
+      e.preventDefault();const next:DatePagination={mode:mode.value as DatePagination['mode'],days:Number(d.querySelector<HTMLInputElement>('#page-days')!.value),table:table.value,column:date.value,...(marker.value?{marker:marker.value}:{})};
+      try{validatePagination(next);if(next.mode==='calendar')buildDatePages(book,s,next,engine);}catch(e){flash(e);return;}
+      datePage=0;calendarContext='';if(mutateMetadata('Change page settings',()=>{s.pagination=next;},[[...sheetPath(s),'pagination']]))d.close();
+    };
+  });
+}
+function openDaySettings():void{
+  if(referenceId||!isMasterSheet(book,sheet()))return;
+  const s=sheet();
+  let context:ReturnType<typeof masterLogging>;
+  try{context=masterLogging(book,s);}catch(error){flash(error);return;}
+  const config=context.config;
+  dialog('New day settings',`<form><label>Next logging date<input id="logging-date" type="date" value="${config.nextDate===null?'':excelDateText(config.nextDate)}" required></label><label class="inline"><input id="logging-reset" type="checkbox">Reset to today</label><label>Direction<select id="logging-direction"><option value="forward">Forward</option><option value="backward">Backward</option></select></label><p class="muted">The date advances only when a real day is created. Food, hypothetical days and corrections to old dates do not advance it. These settings do not change existing dates.</p><button class="primary">Apply settings</button></form>`,d=>{
+    const date=d.querySelector<HTMLInputElement>('#logging-date')!,reset=d.querySelector<HTMLInputElement>('#logging-reset')!,direction=d.querySelector<HTMLSelectElement>('#logging-direction')!;
+    direction.value=config.direction;let beforeReset=date.value;
+    reset.onchange=()=>{if(reset.checked){beforeReset=date.value;date.value=excelDateText(localToday())!;}else date.value=beforeReset;};
+    date.oninput=()=>{reset.checked=false;};
+    d.querySelector('form')!.onsubmit=e=>{
+      e.preventDefault();const next={...config,totals:[...config.totals],nextDate:parseDateInput(date.value)??null,direction:direction.value as typeof config.direction};
+      try{if(next.nextDate===null)throw Error('Choose a valid next logging date.');validateDayLogging(next);}catch(error){flash(error);return;}
+      if(mutateMetadata('Change new day settings',()=>{s.dayLogging=next;},[[...sheetPath(s),'dayLogging']]))d.close();
+    };
+  });
+}
 const selectionMode=()=>extraSelections.every(area=>area.kind===selectionKind&&area.table===selectionScope)?selectionKind:'cells';
 function selectionPaintPosition(row:number,column:number,displayRow:number,displayColumn:number):{r:number;c:number}{
   const mode=selectionScope?'cells':selectionMode();
@@ -187,6 +292,7 @@ function moveSelectionToTop():void{
   if(prefix.length===rows.length&&prefix.every(id=>members.has(id)))return;
   if(local){runTableEdit(table.id,'row',{kind:'move',ids:rows,boundary},'Move to top',{reveal:true});return;}
   mutate('Move to top',()=>{
+    protectMasterRowDates();
     const at=moveRows(book,s,rows,boundary);
     movingRows=movingColumns=undefined;clearMovePreview();extraSelections=[];selectionScope=undefined;
     anchor={r:at,c:0};selected={r:at+rows.length-1,c:s.columns.length-1};selectionKind='rows';page=Math.floor(at/60);scrollTarget=at;
@@ -263,6 +369,9 @@ function sheetAxisSelectionAllowed(operation:string):boolean{
   if(referenceId||!extraSelections.some(area=>area.table!==selectionScope))return true;
   flash(`${operation} requires one table or sheet scope at a time. Adjacent tables have not been changed.`);return false;
 }
+function protectMasterRowDates(candidate=book,owner=sheet()):void{
+  if(!referenceId&&isMasterSheet(candidate,owner))anchorMasterDates(candidate,owner);
+}
 function prepareAxisOperation(axis:'row'|'column',index:number):number{
   if(!tableSelectionMode)return index;
   const s=sheet(),view=gridReference(),candidates=headerSelectionTables(s,view?.table?[view.table]:allTables(book),axis,index);
@@ -302,7 +411,9 @@ function runTableEdit(tableId:string,axis:'row'|'column',edit:TableAxisEdit,labe
     const before=book,expected=generation,table=allTables(book).find(t=>t.id===tableId)!;
     const sourceCopy=copied?.sheet===table.sheet?copied:undefined,copyMoves=new Map<string,{row:string;column:string}>();
     const copiedKeys=sourceCopy?new Set(sourceCopy.cells.flatMap((row,i)=>row.map((_,j)=>{const origin=sourceCopy.outlineOrigins?.[i][j]??sourceCopy.origins?.[i][j]??{row:sourceCopy.rows[i],column:sourceCopy.columns[j]};return`${sourceCopy.sheet}:${key(origin.row,origin.column)}`;}))):undefined;
-    const plan=planTableAxisEdit(book,tableId,axis,edit,{candidate:editSnapshot(book),trace:copiedKeys?(source,target)=>{if(copiedKeys.has(source)&&(!target||`${target.sheet}:${key(target.row,target.column)}`!==source))copyMoves.set(source,target??{row:'deleted',column:'deleted'});}:undefined}),at=axis==='row'?bounds().r1:bounds().c1;
+    const candidate=editSnapshot(book);
+    if(axis==='row'&&edit.kind==='move')protectMasterRowDates(candidate,allSheets(candidate).find(sheet=>sheet.id===table.sheet)!);
+    const plan=planTableAxisEdit(book,tableId,axis,edit,{candidate,trace:copiedKeys?(source,target)=>{if(copiedKeys.has(source)&&(!target||`${target.sheet}:${key(target.row,target.column)}`!==source))copyMoves.set(source,target??{row:'deleted',column:'deleted'});}:undefined}),at=axis==='row'?bounds().r1:bounds().c1;
     confirmTableExpansion(before,plan,table.name,dialog,()=>{
       if(book!==before||generation!==expected){flash('The workbook changed while this edit was open. Select the records or fields and try again.');return false;}
       return mutate(label,()=>{
@@ -343,7 +454,8 @@ function rememberView():void{
   const s=allSheets(book).find(s=>s.id===sheetId);if(!s?.rows[selected.r]||!s.columns[selected.c])return;
   const grid=root.querySelector<HTMLElement>('#grid-scroll');
   try{
-    const value=JSON.stringify({reference:referenceId??null,sheet:sheetId,row:s.rows[selected.r].id,column:s.columns[selected.c].id,anchorRow:s.rows[anchor.r]?.id,anchorColumn:s.columns[anchor.c]?.id,kind:selectionKind,scope:selectionScope,tableMode:tableSelectionMode,target:tableSelectionTarget,scroll:grid?.scrollTop??0,left:grid?.scrollLeft??0,workbookView});
+    const atBottom=grid?grid.scrollTop>=(masterLandingScroll??grid.scrollHeight-grid.clientHeight)-3:true;
+    const value=JSON.stringify({reference:referenceId??null,sheet:sheetId,row:s.rows[selected.r].id,column:s.columns[selected.c].id,anchorRow:s.rows[anchor.r]?.id,anchorColumn:s.columns[anchor.c]?.id,kind:selectionKind,scope:selectionScope,tableMode:tableSelectionMode,target:tableSelectionTarget,scroll:grid?.scrollTop??0,left:grid?.scrollLeft??0,atBottom,datePage:calendarPlan?datePage:undefined,workbookView});
     sessionStorage.setItem(`fnt-view:${book.id}`,value);
     if(!referenceId)sessionStorage.setItem(`fnt-sheet-view:${book.id}:${sheetId}`,value);
     sessionStorage.setItem('fnt-current-reference',referenceId??'');
@@ -366,7 +478,7 @@ function adoptSavedWorkbook(target?:string):void{
   selected={r:0,c:0};anchor={...selected};selectionKind='cells';extraSelections=[];selectedTabs.clear();tabSelectionAnchor=undefined;
   movingRows=movingColumns=undefined;copied=undefined;renderedSheet='';page=0;undo.length=redo.length=0;
 }
-function restoreView(remembered?:string|null,saved?:string|null):{scroll:number;left:number}|undefined{
+function restoreView(remembered?:string|null,saved?:string|null):SavedGridView|undefined{
   try{
     const raw=saved??sessionStorage.getItem(`fnt-view:${book.id}`),legacy=sessionStorage.getItem('fnt-current-reference');
     if(!raw){const source=legacy&&book.references?.some(s=>s.id===legacy)?legacy:remembered&&book.dropdownData?.sheets.some(s=>s.id===remembered)?referenceOnSheet(remembered):undefined;if(source){referenceId=source;const view=gridReference();if(view?.sheet){sheetId=view.sheet.id;selected={r:Math.max(0,view.sheet.rows.findIndex(r=>r.id===(view.rows[1]??view.rows[0]))),c:Math.max(0,view.sheet.columns.findIndex(c=>c.id===view.columns[0]))};anchor={...selected};}}return;}
@@ -379,12 +491,18 @@ function restoreView(remembered?:string|null,saved?:string|null):{scroll:number;
     selected={r:Math.max(0,s.rows.findIndex(r=>r.id===view.row)),c:Math.max(0,s.columns.findIndex(c=>c.id===view.column))};anchor={r:Math.max(0,s.rows.findIndex(r=>r.id===view.anchorRow)),c:Math.max(0,s.columns.findIndex(c=>c.id===view.anchorColumn))};
     selectionKind=['cells','rows','columns'].includes(view.kind)?view.kind:'cells';
     if(view.tableMode!==undefined&&typeof view.tableMode!=='boolean')throw Error('Invalid saved table-selection mode.');
+    if(view.atBottom!==undefined&&typeof view.atBottom!=='boolean'||view.datePage!==undefined&&(!Number.isSafeInteger(view.datePage)||view.datePage<0))throw Error('Invalid saved page position.');
     tableSelectionMode=view.tableMode===true;selectionScope=typeof view.scope==='string'?view.scope:undefined;tableSelectionTarget=typeof view.target==='string'?view.target:undefined;
     if(view.workbookView&&book.sheets.some(s=>s.id===view.workbookView.sheet))workbookView=view.workbookView;
-    return{scroll:Math.max(0,view.scroll),left:Math.max(0,view.left)};
+    return{scroll:Math.max(0,view.scroll),left:Math.max(0,view.left),atBottom:view.atBottom,datePage:view.datePage};
   }catch(e){error=`View preference could not be restored: ${String(e)}`;}
 }
-const inputText = (cell: Cell): string => cell.formula ? displayFormula(cell.formula,book) : cell.binding ? String(scalar(engine.cell(sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id)) ?? '') : String(cell.value ?? '');
+const inputText = (cell: Cell): string => {
+  if(cell.formula)return displayFormula(cell.formula,book);
+  if(cell.fractionLiteral)return "'"+String(cell.value??'');
+  if(cell.fractionInput){const fraction=parseFraction(cell.fractionInput);if(fraction.kind==='fraction'&&fraction.value===cell.value)return cell.fractionInput;}
+  return cell.binding?String(scalar(engine.cell(sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id))??''):String(cell.value??'');
+};
 const cellText = (cell: Cell, s: Sheet, r: number,c: number): string => {
   const date=cell.format?.number==='date'||cell.format?.number==='date-compact'?dateFormatContext(engine,book,s.id,s.rows[r].id,cell):undefined;
   return cachedCellText(engine,s.id,s.rows[r].id,s.columns[c].id,cell,raw=>{
@@ -395,6 +513,7 @@ const cellText = (cell: Cell, s: Sheet, r: number,c: number): string => {
   if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
   if (typeof value === 'number') {
     if(!Number.isFinite(value))return '#NUM!';
+    if(cell.format?.number==='fraction')return displayFraction(value,cell.fractionInput);
     if(date?.enabled)return displayExcelDate(value,date.year,cell.format?.number==='date-compact')??'#NUM!';
     if (cell.format?.number === 'percent') return `${+(value*100).toFixed(2)}%`;
     return cell.format?.number === 'decimal' ? value.toFixed(2) : String(+value.toPrecision(11));
@@ -438,6 +557,7 @@ function mutate(label: string, fn: () => void,confirmed=false,renderOptions?:{pr
   const priorBook=book,priorCopy=copied,shape=structureKey(book),metadata=metadataKey(book),cells=new Map(allSheets(before).map(s=>[s.id,s.cells]));
   try {
     fn();
+    if(shape!==structureKey(book))refreshMasterFoodDates(book,sheetId);
     const impact=confirmed?'':conversionEditImpact(before,book);
     if(impact){
       const proposed=clone(book),proposedCopy=copied;book=before;copied=priorCopy;engine=new Engine(book);
@@ -751,11 +871,24 @@ function render(options?:{preserveViewport:boolean}): void {
   if(view?.sheet)sheetId=view.sheet.id;
   const s = sheet();
   if (!s.rows.length || !s.columns.length) return;
+  const pageConfig=pagination();calendarPlan=undefined;calendarRows=undefined;calendarTail=[];masterLandingScroll=undefined;
+  if(pageConfig?.mode==='calendar'){
+    try{
+      calendarPlan=getDatePlan(s,pageConfig);
+      if(calendarContext!==s.id){datePage=0;calendarContext=s.id;}
+      calendarTail=isMasterSheet(book,s)?sheetTableTail(book,s,20):[];
+      if(scrollTarget!==undefined){const target=typeof scrollTarget==='object'?scrollTarget.row:scrollTarget;if(!calendarTail.includes(target))datePage=calendarPlan.rowPage.get(target)??datePage;}
+      datePage=Math.min(datePage,Math.max(0,calendarPlan.pages.length-(calendarPlan.unassigned.length?0:1)));
+      const tail=new Set(calendarTail);
+      calendarRows=[calendarPlan.header,...(datePage===calendarPlan.pages.length?calendarPlan.unassigned:calendarPlan.pages[datePage]??[]).filter(row=>!tail.has(row)),...calendarTail];
+      if(!calendarRows.includes(selected.r)){selected.r=calendarRows[1]??calendarRows[0];anchor={...selected};selectionKind='cells';extraSelections=[];}
+    }catch(e){flash(e);}
+  }else calendarContext='';
   try{sessionStorage.setItem('fnt-current-sheet',s.id);}catch(e){error=`Could not remember the selected tab: ${String(e)}`;}
   selected.r=Math.min(selected.r,s.rows.length-1); selected.c=Math.min(selected.c,s.columns.length-1);
   anchor.r=Math.min(anchor.r,s.rows.length-1); anchor.c=Math.min(anchor.c,s.columns.length-1);
   if(view?.rows.length&&view.columns.length&&selectionKind==='cells'&&!inGrid(selected.r,selected.c)){selected={r:s.rows.findIndex(r=>r.id===(view.rows[1]??view.rows[0])),c:s.columns.findIndex(c=>c.id===view.columns[0])};anchor={...selected};selectionKind='cells';}
-  const previousGrid=root.querySelector<HTMLElement>('#grid-scroll'),viewKey=s.id+(referenceId??''),sameSheet=renderedSheet===viewKey;
+  const previousGrid=root.querySelector<HTMLElement>('#grid-scroll'),viewKey=s.id+(referenceId??'')+(calendarPlan?':date:'+datePage:''),sameSheet=renderedSheet===viewKey;
   const previousViewport=sameSheet&&options?.preserveViewport?captureViewport?.():undefined;
   if(!sameSheet)extraSelections=[];
   if(tableSelectionTarget&&!(view?.table?[view.table]:allTables(book)).some(t=>t.id===tableSelectionTarget&&t.sheet===s.id))tableSelectionTarget=undefined;
@@ -781,7 +914,10 @@ function render(options?:{preserveViewport:boolean}): void {
   const cellTable=(row:string,column:string)=>sheetTables.find(table=>table.rows.has(row)&&table.columns.has(column))?.owner;
   maskedCell=(row,column)=>sheetTables.some(table=>table.rows.has(row)&&table.columns.has(column)&&(table.hiddenRows.has(row)||table.hiddenColumns.has(column)))||!showHypothetical&&(rowHypo(row,column)||columnHypo(row,column));
   const columns = s.columns.map((c,i) => ({...c,i})).filter(c => !c.hidden && !collapsedColumns.has(c.id)&&(showHypothetical||!hypotheticalColumns.has(c.id)||s.rows.some(row=>!columnHypo(row.id,c.id)))&&(!view||view.columns.includes(c.id)));
-  const rows = s.rows.map((r,i) => ({...r,i})).filter(r => !r.hidden && !collapsedRows.has(r.id)&&(showHypothetical||!hypotheticalRows.has(r.id)||columns.some(column=>!rowHypo(r.id,column.id)))&&(!view||view.rows.includes(r.id)));
+  const pagePositions=calendarRows?new Map(calendarRows.map((r,i)=>[r,i])):undefined;
+  const rows = s.rows.map((r,i) => ({...r,i})).filter(r => (!pagePositions||pagePositions.has(r.i))&&!r.hidden && !collapsedRows.has(r.id)&&(showHypothetical||!hypotheticalRows.has(r.id)||columns.some(column=>!rowHypo(r.id,column.id)))&&(!view||view.rows.includes(r.id)));
+  if(pagePositions)rows.sort((a,b)=>pagePositions.get(a.i)!-pagePositions.get(b.i)!);
+  if(calendarRows)calendarRows=rows.map(r=>r.i);
   const firstOwned=new Map(sheetTables.map(({owner,rows:ownedRows,columns:ownedColumns})=>[owner.id,{
     row:rows.find(row=>ownedRows.has(row.id))?.id,column:columns.find(column=>ownedColumns.has(column.id))?.id
   }]));
@@ -795,6 +931,12 @@ function render(options?:{preserveViewport:boolean}): void {
     };
     const replacement=available(true)??available(false);
     if(replacement){selected=replacement;anchor={...selected};selectionKind='cells';extraSelections=[];}
+  }
+  const master=!referenceId&&isMasterSheet(book,s),tableRows=master?new Set(allTables(book).filter(table=>table.sheet===s.id).flatMap(table=>[table.header,...table.rows])):undefined;
+  const masterEnd=master?(calendarPlan?rows.filter(row=>!calendarTail.includes(row.i)):rows.filter(row=>tableRows!.has(row.id))).at(-1):undefined;
+  if(masterBottomPending){
+    masterBottomPending=false;
+    if(masterEnd){selected.r=masterEnd.i;anchor={...selected};selectionKind='cells';extraSelections=[];scrollTarget={row:selected.r,contextRows:0,align:'bottom',afterRows:2};}
   }
   const b=bounds();
   navigationRows=rows.map(r=>r.i);navigationColumns=columns.map(c=>c.i);
@@ -858,9 +1000,10 @@ function render(options?:{preserveViewport:boolean}): void {
   const target=typeof scrollTarget==='object'?scrollTarget.row:scrollTarget??(!options?.preserveViewport&&renderedTarget!==`${s.id}:${selected.r}`?selected.r:undefined);
   if(target!==undefined){
     const display=groupProjection.display(s.rows[target]?.id,s.columns[selected.c].id),displayIndex=display?s.rows.findIndex(row=>row.id===display.row):target;
-    const position=rows.findIndex(r=>r.i>=displayIndex),at=position<0?rows.length-1:position,top=layout.offsets[Math.max(0,at)],height=previousGrid?.clientHeight??innerHeight-180;
+    const exact=rows.findIndex(r=>r.i===displayIndex),position=exact>=0?exact:rows.findIndex(r=>r.i>=displayIndex),at=position<0?rows.length-1:position,top=layout.offsets[Math.max(0,at)],height=previousGrid?.clientHeight??innerHeight-180;
     if(typeof scrollTarget==='object'&&scrollTarget.align==='bottom'){
-      bottomRow=rows[at]?.i;vertical=Math.max(0,top+(layout.heights[at]??33)+estimatedHeaderHeight-height);
+      const end=Math.min(rows.length-1,at+(scrollTarget.afterRows??0));
+      bottomRow=rows[end]?.i;vertical=Math.max(0,layout.offsets[end+1]+estimatedHeaderHeight-height);
     }else if(!sameSheet||scrollTarget!==undefined||top<vertical||top+(layout.heights[at]??33)>vertical+height-estimatedHeaderHeight)vertical=layout.offsets[Math.max(0,at-(typeof scrollTarget==='object'?scrollTarget.contextRows:0))];
   }
   scrollTarget=undefined;renderedSheet=viewKey;renderedTarget=`${s.id}:${selected.r}`;
@@ -872,6 +1015,7 @@ function render(options?:{preserveViewport:boolean}): void {
       <div class="workbook-heading"><button id="title" title="Rename workbook">${esc(book.title)}</button></div>
       <div class="save-area"><span id="save-state" class="save-state">${esc(status)}</span><button class="primary" data-action="save">Save <span class="desktop">workbook</span></button><button data-action="file" aria-label="Workbook and backups" title="Import Excel, export and browser-local recovery">File</button></div>
     </header>
+    ${master?`<nav class="master-toolbar" aria-label="Master logging"><div class="day-create"><button id="new-day" class="primary" data-action="new-day">New day</button><details><summary aria-label="New day options">${dropdownArrowHtml}</summary><div class="day-kind-menu"><button data-action="new-hypothetical-day">New hypothetical day</button></div></details></div><button id="add-food" data-action="add-food">Food</button><button id="date-settings" class="next" data-action="date-settings">New day settings</button></nav>`:''}
     <div id="error" role="alert" class="error" ${error?'':'hidden'}><span class="error-message">${esc(error)}</span><button type="button" class="error-dismiss" aria-label="Dismiss error" title="Dismiss error">${toolbarIcon('close')}</button></div>
     <nav class="toolbar" aria-label="Spreadsheet tools">
       <div class="tool-set">${(['undo','redo'] as const).map(name=>`<button class="icon-button" data-action="${name}" aria-label="${name==='undo'?'Undo':'Redo'}" title="${name==='undo'?'Undo (Ctrl+Z)':'Redo (Ctrl+Y)'}" ${(name==='undo'?undo:redo).length?'':'disabled'}>${toolbarIcon(name)}</button>`).join('')}</div>
@@ -879,8 +1023,7 @@ function render(options?:{preserveViewport:boolean}): void {
       <div class="tool-set">${referenceId?'<button data-action="reference-settings">DD settings</button>':''}<button class="icon-button" data-action="dropdown-source" aria-label="Assign DD" aria-pressed="false" title="Assign a dropdown without changing cell contents">${toolbarIcon('dropdown-source')}</button></div>
       <div class="tool-set"><button type="button" class="icon-button group-menu-button" data-toolbar-id="action:table-selection" aria-label="Group controls" title="Group controls"></button>      <div class="toolbar-split summary-group-control" data-toolbar-id="action:summary-group" role="group" aria-label="Summary group controls" tabindex="-1"><button type="button" class="icon-button group-toggle" data-action="summary-group" aria-label="Remove summary group" aria-pressed="false" title="Remove summary group">${toolbarIcon('summary-group')}</button><button type="button" class="icon-button summary-group-add" data-action="add-summary-group" aria-label="Add summary group" title="Add summary group, including within an existing group">${toolbarIcon('add')}</button></div><button type="button" class="icon-button group-toggle" data-action="plain-group" aria-label="Create/remove plain group" aria-pressed="false" title="Create plain group">${toolbarIcon('plain-group')}</button><button class="icon-button" data-action="structure" title="Rows & columns" aria-label="Rows & columns">${toolbarIcon('structure')}</button>${referenceId?'<button data-action="archive-options">Hide / show selected options</button>':''}</div>
       <div class="tool-set">${(['find','copy','cut','paste','fill'] as const).map(name=>{const label={find:'Find / replace',copy:'Copy',cut:'Cut',paste:'Paste',fill:'Fill down'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}</div>
-      <div class="tool-set"><button class="icon-button" data-action="pin" aria-pressed="${pins.length>0}" title="${pins.length?'Unpin columns':'Pin selected columns'}" aria-label="${pins.length?'Unpin columns':'Pin selected columns'}">${toolbarIcon('pin')}</button><button class="icon-button" data-action="browse" title="Browse values" aria-label="Browse values">${toolbarIcon('browse')}</button><button class="icon-button" data-action="hypothetical" aria-label="Add/remove ${esc(hypotheticalStyle.label)} tag" aria-pressed="false" data-shortcut-label="Add/remove ${esc(hypotheticalStyle.label)} tag" data-shortcut-keys="Ctrl|H" aria-keyshortcuts="Control+H">${toolbarIcon('hypothetical')}</button><button class="icon-button" data-action="hypothetical-settings" aria-label="Hypo tag styling" title="Customize ${esc(hypotheticalStyle.label)} row and column treatments">${toolbarIcon('hypothetical-settings')}</button><button id="status-filter" class="icon-button" data-action="hypothetical-visibility" data-toolbar-control="status-filter" aria-label="View/hide hypo rows/columns" aria-pressed="${!showHypothetical}" title="${showHypothetical?'Hide':'Show'} ${esc(hypotheticalStyle.label)} rows and columns">${toolbarIcon('hypothetical-visibility')}</button></div>
-      ${referenceId?'':'<div class="tool-set"><button data-action="quick-add">+ Add entry</button></div>'}
+      <div class="tool-set"><button class="icon-button" data-action="pin" aria-pressed="${pins.length>0}" title="${pins.length?'Unpin columns':'Pin selected columns'}" aria-label="${pins.length?'Unpin columns':'Pin selected columns'}">${toolbarIcon('pin')}</button><button class="icon-button" data-action="add-to-group" data-toolbar-before="action:hypothetical" aria-label="Add to group" title="Join selected rows or columns to the plain and summary groups immediately above or left">${toolbarIcon('add-to-group')}</button><button class="icon-button" data-action="hypothetical" aria-label="Add/remove ${esc(hypotheticalStyle.label)} tag" aria-pressed="false" data-shortcut-label="Add/remove ${esc(hypotheticalStyle.label)} tag" data-shortcut-keys="Ctrl|H" aria-keyshortcuts="Control+H">${toolbarIcon('hypothetical')}</button><button class="icon-button" data-action="hypothetical-settings" aria-label="Hypo tag styling" title="Customize ${esc(hypotheticalStyle.label)} row and column treatments">${toolbarIcon('hypothetical-settings')}</button><button id="status-filter" class="icon-button" data-action="hypothetical-visibility" data-toolbar-control="status-filter" aria-label="View/hide hypo rows/columns" aria-pressed="${!showHypothetical}" title="${showHypothetical?'Hide':'Show'} ${esc(hypotheticalStyle.label)} rows and columns">${toolbarIcon('hypothetical-visibility')}</button></div>
       ${referenceId?'':`<div class="tool-set"><button class="icon-button" data-action="convert-table" aria-label="Convert to table" title="Create a table, or join selected rows/columns to their surrounding table">${toolbarIcon('convert-table')}</button><button class="icon-button" data-action="move-to-top" data-toolbar-before="action:tables" aria-label="Move to top" title="Move selected rows or a summary group below the table header">${toolbarIcon('move-to-top')}</button><button class="icon-button" data-action="tables" aria-label="Table manager" title="Table manager; rename the table containing the selected cell">${toolbarIcon('tables')}</button><button data-action="block">Meal / day</button></div>`}
       <div class="tool-set toolbar-layout-controls"><button class="icon-button" data-action="toolbar-layout" aria-label="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar'}" aria-pressed="${arrangingToolbar}" title="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar: drag tools or use Alt+Left/Right'}">${toolbarIcon('toolbar-layout')}</button></div>
     </nav>
@@ -890,7 +1033,7 @@ function render(options?:{preserveViewport:boolean}): void {
     <table class="grid spreadsheet-grid option-a-outline ${tree?'tree-outline ':''}${hasPlainColumnControls?'plain-column-controls ':''}selection-${selectionKind} ${touchSelection?'touch-select':''}" role="grid" aria-label="${esc(activeReference()?.name??s.name)}" aria-rowcount="${s.rows.length}" aria-colcount="${s.columns.length}" style="--outline-gutter:${gutter}px;--column-header-height:${columnHeaderHeight}px;--grid-insert-width:${columns.reduce((w,c)=>w+(c.width??145),gutter)}px;--grid-insert-height:${layout.offsets.at(-1)!+estimatedHeaderHeight}px"><colgroup><col style="width:${gutter}px">${columns.map(c=>`<col style="width:${c.width??145}px">`).join('')}</colgroup>
     <thead><tr><th class="corner"><div class="table-selection-control" role="group" aria-label="Table selection"><button type="button" data-action="table-selection" aria-label="Table-constrained header selection" aria-pressed="${tableSelectionMode}"></button><button type="button" id="table-selection-target" aria-label="Table selection target"></button></div><button class="boundary-control first-column" data-insert-column="0" aria-label="Insert column before A">+</button></th>${columns.map(c=>`<th data-col="${c.i}" style="${pinnedStyle(c.id,true)}" class="${c.i>=b.c1&&c.i<=b.c2?'column-selected ':''}${movingColumns?'move-target':''}" title="Double-click to rename column"><span class="column-index">${letters(c.i)}</span><span>${esc(t?.columns.find(x=>x.column===c.id)?.name??c.label)}</span><button class="move-control" data-move-column="${c.i}" draggable="true" aria-label="Move selected columns" title="Drag, or tap then tap a destination boundary">${grip(true)}</button><button class="boundary-control" data-insert-column="${c.i+1}" aria-label="${movingColumns?'Move columns':'Insert column'} after ${letters(c.i)}">+</button><button class="resize-edge resize-column" data-resize-column="${c.i}" aria-label="Resize column ${letters(c.i)}" title="Drag to resize; double-click to fit"></button></th>`).join('')}</tr></thead>
     <tbody></tbody></table></div></div>
-    <div class="grid-footer"><div><button class="selection-count" data-action="range" title="Select a cell range, including on mobile">${selectionCount(selectedRanges)} cells</button><span id="selection-scope-label"></span></div><div class="navigator"><button data-action="top" aria-label="Jump to top">Top</button><button data-action="prev" aria-label="Previous rows">&larr;</button><input id="row-jump" type="number" min="1" max="${s.rows.length}" aria-label="Jump to row"><span>/ ${s.rows.length}</span><button data-action="next" aria-label="Next rows">&rarr;</button><button data-action="bottom">Bottom</button></div></div>
+    <div class="grid-footer"><div><button class="selection-count" data-action="range" title="Select a cell range, including on mobile">${selectionCount(selectedRanges)} cells</button><span id="selection-scope-label"></span></div><div class="navigator">${referenceId?'':`<button data-action="page-mode" aria-pressed="${pageConfig?.mode==='calendar'}" title="Switch between one page and calendar date pages">${pageConfig?.mode==='calendar'?datePagesIcon:onePageIcon}<span>${pageConfig?.mode==='calendar'?'Date pages':'One page'}</span></button>`}${calendarPlan?`<button data-action="top" aria-label="Jump to top">${navigationIcon('up')} Top</button><button data-action="bottom" aria-label="Jump to bottom">${navigationIcon('down')} Bottom</button><button data-action="newest-date-page" aria-label="Newest date page" title="Newest date page" ${datePage===0&&!master?'disabled':''}>${navigationIcon('newest')}</button><button data-action="prev" aria-label="Newer dates" title="Newer dates">${navigationIcon('previous')}</button><button class="date-page-label" data-action="date-range" aria-label="Choose date page" title="${datePage===calendarPlan.pages.length?'Choose a dated page':`Page ${datePage+1} of ${calendarPlan.pages.length} — choose a date`}" ${calendarPlan.ranges.length?'':'disabled'}>${datePage===calendarPlan.pages.length?'Undated':`${displayExcelDate(calendarPlan.ranges[datePage].start)}–${displayExcelDate(calendarPlan.ranges[datePage].end)}`}</button><button data-action="next" aria-label="Older dates" title="Older dates">${navigationIcon('next')}</button>${calendarPlan.unassigned.length&&datePage!==calendarPlan.pages.length?`<button data-action="unassigned-date-rows" title="Records without assigned dates">Undated (${calendarPlan.unassigned.length})</button>`:''}`:`<button data-action="top" aria-label="Jump to top">${navigationIcon('up')} Top</button><button data-action="bottom">${navigationIcon('down')} Bottom</button><button data-action="prev" aria-label="Previous rows">${navigationIcon('previous')}</button><input id="row-jump" type="number" min="1" max="${s.rows.length}" aria-label="Jump to row"><span>/ ${s.rows.length}</span><button data-action="next" aria-label="Next rows">${navigationIcon('next')}</button>`}</div></div>
     <footer class="sheet-bar" aria-label="${referenceId?'Dropdown sources':'Workbook sheets'}">${referenceId?referenceTabsHtml():workbookTabsHtml()}<div class="tab-actions"><button type="button" data-action="${referenceId?'reference-settings':'sheet-settings'}" title="${referenceId?'Dropdown settings':'Sheet settings'}" aria-label="${referenceId?'Dropdown settings':'Sheet settings'}">${toolbarIcon('settings')}</button></div><button class="reference-manager" data-action="references" title="Dropdown sources" aria-label="DD">${toolbarIcon('references')}</button></footer>`;
   const grid=root.querySelector<HTMLElement>('#grid-scroll')!,body=grid.querySelector('tbody')!;
   captureViewport=()=>{const at=layout.at(grid.scrollTop),row=rows[at];return row?{row:row.id,index:row.i,offset:grid.scrollTop-layout.offsets[at]}:undefined;};
@@ -916,12 +1059,13 @@ function render(options?:{preserveViewport:boolean}): void {
   let lastStart=-1,lastEnd=-1;
   const spacer=(height:number,position:string)=>`<tr class="virtual-spacer" aria-hidden="true" data-spacer="${position}"><td colspan="${columns.length+1}" style="height:${height}px;padding:0;border:0;line-height:0;font-size:0"></td></tr>`;
   const draw=(initialTop?:number,force=false)=>{
+    if(!grid.isConnected)return;
     const top=initialTop??grid.scrollTop,window=layout.window(top,Math.max(100,grid.clientHeight-headerHeight));
     page=Math.floor((rows[layout.at(top)]?.i??0)/60);
-    const jump=root.querySelector<HTMLInputElement>('#row-jump')!;
-    if(document.activeElement!==jump)jump.value=String(view?layout.at(top)+1:(rows[layout.at(top)]?.i??0)+1);
-    root.querySelector<HTMLButtonElement>('[data-action="prev"]')!.disabled=top<=0;
-    root.querySelector<HTMLButtonElement>('[data-action="next"]')!.disabled=top+grid.clientHeight>=layout.offsets.at(-1)!+headerHeight;
+    const jump=root.querySelector<HTMLInputElement>('#row-jump');
+    if(jump&&document.activeElement!==jump)jump.value=String(view?layout.at(top)+1:(rows[layout.at(top)]?.i??0)+1);
+    root.querySelector<HTMLButtonElement>('[data-action="prev"]')!.disabled=calendarPlan?datePage<=0:top<=0;
+    root.querySelector<HTMLButtonElement>('[data-action="next"]')!.disabled=calendarPlan?datePage>=calendarPlan.pages.length-1:top+grid.clientHeight>=layout.offsets.at(-1)!+headerHeight;
     if(window.start===lastStart&&window.end===lastEnd&&initialTop===undefined&&!force)return;
     lastStart=window.start;lastEnd=window.end;engine.beginPass();
     const active=document.activeElement,wasInline=active instanceof HTMLTextAreaElement&&active.classList.contains('cell-inline-editor'),caret=wasInline?[active.selectionStart,active.selectionEnd]:undefined,b=bounds(),ranges=currentSelections();
@@ -960,7 +1104,9 @@ function render(options?:{preserveViewport:boolean}): void {
     });
     if(resized){layout.rebuild();(body.querySelector('[data-spacer="before"] td') as HTMLElement).style.height=layout.offsets[window.start]+'px';(body.querySelector('[data-spacer="after"] td') as HTMLElement).style.height=layout.offsets.at(-1)!-layout.offsets[window.end]+'px';}
     grid.querySelector<HTMLElement>('.grid')!.style.setProperty('--grid-insert-height',layout.offsets.at(-1)!+headerHeight+'px');
-    grid.scrollTop=layout.offsets[anchorIndex]+anchorOffset;bindRowControls();refreshSelection(false);groupManager?.paint();paintMoving();paintHypotheticalOverrides();rememberView();
+    grid.scrollTop=layout.offsets[anchorIndex]+anchorOffset;
+    if(masterEnd){const end=Math.min(rows.length-1,rows.findIndex(row=>row.id===masterEnd.id)+2);masterLandingScroll=Math.max(0,layout.offsets[end+1]+headerHeight-grid.clientHeight);}
+    bindRowControls();refreshSelection(false);groupManager?.paint();paintMoving();paintHypotheticalOverrides();rememberView();
     if(draft!==undefined&&!busy){
       syncDraft(draft,false,draftLiteral);
       if(wasInline){const editor=root.querySelector<HTMLTextAreaElement>('.cell-inline-editor')??root.querySelector<HTMLInputElement>('#formula')!;editor.focus({preventScroll:true});editor.setSelectionRange(caret![0],caret![1]);}
@@ -970,6 +1116,10 @@ function render(options?:{preserveViewport:boolean}): void {
   if(bottomRow!==undefined){
     const row=body.querySelector<HTMLElement>(`tr[data-row="${bottomRow}"]`);
     if(row)grid.scrollTop+=row.getBoundingClientRect().bottom-grid.getBoundingClientRect().top-grid.clientTop-grid.clientHeight;
+  }
+  if(masterEnd){
+    const end=Math.min(rows.length-1,rows.findIndex(row=>row.id===masterEnd.id)+2);
+    masterLandingScroll=Math.max(0,layout.offsets[end+1]+headerHeight-grid.clientHeight);
   }
   grid.scrollLeft=scroll;
   bind();
@@ -1133,7 +1283,7 @@ function openCellDatePicker(cell:HTMLElement):boolean{
       if(!clear&&serial===undefined){message.hidden=false;message.textContent='Choose a valid date.';position();return;}
       if(mutate(clear?'Clear date':'Choose date',()=>{
         if(!s.rows.some(r=>r.id===row)||!s.columns.some(c=>c.id===column)||!dateFormatContext(engine,book,s.id,row,getCell(s,row,column)).enabled)throw Error('The date target changed. Open it again.');
-        writeGridCell(book,s,row,column,clear?'':String(serial));
+        writeCellInput(s,row,column,clear?'':String(serial));
       }))close();
     };
     popup.querySelector<HTMLFormElement>('form')!.onsubmit=e=>{e.preventDefault();apply();};
@@ -1166,7 +1316,7 @@ function bindRowControls():void {
     el.ondblclick=()=>{closeCellDropdown?.();openEditor();};
   });
   root.querySelector<HTMLButtonElement>('[data-fill-handle]')?.addEventListener('pointerdown',e=>{
-    e.preventDefault();e.stopPropagation();if(!commitDraft())return;const range=requireRectangle('Fill');if(!range)return;extraSelections=[];anchor={r:range.r1,c:range.c1};selected={r:range.r2,c:range.c2};fillSource={...range};fillPointer=e.pointerId;(root.querySelector('#grid-scroll') as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();e.stopPropagation();if(!commitDraft())return;if(calendarPlan){flash('Use One page for drag fill across rows.');return;}const range=requireRectangle('Fill');if(!range)return;extraSelections=[];anchor={r:range.r1,c:range.c1};selected={r:range.r2,c:range.c2};fillSource={...range};fillPointer=e.pointerId;(root.querySelector('#grid-scroll') as HTMLElement).setPointerCapture(e.pointerId);
   });
   root.querySelectorAll<HTMLButtonElement>('[data-insert-row]').forEach(el=>el.onclick=e=>{
     e.stopPropagation();if(!commitDraft())return;const at=Number(el.dataset.insertRow),s=sheet();
@@ -1269,7 +1419,7 @@ function bind(): void {
     };
     el.onclick=select;
     el.querySelector<HTMLElement>('.column-index')!.onclick=e=>{e.stopPropagation();select(e);};
-    el.ondblclick=e=>{if((e.target as HTMLElement).closest('button')||tableSelectionMode&&(e.target as HTMLElement).closest('.column-index'))return;selected={r:Math.min(sheet().rows.length-1,Math.max(1,Number(root.querySelector<HTMLInputElement>('#row-jump')!.value)-1)),c:Number(el.dataset.col)};anchor={...selected};selectionKind='cells';renameSelectedColumn();};
+    el.ondblclick=e=>{if((e.target as HTMLElement).closest('button')||tableSelectionMode&&(e.target as HTMLElement).closest('.column-index'))return;selected={r:Math.min(sheet().rows.length-1,Math.max(0,Number(root.querySelector<HTMLInputElement>('#row-jump')?.value??selected.r+1)-1)),c:Number(el.dataset.col)};anchor={...selected};selectionKind='cells';renameSelectedColumn();};
     el.ondragover=e=>{if(!e.dataTransfer?.types.includes('application/x-fnt-columns'))return;e.preventDefault();root.querySelectorAll('.drop-before,.drop-after').forEach(n=>n.classList.remove('drop-before','drop-after'));const after=e.clientX>=el.getBoundingClientRect().left+el.getBoundingClientRect().width/2;el.classList.add(after?'drop-after':'drop-before');const index=Number(el.dataset.col);showMovePreview('column',index+Number(after),index,after);};
     el.ondrop=e=>{
       e.preventDefault();const data=e.dataTransfer?.getData('application/x-fnt-columns');if(!data)return;
@@ -1300,7 +1450,7 @@ function bind(): void {
   });
   document.querySelector<HTMLInputElement>('#formula')!.oninput=e=>syncDraft((e.target as HTMLInputElement).value);
   document.querySelector<HTMLInputElement>('#formula')!.onkeydown=editKey;
-  document.querySelector<HTMLInputElement>('#row-jump')!.onchange=e=>{
+  const rowJump=document.querySelector<HTMLInputElement>('#row-jump');if(rowJump)rowJump.onchange=e=>{
     if(!commitDraft())return;const s=sheet(),view=gridReference(),number=Number((e.target as HTMLInputElement).value),count=view?.rows.length??s.rows.length;if(!Number.isInteger(number)||number<1||number>count){flash(`Enter a row between 1 and ${count}.`);return;}selected.r=view?s.rows.findIndex(r=>r.id===view.rows[number-1]):number-1;anchor={...selected};selectionKind='cells';scrollTarget=selected.r;page=Math.floor(selected.r/60);render();
   };
   document.querySelector('#title')!.addEventListener('click',()=>askText('Rename workbook',book.title,name=>mutateMetadata('Rename workbook',()=>{book.title=name;},[['title']],false,false)));
@@ -1355,11 +1505,7 @@ function updateCalculationState():void{
   const s=sheet(),row=s.rows[selected.r].id,column=s.columns[selected.c].id,cell=getCell(s,row,column),table=tableAt(book,s.id,row,column);
   const possible=!!cell.calculation||!!table&&table.header!==row&&table.rows.some(id=>!!(getCell(s,id,column).formula??getCell(s,id,column).calculation));
   const diagnosis=quantityDiagnostic(book,s,row,column,engine);
-  slot.innerHTML=cell.formula||possible?`<span class="${diagnosis?'bad':''}" title="${esc(diagnosis??(cell.formula?'Calculated from the editable formula':'Manual value; a calculation can be restored'))}">${draft!==undefined?'Editing':diagnosis?'Check units':cell.formula?'Calculated':'Manual'}</span>${!cell.formula&&possible&&draft===undefined?'<button type="button" aria-label="Restore calculation" title="Restore calculation" id="restore-calculation">Restore</button>':''}`:'';
-  if(diagnosis&&draft===undefined){
-    slot.querySelector('span')!.outerHTML='<button type="button" class="bad" id="quantity-diagnostic">Check units</button>';
-    slot.querySelector<HTMLButtonElement>('#quantity-diagnostic')!.onclick=()=>dialog('Quantity calculation',`<p>${esc(diagnosis)}</p><p>The formula and its result are unchanged. Edit the inputs, add a conversion, or enter grams manually. Restore recovers the prior calculation.</p><button id="quantity-sources">Lists & conversions</button>`,d=>{d.querySelector<HTMLButtonElement>('button#quantity-sources')!.onclick=()=>openReferences();});
-  }
+  slot.innerHTML=cell.formula||possible?`<span class="${diagnosis?'bad':''}" title="${esc(diagnosis??(cell.formula?'Calculated from the editable formula':'Manual value; a calculation can be restored'))}">${draft!==undefined?'Editing':cell.formula?'Calculated':'Manual'}</span>${!cell.formula&&possible&&draft===undefined?'<button type="button" aria-label="Restore calculation" title="Restore calculation" id="restore-calculation">Restore</button>':''}`:'';
   const restore=slot.querySelector<HTMLButtonElement>('#restore-calculation');
   if(restore)restore.onclick=()=>{
     if(busy||!commitDraft())return;
@@ -1449,16 +1595,26 @@ function applyInput(text:string): boolean {
   const write=()=>{
     const t=allTables(book).find(t=>t.sheet===s.id&&t.header===row&&t.columns.some(c=>c.column===column));
     if(t) renameColumn(book,t,t.columns.find(c=>c.column===s.columns[selected.c].id)!.id,text);
-    else writeGridCell(book,s,row,column,text,literal);
+    else writeCellInput(s,row,column,text,literal);
     draft=undefined;draftLiteral=false;
   };
   const scoped=owner&&owner.header!==row&&!book.references?.some(source=>source.kind==='conversions'&&source.table===owner.id);
-  const ok=scoped?mutateCell(s,row,column,write):mutate('Edit cell',write);
+  let dayInput=false;
+  try{dayInput=!referenceId&&isMasterSheet(book,s)&&isMasterDayInput(book,s,row,column);}catch(error){flash(error);return false;}
+  const ok=scoped&&!dayInput?mutateCell(s,row,column,write):mutate('Edit cell',write);
   if(!ok&&!awaitingMutationConfirmation){
     syncDraft(previousDraft??text,!formulaFocused,literal);
     if(formulaFocused)root.querySelector<HTMLInputElement>('#formula')?.focus({preventScroll:true});
   }
   return ok;
+}
+function writeCellInput(s:Sheet,row:string,column:string,text:string,literal=false):void{
+  if(!referenceId&&isMasterSheet(book,s)&&isMasterDayInput(book,s,row,column)){
+    const selectedRow=s.rows[selected.r]?.id;
+    editMasterDayInput(book,s,row,column,()=>writeGridCell(book,s,row,column,text,literal));
+    if(selectedRow)selected.r=s.rows.findIndex(item=>item.id===selectedRow);
+    anchor={...selected};scrollTarget=selected.r;
+  }else writeGridCell(book,s,row,column,text,literal);
 }
 function commitDraft():boolean{
   if(colorPicker?.pending&&!colorPicker.commit())return false;
@@ -1534,6 +1690,7 @@ function eachSelected(fn:(s:Sheet,r:number,c:number)=>void):void {
   const s=sheet();for(const b of currentSelections())for(let r=b.r1;r<=b.r2;r++)for(let c=b.c1;c<=b.c2;c++)if(inGrid(r,c))fn(s,r,c);
 }
 function copyCells(cut=false):boolean {
+  if(cut&&calendarPlan&&selectionMode()!=='rows'){flash('Use One page to cut and move partial cell ranges. Whole rows can be moved in Date pages.');return false;}
   if(referenceId&&cut){flash('Move complete option rows with their grab handle. Copy is available for cell contents.');return false;}
   const s=sheet(),b=requireRectangle(cut?'Cut':'Copy');if(!b){copied=undefined;return false;}
   const rows=s.rows.filter((r,i)=>i>=b.r1&&i<=b.r2&&(!gridReference()||gridReference()!.rows.includes(r.id))),columns=s.columns.filter((c,i)=>i>=b.c1&&i<=b.c2&&(!gridReference()||gridReference()!.columns.includes(c.id)));
@@ -1546,6 +1703,7 @@ function copyCells(cut=false):boolean {
   render();return true;
 }
 function pasteCells():void {
+  if(calendarPlan&&copied&&(copied.cut||copied.cells.length>1)&&!(copied.cut&&copied.kind==='rows')){flash('Use One page to paste multiple rows or move partial cell ranges. Whole rows can be moved in Date pages.');return;}
   if(!requireRectangle('Paste'))return;
   if(!copied){flash('Copy a cell range first, or paste tab-separated text with Ctrl+V.');return;}
   const source=copied, s=sheet(),from=allSheets(book).find(s=>s.id===source.sheet);
@@ -1556,6 +1714,14 @@ function pasteCells():void {
       if(owner?.id!==source.table||source.kind==='cells'){flash('Move complete table records or fields within the same table. Partial cell cuts cannot split linked records.');return;}
       const axis=source.kind==='rows'?'row':'column';
       runTableEdit(owner.id,axis,{kind:'move',ids:axis==='row'?source.rows:source.columns,boundary:axis==='row'?bounds().r1:bounds().c1},'Cut and move table members');return;
+    }
+    if(calendarPlan&&source.kind==='rows'){
+      if(from.id!==s.id){flash('Move whole rows between date pages of the same sheet.');return;}
+      mutate('Cut and move rows',()=>{
+        protectMasterRowDates();
+        const at=moveRows(book,s,source.rows,bounds().r1);
+        copied=undefined;extraSelections=[];anchor={r:at,c:0};selected={r:at+source.rows.length-1,c:s.columns.length-1};selectionKind='rows';scrollTarget=at;
+      });return;
     }
     const rows=source.rows.map(id=>from.rows.findIndex(r=>r.id===id)),columns=source.columns.map(id=>from.columns.findIndex(c=>c.id===id));
     if(rows.some((r,i)=>r<0||r!==rows[0]+i)||columns.some((c,i)=>c<0||c!==columns[0]+i)){flash('The cut selection changed shape. Select and cut it again.');return;}
@@ -1584,7 +1750,13 @@ function pasteCells():void {
       for(const [id,rows]of joining)addTableRows(book,s,translations.tables.get(id)!,[...rows]);
       if(joining.size){translations=createTranslationContext(book);positionAt=pastePositions(source);}
     }
-    source.cells.forEach((row,i)=>row.forEach((cell,j)=>{
+    const targets=source.cells.flatMap((row,i)=>row.map((_,j)=>{
+      const position=positionAt(i,j);
+      if(!position)throw Error('Paste exceeds this sheet or list. Add rows or columns first.');
+      return{row:s.rows[position.r].id,column:s.columns[position.c].id};
+    }));
+    const selectedRow=s.rows[selected.r]?.id;
+    const write=()=>source.cells.forEach((row,i)=>row.forEach((cell,j)=>{
       const position=positionAt(i,j);
       if(!position)throw Error('Paste exceeds this sheet or list. Add rows or columns first.');
       const row=position.r,column=position.c;
@@ -1598,6 +1770,11 @@ function pasteCells():void {
       if(translations.tableAt(s.id,s.rows[row].id,s.columns[column].id)?.header===s.rows[row].id)throw Error('Paste into table headers is disabled. Rename headers explicitly to protect table integrity.');
       s.cells[key(s.rows[row].id,s.columns[column].id)]=target;
     }));
+    if(!referenceId&&isMasterSheet(book,s)&&targets.some(target=>isMasterDayInput(book,s,target.row,target.column))){
+      editMasterDayInputs(book,s,targets,write);
+      if(selectedRow)selected.r=s.rows.findIndex(row=>row.id===selectedRow);
+      anchor={...selected};scrollTarget=selected.r;
+    }else write();
   });
 }
 function copiedText(source:NonNullable<typeof copied>):string{
@@ -1634,6 +1811,7 @@ function pastePositions(source?:NonNullable<typeof copied>):(i:number,j:number)=
 async function action(name:string):Promise<void> {
   if(busy){flash('Wait for the current save or sync to finish.');return;}
   if(!commitDraft())return;
+  if(calendarPlan&&name==='fill'){flash('Use One page for fill across rows.');return;}
   if(['fill','tables','dropdown-source','block'].includes(name)){
     if(name==='dropdown-source'&&extraSelections.some(area=>area.table!==selectionScope)){flash('Assign DDs in one table or sheet scope at a time. Mixed-scope selections remain separate.');return;}
     const b=requireRectangle(name==='dropdown-source'?'Assign dropdown':name);if(!b)return;
@@ -1702,7 +1880,6 @@ async function action(name:string):Promise<void> {
       }
     });break;
     case 'pin':{const indices=selectedAxisIndices('column');pinnedColumns.set(sheetId,(pinnedColumns.get(sheetId)?.length??0)>0?[]:indices.map(i=>sheet().columns[i].id));render();break;}
-    case 'browse':openBrowse();break;
     case 'toolbar-layout':arrangingToolbar=!arrangingToolbar;if(!arrangingToolbar){toolbarSelection.ids.clear();toolbarSelection.anchor=undefined;}render();root.querySelector<HTMLElement>('[data-action="toolbar-layout"]')?.focus({preventScroll:true});break;
     case 'select-all':{
       const owner=tableSelectionMode?tableAt(book,sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id):undefined;
@@ -1717,17 +1894,42 @@ async function action(name:string):Promise<void> {
     });const d=document.querySelector<HTMLDialogElement>('dialog')!,button=document.createElement('button');button.textContent='Drag to select cells';button.type='button';button.onclick=()=>{d.close();selectionScope=undefined;touchSelection=true;render();};d.append(button);
     if(selectionKind==='rows'||selectionKind==='columns'){const extend=document.createElement('button');extend.type='button';extend.textContent=`Extend ${selectionKind==='rows'?'row':'column'} selection on next header tap`;extend.onclick=()=>{extendHeaderSelection=true;d.close();};d.append(extend);}
     break;}
-    case 'top':page=0;selected.r=0;scrollTarget=0;anchor={...selected};selectionKind='cells';render();break;
+    case 'page-mode':openPageSettings();break;
+    case 'unassigned-date-rows':goDatePage(calendarPlan?.pages.length??0);break;
+    case 'newest-date-page':goDatePage(0);break;
+    case 'date-range':openDatePagePicker();break;
+    case 'top':page=0;selected.r=calendarRows?.[0]??0;scrollTarget=selected.r;anchor={...selected};selectionKind='cells';extraSelections=[];render();break;
     case 'bottom':{
+      if(!referenceId&&isMasterSheet(book,sheet())){masterBottomPending=true;render();break;}
+      if(calendarRows){selected.r=calendarRows.at(-1)??0;scrollTarget={row:selected.r,contextRows:0,align:'bottom'};anchor={...selected};selectionKind='cells';extraSelections=[];render();break;}
       const s=sheet(),used=new Set(Object.entries(s.cells).filter(([,c])=>(c.value!=null&&(typeof c.value!=='string'||!!c.value.trim()))||c.binding||c.note).map(([k])=>k.split(':')[0]));
       selected.r=0;for(let i=s.rows.length-1;i>=0;i--)if(used.has(s.rows[i].id)){selected.r=i;break;}page=Math.floor(selected.r/60);scrollTarget={row:selected.r,contextRows:0,align:'bottom'};anchor={...selected};selectionKind='cells';render();break;
     }
-    case 'prev':scrollTarget=Math.max(0,page*60-60);render();break;
-    case 'next':scrollTarget=Math.min(sheet().rows.length-1,(page+1)*60);render();break;
+    case 'prev':if(calendarPlan){goDatePage(datePage===calendarPlan.pages.length?0:datePage-1);break;}scrollTarget=Math.max(0,page*60-60);render();break;
+    case 'next':if(calendarPlan){goDatePage(datePage+1);break;}scrollTarget=Math.min(sheet().rows.length-1,(page+1)*60);render();break;
     case 'new-sheet':askText('New sheet','Untitled',name=>mutate('Add sheet',()=>{const s=blankSheet(uniqueName(allSheets(book).map(s=>s.name),name));book.sheets.push(s);sheetId=s.id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';page=0;}));break;
     case 'structure':openStructure();break;
     case 'tables':openTables();break;
     case 'move-to-top':moveSelectionToTop();break;
+    case 'new-day':case 'new-hypothetical-day':{
+      if(!isMasterSheet(book,sheet())||referenceId)break;
+      const s=sheet();
+      mutate(name==='new-day'?'Create real day':'Create hypothetical day',()=>{
+        const result=createMasterDay(book,s,name==='new-hypothetical-day',tableSelectionMode),context=masterLogging(book,s);
+        if(name==='new-hypothetical-day')showHypothetical=true;
+        selected={r:s.rows.findIndex(row=>row.id===result.row),c:s.columns.findIndex(column=>column.id===context.label.column)};anchor={...selected};selectionKind='cells';extraSelections=[];scrollTarget=selected.r;
+      });break;
+    }
+    case 'add-food':{
+      if(!isMasterSheet(book,sheet())||referenceId)break;
+      const s=sheet();
+      if(mutate('Add food',()=>{
+        const row=addMasterFood(book,s,s.rows[selected.r]?.id),field=masterLogging(book,s).food!;
+        selected={r:s.rows.findIndex(item=>item.id===row),c:s.columns.findIndex(column=>column.id===field.column)};anchor={...selected};selectionKind='cells';extraSelections=[];scrollTarget=selected.r;
+      }))root.querySelector<HTMLInputElement>('#formula')?.focus({preventScroll:true});
+      break;
+    }
+    case 'date-settings':openDaySettings();break;
     case 'convert-table':convertSelectionToTable();break;
     case 'references':if(referenceId)backToWorkbook();else openReferences();break;
     case 'back-workbook':backToWorkbook();break;
@@ -1743,6 +1945,16 @@ async function action(name:string):Promise<void> {
     case 'summary-group':toggleSelectedGroup('summary');break;
     case 'add-summary-group':groupSelected(false);break;
     case 'plain-group':toggleSelectedGroup('range');break;
+    case 'add-to-group':{
+      const mode=selectionMode();
+      if(mode!=='rows'&&mode!=='columns'){flash('Select row or column headers first.');break;}
+      if(extraSelections.some(area=>area.table!==selectionScope)){flash('Add to one table or sheet scope at a time.');break;}
+      const s=sheet(),axis=mode==='rows'?'row':'column',items=axis==='row'?s.rows:s.columns,ids=selectedAxisIndices(axis).map(i=>items[i].id);
+      const order=(axis==='row'?navigationRows:navigationColumns).map(i=>selectionScope?groupProjection?.axis(selectionScope,axis,items[i].id):items[i].id).filter((id):id is string=>id!==undefined),selectedIds=new Set(ids),first=order.findIndex(id=>selectedIds.has(id));
+      const previous=first>0?order[first-1]:undefined;
+      if(first<=0){flash(`There is no group immediately ${axis==='row'?'above':'to the left of'} the selection.`);break;}
+      mutate('Add to group',()=>joinPrecedingGroups(book,s,axis,ids,selectionScope,previous));break;
+    }
     case 'hypothetical-settings':{
       openHypotheticalSettings({style:getHypotheticalStyle(book),dialog,save:async style=>{
         if(!mutateMetadata('Save hypothetical treatments',()=>{book.hypotheticalStyle=style;},[['hypotheticalStyle']]))throw Error(error||'Treatment settings could not be applied.');
@@ -1771,11 +1983,6 @@ async function action(name:string):Promise<void> {
     }
     case 'block':openBlock();break;
     case 'find':openFind();break;
-    case 'quick-add':{
-      const s=sheet(),t=gridReference()?.table??tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??allTables(book).find(t=>t.sheet===s.id);
-      if(tableSelectionMode&&t){runTableEdit(t.id,'row',{kind:'insert',boundary:Math.max(s.rows.findIndex(row=>row.id===t.header)+1,...t.rows.map(id=>s.rows.findIndex(row=>row.id===id)+1)),count:1},'Add table entry');break;}
-      mutate('Add entry',()=>{const at=t?Math.max(s.rows.findIndex(r=>r.id===t.header)+1,...t.rows.map(id=>s.rows.findIndex(r=>r.id===id)+1)):selected.r+1;addRow(book,s,at,t);selected={r:at,c:t?s.columns.findIndex(c=>c.id===t.columns[0].column):0};anchor={...selected};selectionKind='cells';page=Math.floor(at/60);});document.querySelector<HTMLInputElement>('#formula')?.focus();break;
-    }
     case 'file':openFile();break;
     case 'safety':openSafety();break;
     case 'report':dialog('Import compatibility',`<p>Original Excel remains authoritative. Recalculated results have not been comprehensively compared with Excel.</p><pre>${esc(JSON.stringify(book.importReport,null,2))}</pre>`);break;
@@ -1843,7 +2050,7 @@ function changeHypotheticalTags(axis:Group['axis'],ids:string[],enabled:boolean,
 function openFormat():void {
   const s=sheet(),owner=scopedSelectionTable()??tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??tableAt(book,s.id,s.rows[anchor.r].id,s.columns[anchor.c].id);
   const initial=current().format,color=initial?.color??'#193c34',background=initial?.background??'#ffffff';
-  dialog('Cell formatting',`<form><label>Number display<select id="number-format"><option value="">General</option><option value="decimal">Two decimals</option><option value="percent">Percent</option><option value="date">Date</option><option value="date-compact">Date: M/DD; past years YY/M/DD</option></select></label>${owner?`<label id="date-condition-label" hidden>Date rows<select id="date-format-condition"><option value="">Every selected row</option>${owner.columns.map(field=>`<option value="${field.id}">Only when ${esc(field.name)} is filled</option>`).join('')}</select></label>`:''}<label>Text color<input type="color" id="text-color" value="${color}"></label><label>Background<input type="color" id="bg-color" value="${background}"></label><button class="primary">Apply to selection</button></form>`,d=>{
+  dialog('Cell formatting',`<form><label>Number display<select id="number-format"><option value="">General</option><option value="decimal">Two decimals</option><option value="percent">Percent</option><option value="fraction">Fraction quantity</option><option value="date">Date</option><option value="date-compact">Date: M/DD; past years YY/M/DD</option></select></label>${owner?`<label id="date-condition-label" hidden>Date rows<select id="date-format-condition"><option value="">Every selected row</option>${owner.columns.map(field=>`<option value="${field.id}">Only when ${esc(field.name)} is filled</option>`).join('')}</select></label>`:''}<label>Text color<input type="color" id="text-color" value="${color}"></label><label>Background<input type="color" id="bg-color" value="${background}"></label><button class="primary">Apply to selection</button></form>`,d=>{
     const number=d.querySelector<HTMLSelectElement>('#number-format')!,condition=d.querySelector<HTMLSelectElement>('#date-format-condition');
     number.value=initial?.number??'';
     const when=initial?.dateWhen;
@@ -1928,32 +2135,6 @@ function openTableColumnFormula(tableId:string,column:string):void{
     }))d.close();};
   });
 }
-function openBrowse():void {
-  const s=sheet();
-  dialog('Browse dates or values',`<label>Column<select id="browse-column">${s.columns.map((c,i)=>`<option value="${i}" ${i===selected.c?'selected':''}>${letters(i)} / ${esc(allTables(book).find(t=>t.sheet===s.id&&t.columns.some(x=>x.column===c.id))?.columns.find(x=>x.column===c.id)?.name??c.label)}</option>`).join('')}</select></label><label>Search<input id="browse-search" type="search"></label><input id="browse-position" type="range" min="0" max="0" value="0" aria-label="Value position"><p id="browse-preview" aria-live="polite"></p><button id="browse-go" class="primary">Go to row</button>`,d=>{
-    const column=d.querySelector<HTMLSelectElement>('#browse-column')!,search=d.querySelector<HTMLInputElement>('#browse-search')!,slider=d.querySelector<HTMLInputElement>('#browse-position')!,preview=d.querySelector<HTMLElement>('#browse-preview')!,go=d.querySelector<HTMLButtonElement>('#browse-go')!;
-    let entries:{row:string;text:string;index:number}[]=[],matches:typeof entries=[],browseError='';
-    const update=()=>{const entry=matches[Number(slider.value)];preview.textContent=entry?`${entry.text} / row ${entry.index+1} / ${Number(slider.value)+1} of ${matches.length}`:browseError||'No matching values';go.disabled=!entry;slider.disabled=!matches.length;};
-    const filterEntries=()=>{matches=entries.filter(e=>e.text.toLowerCase().includes(search.value.toLowerCase()));slider.max=String(Math.max(0,matches.length-1));slider.value='0';update();};
-    const load=()=>{
-      engine.beginPass();entries=[];browseError='';
-      try{
-        const c=Number(column.value),hypothetical=hypotheticalMembers(s,'row');
-        for(let r=0;r<s.rows.length;r++){
-          const row=s.rows[r];
-          if(row.hidden||!showHypothetical&&hypothetical.has(row.id)||allTables(book).some(t=>t.sheet===s.id&&t.header===row.id))continue;
-          const value=scalar(engine.cell(s.id,row.id,s.columns[c].id));
-          if(isFault(value)&&['#LIMIT!','#UNSUPPORTED!'].includes(value.error))throw Error('This column cannot be browsed safely until its calculation/compatibility error is resolved.');
-          if(value!==null&&value!=='')entries.push({row:row.id,text:cellText(getCell(s,row.id,s.columns[c].id),s,r,c),index:r});
-        }
-        filterEntries();
-      }catch(e){entries=[];matches=[];browseError=e instanceof Error?e.message:String(e);update();}
-    };
-    column.onchange=load;search.oninput=filterEntries;slider.oninput=update;
-    go.onclick=()=>{const entry=matches[Number(slider.value)];if(!entry)return;selected={r:s.rows.findIndex(r=>r.id===entry.row),c:Number(column.value)};anchor={...selected};selectionKind='cells';scrollTarget=selected.r;page=Math.floor(selected.r/60);d.close();if(s.groups.some(g=>g.axis==='row'&&g.collapsed&&g.members.includes(entry.row)))mutate('Reveal navigation target',()=>s.groups.filter(g=>g.axis==='row'&&g.members.includes(entry.row)).forEach(g=>g.collapsed=false));else render();root.querySelector(`td[data-r="${selected.r}"][data-c="${selected.c}"]`)?.scrollIntoView({block:'nearest',inline:'nearest'});};
-    load();
-  });
-}
 function openStructure():void {
   const items=['Insert row above','Insert column left','Rename column','Move column left','Move column right','Move rows up','Move rows down','Move rows to top','Hide selected rows','Hide selected columns','Unhide all','Set column width','Delete selected rows','Delete selected columns','Clear selected cells','Insert cells, shift right','Insert cells, shift down','Delete cells, shift left','Delete cells, shift up','Duplicate selected rows','Duplicate selected columns'];
   const allowed=(i:number)=>(!referenceId||[0,1,2,5,6,7,11,12,13,14].includes(i)||tableSelectionMode&&[3,4,19,20].includes(i))&&(i<19||!!scopedSelectionTable()),b=bounds();
@@ -2002,6 +2183,7 @@ function openStructure():void {
             extraSelections=[];anchor={...selected};break;
           }
           case 5:case 6:case 7:{
+            protectMasterRowDates();
             const ids=referenceId?selectedReferenceRows():selectedAxisIndices('row').map(r=>s.rows[r].id),view=gridReference(),first=s.rows.findIndex(r=>r.id===ids[0]),last=s.rows.findIndex(r=>r.id===ids.at(-1));
             const slots=view?s.rows.map((r,i)=>view.table?.rows.includes(r.id)?i:-1).filter(i=>i>=0):s.rows.map((_,i)=>i);
             const boundary=op===7?0:op===5?(slots.filter(i=>i<first).at(-1)??first):(slots.find(i=>i>last)??last)+1;
@@ -2071,7 +2253,7 @@ function openTableRename(id:string):void{
     d.classList.add('table-rename-dialog');
     const input=d.querySelector<HTMLInputElement>('#answer')!;input.focus();input.select();
     d.querySelector('form')!.onsubmit=e=>{
-      e.preventDefault();const table=allTables(book).find(t=>t.id===id)!;if(mutateMetadata('Rename table',()=>renameTable(book,id,input.value),[[...tablePath(table),'name']],true))d.close();
+      e.preventDefault();const table=allTables(book).find(t=>t.id===id)!;if(mutateMetadata('Rename table',()=>renameTable(book,id,input.value),[[...tablePath(table),'name'],...allTables(book).map(owner=>[...tablePath(owner),'columns'] as Patch['path'])],true))d.close();
       else{const message=d.querySelector<HTMLElement>('#table-rename-error')!;message.textContent=error;message.hidden=false;}
     };
     d.querySelector<HTMLButtonElement>('#delete-table')!.onclick=()=>confirmTableDeletion(id);
@@ -2104,7 +2286,7 @@ function openTables(showAll=false):void {
           const current=allTables(book).find(candidate=>candidate.id===table.id)!;
           const editor=document.createElement('div'),input=document.createElement('input'),save=document.createElement('button');
           editor.className='table-manager-name-editor';input.value=current.name;input.setAttribute('aria-label','Table name');save.type='button';save.textContent='Save';
-          const commit=()=>{if(mutateMetadata('Rename table',()=>renameTable(book,current.id,input.value),[[...tablePath(current),'name']],true)){message.hidden=true;picker.refresh();}else{message.textContent=error;message.hidden=false;}};
+          const commit=()=>{if(mutateMetadata('Rename table',()=>renameTable(book,current.id,input.value),[[...tablePath(current),'name'],...allTables(book).map(owner=>[...tablePath(owner),'columns'] as Patch['path'])],true)){message.hidden=true;picker.refresh();}else{message.textContent=error;message.hidden=false;}};
           save.onclick=commit;input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();commit();}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();picker.refresh();}};
           editor.append(input,save);title.replaceWith(editor);input.focus();input.select();
         };
@@ -2319,21 +2501,41 @@ function openBlock():void {
   const groupDetails=(ids:string[])=>{if(ids.length<2)throw Error('Add detail rows to this block first.');sheet().groups.push({id:uid(),axis:'row',members:ids,kind:'summary',collapsed:true,label:`${title} details`,...(local?{table:t.id}:{})});};
   dialog(`${title} blocks`, `<p>A block runs from one header record to the next. Moving ingredients across a header still changes membership. Existing formulas are never silently repaired.</p>${blockIssue?`<p>${esc(blockIssue)}</p>`:''}<div class="menu"><button id="group-top" ${members.length?'':'disabled'}>Group & move to top</button><button id="select-block" ${members.length?'':'disabled'}>Select current block (${members.length} records)</button><button id="move-block" ${members.length?'':'disabled'}>Move current block below table header</button><button id="collapse-block" ${members.length?'':'disabled'}>Group block details for collapse</button></div><hr><h3>New ${title.toLowerCase()} header</h3><form id="new-block"><label>${isDay?'Date':'Meal name'}<input id="block-label" ${isDay?'type="date"':''} required></label><label>Status<select id="block-status"><option>real</option>${local?'':'<option>planned</option>'}<option>hypothetical</option></select></label><button class="primary">Create explicit ${title.toLowerCase()}</button></form><p class="muted">Only newly created headers get default totals, including an explicit end-of-table bound. Imported header formulas remain unchanged.${local?' Planned status is sheet-wide; turn off Table selection to use it.':''}</p>`,d=>{
     d.querySelector<HTMLButtonElement>('#group-top')!.onclick=()=>{
+      if(!sheetAxisSelectionAllowed('Moving rows')){d.close();return;}
       if(local){d.close();runTableEdit(t.id,'row',{kind:'move',ids:members,boundary:s.rows.findIndex(row=>row.id===t.header)+1},'Group & move block to top',{finish:ids=>{if(ids.length>1&&!sheet().groups.some(group=>group.table===t.id&&group.kind==='summary'&&group.members[0]===ids[0]))groupDetails(ids);}});return;}
       mutate('Group & move block to top',()=>{
+      protectMasterRowDates();
       const at=groupBlockToTop(book,s,t,s.rows[selected.r].id);selected={r:at,c:0};anchor={...selected};selectionKind='cells';scrollTarget=at;
     });d.close();};
     d.querySelector<HTMLButtonElement>('#select-block')!.onclick=()=>{const fields=t.columns.map(field=>s.columns.findIndex(column=>column.id===field.column));anchor={r:Math.min(...positions),c:local?Math.min(...fields):0};selected={r:Math.max(...positions),c:local?Math.max(...fields):s.columns.length-1};selectionKind=local?'rows':'cells';selectionScope=local?t.id:undefined;scrollTarget=anchor.r;page=Math.floor(anchor.r/60);render();d.close();};
     d.querySelector<HTMLButtonElement>('#move-block')!.onclick=()=>{
+      if(!sheetAxisSelectionAllowed('Moving rows')){d.close();return;}
       if(local){d.close();runTableEdit(t.id,'row',{kind:'move',ids:members,boundary:s.rows.findIndex(row=>row.id===t.header)+1},'Move whole block');return;}
       mutate('Move whole block',()=>{
+      protectMasterRowDates();
       if(!label&&!flag)throw Error('This table has no recognized meal/day header marker. Use explicit row selection instead.');
       const at=moveRows(book,s,members,s.rows.findIndex(r=>r.id===t.header)+1);
       selected={r:at,c:0};anchor={...selected};selectionKind='cells';page=Math.floor(at/60);
     });d.close();};
     d.querySelector<HTMLButtonElement>('#collapse-block')!.onclick=()=>{mutate('Group block details',()=>groupDetails(members));d.close();};
+    const masterDay=isDay&&!referenceId&&isMasterSheet(book,s);
+    if(masterDay)d.querySelector<HTMLSelectElement>('#block-status')!.onchange=()=>{
+      const hypothetical=d.querySelector<HTMLSelectElement>('#block-status')!.value==='hypothetical',input=d.querySelector<HTMLInputElement>('#block-label')!;
+      input.required=!hypothetical;input.disabled=hypothetical;
+    };
     d.querySelector('form')!.onsubmit=e=>{
       e.preventDefault();const text=d.querySelector<HTMLInputElement>('#block-label')!.value,status=d.querySelector<HTMLSelectElement>('#block-status')!.value as 'real'|'planned'|'hypothetical';
+      if(masterDay){
+        const serial=status==='hypothetical'?undefined:parseDateInput(text);
+        if(status!=='hypothetical'&&serial===undefined){flash('Choose a valid day date.');return;}
+        if(mutate(`Create ${status} day`,()=>{
+          const result=createMasterDay(book,s,status==='hypothetical',local,{date:serial,advance:status==='real'});
+          if(result.created)s.rows.find(row=>row.id===result.row)!.status=status;
+          if(status==='hypothetical')showHypothetical=true;
+          selected={r:s.rows.findIndex(row=>row.id===result.row),c:s.columns.findIndex(column=>column.id===masterLogging(book,s).label.column)};anchor={...selected};selectionKind='cells';scrollTarget=selected.r;
+        }))d.close();
+        return;
+      }
       const createHeader=(row:string)=>{
         const s=sheet(),updated=allTables(book).find(table=>table.id===t.id)!,r=s.rows.find(item=>item.id===row)!;
         if(isDay&&!date)throw Error('This table needs a Date column to create an explicit day.');
@@ -2496,6 +2698,7 @@ function dropRows(ids:string[],boundary:number):void{
   if(!editableReference()){flash('Edit the live list source instead.');return;}
   const owner=scopedSelectionTable();if(owner){runTableEdit(owner.id,'row',{kind:'move',ids,boundary:projectedBoundary(owner.id,'row',boundary)},'Move table rows');return;}
   movingRows=undefined;extraSelections=[];mutate('Move rows',()=>{
+    protectMasterRowDates();
     const scope=gridReference()?.table,group=moveTargetGroups(sheet(),'row',ids,boundary,scope).filter(g=>g.collapsed).sort((a,b)=>a.members.length-b.members.length)[0];
     const at=group?moveIntoGroup(book,sheet(),'row',ids,group.id,scope):moveRows(book,sheet(),ids,boundary,scope);
     selected={r:at+ids.length-1,c:sheet().columns.length-1};anchor={r:at,c:0};selectionKind='rows';renderedTarget=`${sheetId}:${selected.r}`;scrollTarget=undefined;
@@ -2675,6 +2878,7 @@ function dropIntoGroup(axis:'row'|'column',ids:string[],groupId:string):void{
   }
   movingRows=movingColumns=undefined;extraSelections=[];clearMovePreview();
   mutate(`Move ${axis==='row'?'rows':'columns'} into group`,()=>{
+    if(axis==='row')protectMasterRowDates();
     const at=moveIntoGroup(book,sheet(),axis,ids,groupId,axis==='row'?gridReference()?.table:undefined);
     if(axis==='row')selected.r=at;else selected.c=at;
     anchor={...selected};selectionKind=axis==='row'?'rows':'columns';renderedTarget=`${sheetId}:${selected.r}`;scrollTarget=undefined;
@@ -2922,10 +3126,10 @@ function bindTabs():void{
       if(e.shiftKey){e.preventDefault();const visible=entries.filter(entry=>entry.getClientRects().length>0),at=visible.findIndex(entry=>token(entry)===(tabSelectionAnchor??referenceId??sheetId)),end=visible.indexOf(el);selectedTabs.clear();for(const entry of visible.slice(Math.min(at<0?end:at,end),Math.max(at<0?end:at,end)+1))selectedTabs.add(token(entry));highlight();return;}
       selectedTabs.clear();selectedTabs.add(token(el));tabSelectionAnchor=token(el);highlight();
       if(group){const key=`dd-group-collapsed:${group.toLowerCase()}`;book.pickerSources[key]=book.pickerSources[key]==='true'?'false':'true';changed('Toggle dropdown group',false,false,capturePatch(book,[['pickerSources']]));render();}else if(reference){if(referenceId!==id)openReferences(id);}else if(sheetId!==id){
-        rememberView();sheetId=id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';
-        let view:{scroll:number;left:number}|undefined;
+        rememberView();sheetId=id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';tableSelectionMode=false;tableSelectionTarget=undefined;selectionScope=undefined;
+        let view:SavedGridView|undefined;
         try{const saved=sessionStorage.getItem(`fnt-sheet-view:${book.id}:${id}`);if(saved)view=restoreView(undefined,saved);}catch(e){flash(e);}
-        render();if(view){const grid=root.querySelector<HTMLElement>('#grid-scroll')!;grid.scrollTop=view.scroll;grid.scrollLeft=view.left;drawRowWindow?.();rememberView();}
+        renderRestoredView(view);
       }};
     el.ondblclick=()=>inlineTabName(el);
     el.oncontextmenu=e=>{e.preventDefault();if(commitDraft())tabMenu(el,e.clientX,e.clientY);};
@@ -3276,7 +3480,8 @@ async function exportBackup():Promise<void> {
   }catch(e){flash(e);}
 }
 function openFile():void {
-  dialog('Workbook & recovery',`<div class="menu"><button id="backup" class="primary">Download independent full backup</button>${book.importReport?'<button id="original">Download unchanged original XLSX</button><button id="report">Compatibility report</button>':''}<label>Import Ingredients into this workbook<input type="file" id="import-ingredients" accept=".xlsx"></label><label>Restore Fnt backup<input type="file" id="restore" accept=".json"></label><label>Replace workbook from Excel (pre-import recovery)<input type="file" id="import" accept=".xlsx"></label><button id="history">Recovery checkpoints</button><button id="sync">Private GitHub sync</button><button id="privacy">Storage & privacy</button></div><p class="muted">Ingredients import keeps existing records and other sheets, saves a full pre-import recovery archive, and disconnects sync. Backups contain your data; keep them private. XLSX compatibility is not certified.</p>`,d=>{
+  dialog('Workbook & recovery',`<div class="menu"><button id="backup" class="primary">Download independent full backup</button>${referenceId?'':'<button id="file-page-settings">Page settings for this sheet</button>'}${book.importReport?'<button id="original">Download unchanged original XLSX</button><button id="report">Compatibility report</button>':''}<label>Import Ingredients into this workbook<input type="file" id="import-ingredients" accept=".xlsx"></label><label>Restore Fnt backup<input type="file" id="restore" accept=".json"></label><label>Replace workbook from Excel (pre-import recovery)<input type="file" id="import" accept=".xlsx"></label><button id="history">Recovery checkpoints</button><button id="sync">Private GitHub sync</button><button id="privacy">Storage & privacy</button></div><p class="muted">Ingredients import keeps existing records and other sheets, saves a full pre-import recovery archive, and disconnects sync. Backups contain your data; keep them private. XLSX compatibility is not certified.</p>`,d=>{
+    const pageSettings=d.querySelector<HTMLButtonElement>('#file-page-settings');if(pageSettings)pageSettings.onclick=()=>{d.close();openPageSettings();};
     const masterLabel=document.createElement('label'),masterInput=document.createElement('input');
     masterLabel.textContent='Review Master import (no changes until approved)';masterInput.type='file';masterInput.id='import-master';masterInput.accept='.xlsx';masterLabel.append(masterInput);
     d.querySelector('#import-ingredients')!.closest('label')!.after(masterLabel);
@@ -3580,7 +3785,28 @@ document.addEventListener('paste',e=>{
   if(!requireRectangle('Paste'))return;
   if(own){closeCellDropdown?.();pasteCells();return;}
   if(!editableReference()){flash('Edit the live list source instead.');return;}
-  mutate('Paste text',()=>{const rows=parseTsv(text),s=sheet();let positionAt=pastePositions();rows.forEach((row,i)=>row.forEach((v,j)=>{const p=positionAt(i,j);if(!p)throw Error('Paste exceeds this sheet or list.');if(allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[p.r].id&&t.columns.some(c=>c.column===s.columns[p.c].id)))throw Error('Rename table headers explicitly.');const count=s.rows.length;writeGridCell(book,s,s.rows[p.r].id,s.columns[p.c].id,v);if(count!==s.rows.length)positionAt=pastePositions();}));});
+  if(calendarPlan&&parseTsv(text).length>1){flash('Use One page to paste multiple rows.');return;}
+  mutate('Paste text',()=>{
+    const rows=parseTsv(text),s=sheet();let positionAt=pastePositions();
+    if(!referenceId&&isMasterSheet(book,s)){
+      const selectedRow=s.rows[selected.r]?.id;
+      const updates=rows.flatMap((values,i)=>values.map((value,j)=>{
+        const position=positionAt(i,j);if(!position)throw Error('Paste exceeds this sheet.');
+        return{row:s.rows[position.r].id,column:s.columns[position.c].id,value};
+      }));
+      if(updates.some(update=>allTables(book).some(table=>table.sheet===s.id&&table.header===update.row&&table.columns.some(field=>field.column===update.column))))throw Error('Rename table headers explicitly.');
+      const write=()=>{for(const update of updates)writeGridCell(book,s,update.row,update.column,update.value);};
+      if(updates.some(update=>isMasterDayInput(book,s,update.row,update.column)))editMasterDayInputs(book,s,updates,write);else write();
+      if(selectedRow)selected.r=s.rows.findIndex(row=>row.id===selectedRow);
+      anchor={...selected};scrollTarget=selected.r;
+      return;
+    }
+    rows.forEach((row,i)=>row.forEach((value,j)=>{
+      const p=positionAt(i,j);if(!p)throw Error('Paste exceeds this sheet or list.');
+      if(allTables(book).some(t=>t.sheet===s.id&&t.header===s.rows[p.r].id&&t.columns.some(c=>c.column===s.columns[p.c].id)))throw Error('Rename table headers explicitly.');
+      const count=s.rows.length;writeGridCell(book,s,s.rows[p.r].id,s.columns[p.c].id,value);if(count!==s.rows.length)positionAt=pastePositions();
+    }));
+  });
 });
 document.addEventListener('cut',e=>{
   if(!book||['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)||document.querySelector('dialog[open]'))return;
@@ -3648,7 +3874,10 @@ async function start():Promise<void> {
     const savedUndo=await store.undoHistory(state.version,book.id);
     if(savedUndo){undo.splice(0,undo.length,...savedUndo.undo);redo.splice(0,redo.length,...savedUndo.redo);}
     let remembered:string|null=null;try{remembered=sessionStorage.getItem('fnt-current-sheet');}catch(e){error=`Selected-tab preference unavailable: ${String(e)}`;}
-    stage='rendering the spreadsheet';engine=new Engine(book);sheetId=book.sheets.some(s=>s.id===remembered)?remembered!:book.sheets[0].id;const view=restoreView(remembered);if(referenceId&&!workbookView){const s=book.sheets.find(s=>!s.supporting)??book.sheets[0];workbookView={sheet:s.id,selected:{r:0,c:0},anchor:{r:0,c:0},kind:'cells',scroll:0,left:0};}status=state.sync?`Saved locally - ${state.pending.length} pending changes`:'Saved in this browser';render();if(view){const grid=root.querySelector<HTMLElement>('#grid-scroll')!;grid.scrollTop=view.scroll;grid.scrollLeft=view.left;drawRowWindow?.();rememberView();}
+    stage='rendering the spreadsheet';engine=new Engine(book);sheetId=book.sheets.some(s=>s.id===remembered)?remembered!:book.sheets[0].id;const view=restoreView(remembered);if(referenceId&&!workbookView){const s=book.sheets.find(s=>!s.supporting)??book.sheets[0];workbookView={sheet:s.id,selected:{r:0,c:0},anchor:{r:0,c:0},kind:'cells',scroll:0,left:0};}status=state.sync?`Saved locally - ${state.pending.length} pending changes`:'Saved in this browser';
+    const defaults=book.sheets.filter(s=>!s.pagination&&paginationDefault(book,s));
+    if(defaults.length){for(const s of defaults)s.pagination=paginationDefault(book,s);changed('Initialize Master date pages',false,false,capturePatch(book,defaults.map(s=>['sheets',book.sheets.indexOf(s),'pagination'])));}
+    renderRestoredView(view);
     if('serviceWorker'in navigator&&import.meta.env.PROD){
       navigator.serviceWorker.addEventListener('message',e=>{
         if(e.data?.type!=='fnt-update-ready'||!Array.isArray(e.data.files))return;
@@ -3670,3 +3899,5 @@ async function start():Promise<void> {
   }catch(e){root.innerHTML=`<main class="startup"><h1>Could not finish ${esc(stage)}</h1><p>${esc(String(e))}</p><p>Your browser data has not been cleared. Do not delete site data. ${stage==='rendering the spreadsheet'?'Reload after the application error is fixed.':'Check browser storage access, or restore a complete independent backup.'}</p></main>`;}
 }
 void start();
+import {displayFraction,parseFraction} from './quantity';
+import {buildDatePages,datePagesIcon,onePageIcon,pageForDate,paginationDefault,validatePagination,type DatePages,type DatePagination} from './date-pagination';

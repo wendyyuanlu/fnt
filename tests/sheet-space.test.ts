@@ -1,6 +1,6 @@
 import {expect,it} from 'vitest';
 import {blankSheet,clone,key,type Workbook} from '../src/model';
-import {ensureTableSheetSpace} from '../src/sheet-space';
+import {ensureTableSheetSpace,sheetTableTail} from '../src/sheet-space';
 
 function fixture(){
   const sheet=blankSheet('Ingredients',4,3),book:Workbook={schema:1,id:'book',title:'Synthetic ingredients',revision:0,sheets:[sheet],tables:[],names:[],pickerSources:{}};
@@ -27,4 +27,11 @@ it('preserves existing space and notes, reserves space past all tables, and leav
   const before=clone(book);expect(ensureTableSheetSpace(book)).toBe(true);
   expect(sheet.rows).toHaveLength(14);expect(sheet.columns).toHaveLength(6);expect(sheet.rows.slice(0,12)).toEqual(before.sheets[0].rows);
   expect(sheet.cells).toEqual(before.sheets[0].cells);expect(book.tables).toEqual(before.tables);expect(free).toEqual(before.sheets[1]);
+});
+it('keeps 20 plain rows below Master without extending the table or changing existing data',()=>{
+  const {book,sheet,table}=fixture();table.name='Master';const before=clone(book);
+  expect(ensureTableSheetSpace(book)).toBe(true);expect(sheet.rows).toHaveLength(24);
+  expect(sheetTableTail(book,sheet,20)).toEqual(Array.from({length:20},(_,i)=>i+4));
+  expect(sheet.rows.slice(0,4)).toEqual(before.sheets[0].rows);expect(sheet.cells).toEqual(before.sheets[0].cells);expect(book.tables).toEqual(before.tables);
+  expect(sheet.rows.slice(4).every(row=>Object.keys(row).length===1)).toBe(true);expect(ensureTableSheetSpace(book)).toBe(false);
 });

@@ -30,12 +30,12 @@ export function groupBlockToTop(book:Workbook,sheet:Sheet,table:Table,row:string
   }
   return at;
 }
-export function defaultHeaderFormula(book:Workbook,table:Table,column:string):string{
+export function defaultHeaderFormula(book:Workbook,table:Table,column:string,options?:{marker:string;boolean:boolean}):string{
   const field=(name:string)=>table.columns.find(c=>c.name.toLowerCase()===name.toLowerCase());
-  const marker=field('isDay')??field('isMeal')??field('Meal')??field('Weight'),portions=field('Portions');
+  const marker=options?table.columns.find(field=>field.id===options.marker):field('isDay')??field('isMeal')??field('Meal')??field('Weight'),portions=field('Portions');
   if(!marker)throw Error('This table needs a meal/day header marker.');
   const ref=(id:string,row=false)=>displayFormula({kind:'structured',table:table.id,columns:[id],mode:row?'row':'data'},book).slice(1);
-  const source=ref(marker.id),values=ref(column),test=`(INDEX(${source},pos+1):INDEX(${source},count))${marker===field('isDay')||marker===field('isMeal')?'=TRUE':'<>""'}`;
+  const source=ref(marker.id),values=ref(column),test=`(INDEX(${source},pos+1):INDEX(${source},count))${options?options.boolean?'=TRUE':'<>""':marker===field('isDay')||marker===field('isMeal')?'=TRUE':'<>""'}`;
   const divisor=portions?`/IF(${ref(portions.id,true)}="",1,${ref(portions.id,true)})`:'';
   return `=LET(pos,ROW()-ROW(INDEX(${source},1))+1,count,ROWS(${source}),IF(pos>=count,0,LET(next,IFERROR(XMATCH(TRUE,${test},0)+pos,count+1),IF(next<=pos+1,0,SUM(INDEX(${values},pos+1):INDEX(${values},next-1))${divisor}))))`;
 }

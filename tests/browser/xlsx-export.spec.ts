@@ -27,6 +27,10 @@ test('local Excel projection roundtrips the native workbook, detects external ed
     notes.validations.push({id:uid(),sheet:notes.id,rows:[notes.rows[7].id],columns:[notes.columns[2].id],source:JSON.stringify(compile('=Ingredients[Ingredient]',book,notes.id,notes.rows[7].id,notes.columns[2].id))});
     book.names.push({id:uid(),name:'ScopedValue',context:notes.id,original:'=7',formula:{kind:'literal',value:7}},{id:uid(),name:'ScopedValue',sheet:notes.id,context:notes.id,original:'=9',formula:{kind:'literal',value:9}});
     write(9,1,'=ScopedValue');
+    notes.cells[key(notes.rows[10].id,notes.columns[1].id)]={format:{number:'fraction'}};write(10,1,'1½');
+    notes.cells[key(notes.rows[11].id,notes.columns[1].id)]={value:'1/8',format:{number:'fraction',excelNumberFormat:'# ?/8'}};
+    notes.cells[key(notes.rows[12].id,notes.columns[1].id)]={value:'1/2',fractionLiteral:true,format:{number:'fraction'}};
+    notes.cells[key(notes.rows[13].id,notes.columns[1].id)]={value:'1/2 shot glass  ',format:{number:'fraction'}};
     backup.state.book=book;
     const bytes=await exportXlsx(backup),loaded=await importXlsx(bytes.buffer,'export.xlsx');
     const parts=unzipSync(bytes),xml=strFromU8(parts['xl/worksheets/sheet4.xml']);
@@ -61,6 +65,7 @@ test('local Excel projection roundtrips the native workbook, detects external ed
       letValue:externalEngine.cell(editedNotes.id,editedNotes.rows[2].id,editedNotes.columns[1].id),
       editedFormulaValue:externalEngine.cell(editedNotes.id,editedNotes.rows[1].id,editedNotes.columns[1].id),
       scopedValue:externalEngine.cell(editedNotes.id,editedNotes.rows[9].id,editedNotes.columns[1].id),
+      fractions:[10,11,12,13].map(r=>({value:externalEngine.cell(editedNotes.id,editedNotes.rows[r].id,editedNotes.columns[1].id),format:editedNotes.cells[key(editedNotes.rows[r].id,editedNotes.columns[1].id)].format.number})),
       safeValidation:xml.includes('<formula1>_FntSource')&&!xml.includes('<formula1>Ingredients['),
       projectedValidation:externalEngine.evaluate(JSON.parse(editedNotes.validations.find((v:{columns:string[]})=>v.columns.includes(editedNotes.columns[2].id)).source),editedNotes.id,editedNotes.rows[7].id,editedNotes.columns[2].id)[0][0],
       overflowValue:externalEngine.cell(editedNotes.id,editedNotes.rows[6].id,editedNotes.columns[1].id),
@@ -78,6 +83,7 @@ test('local Excel projection roundtrips the native workbook, detects external ed
   expect(result.editedLink).toBe('https://example.com/invented');
   expect(result.editedStyle).toMatchObject({bold:true,underline:true,wrap:false,color:'#123456',background:'#abcdef',excelNumberFormat:'0.000 "units"'});
   expect(result.overflowValue).toMatchObject({error:'#NUM!'});
+  expect(result.fractions).toEqual([{value:1.5,format:'fraction'},{value:0.125,format:'fraction'},{value:'1/2',format:'fraction'},{value:'1/2 shot glass  ',format:'fraction'}]);
 });
 
 test('XLSX download control includes a native archive and restores through the real file UI',async({page})=>{

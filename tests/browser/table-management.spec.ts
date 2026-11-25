@@ -31,6 +31,26 @@ async function fixture(page:Page,offset=false){
 async function select(page:Page,range:string){
   await page.locator('.selection-count').click();await page.locator('#answer').fill(range);await page.getByRole('button',{name:'Apply',exact:true}).click();
 }
+test('table rename updates inherited formula defaults and restores them with Undo, Redo and reload',async({page})=>{
+  await fixture(page);
+  await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();
+    try{
+      const state=(await store.load())!;
+      state.book.tables.find((table:{id:string})=>table.id==='other-table')!.columns[1].formulaDefault='=ROWS(Other_Table[Thing])';
+      await store.save(state.book,state.version,'Invented formula default');
+    }finally{store.close();}
+  });
+  await page.reload();await page.getByRole('button',{name:'Other lab',exact:true}).click();
+  await page.locator('td[data-r="1"][data-c="0"]').click();await page.getByRole('button',{name:'Table manager',exact:true}).click();
+  await page.locator('#answer').fill('Other_Renamed');await page.getByRole('button',{name:'Apply',exact:true}).click();
+  const read=async()=> (await snapshot(page)).tables.find(table=>table.id==='other-table')!;
+  expect((await read()).columns[1].formulaDefault).toContain('Other_Renamed[Thing]');
+  await page.getByRole('button',{name:'Undo',exact:true}).click();
+  expect((await read()).name).toBe('Other_Table');expect((await read()).columns[1].formulaDefault).toBe('=ROWS(Other_Table[Thing])');
+  await page.getByRole('button',{name:'Redo',exact:true}).click();await snapshot(page);await page.reload();
+  expect((await read()).name).toBe('Other_Renamed');expect((await read()).columns[1].formulaDefault).toContain('Other_Renamed[Thing]');
+});
 
 test('Ctrl+T creates headers and table manager opens only the selected table rename field with stable formulas and persistence',async({page})=>{
   await fixture(page);await select(page,'A1:C3');await page.keyboard.press('Control+t');

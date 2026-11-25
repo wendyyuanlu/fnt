@@ -373,6 +373,11 @@ export class Engine {
         const c = t?.columns.find(c => c.id === cell.binding!.column);
         result = t && c && this.tableRows.get(t.id)!.has(cell.binding.row) ? this.cell(t.sheet, cell.binding.row, c.column) : fault('#REF!', 'Linked record was deleted.');
       } else result = cell.formula ? this.evaluate(cell.formula, sheetId, row, col) : cell.value ?? null;
+      if(!cell.formula&&!cell.binding&&!cell.fractionLiteral&&cell.format?.number==='fraction'&&typeof result==='string'){
+        const fraction=parseFraction(result);
+        if(fraction.kind==='fraction')result=fraction.value;
+        else if(fraction.kind==='invalid')result=fault(fraction.error,fraction.message);
+      }
       if (Array.isArray(result)) {
         const matrix: Value[][] = result.map(v => Array.isArray(v) ? v : [v]);
         const ri = sheet.rows.findIndex(r => r.id === row), ci = sheet.columns.findIndex(c => c.id === col);
@@ -782,7 +787,15 @@ export class Engine {
         const a = n(0), b = n(1); if (isFault(a)) return a; if (isFault(b)) return b;
         return name === 'ABS' ? Math.abs(a) : name === 'INT' ? Math.floor(a) : Math.sign(a)*Math.round((Math.abs(a)+Number.EPSILON)*10**b)/10**b;
       }
-      case 'VALUE': return n(0);
+      case 'VALUE': {
+        const value=scalar(values[0]);
+        if(typeof value==='string'){
+          const fraction=parseFraction(value);
+          if(fraction.kind==='fraction')return fraction.value;
+          if(fraction.kind==='invalid')return fault(fraction.error,fraction.message);
+        }
+        return n(0);
+      }
       case 'LEFT': case 'RIGHT': {
         const count = n(1,1); if (isFault(count)) return count; if (count < 0) return fault('#VALUE!');
         return name === 'LEFT' ? text(values[0]).slice(0,Math.floor(count)) : count === 0 ? '' : text(values[0]).slice(-Math.floor(count));
@@ -800,3 +813,4 @@ export class Engine {
     }
   }
 }
+import {parseFraction} from './quantity';

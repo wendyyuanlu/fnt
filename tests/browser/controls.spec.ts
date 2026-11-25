@@ -88,7 +88,7 @@ test('dropdown dialogs grow only for their visible sources and keep scrolling at
   expect(bounds.height).toBeLessThanOrEqual(580);expect(bounds.y).toBeGreaterThanOrEqual(10);
   expect(bounds.y+bounds.height).toBeLessThanOrEqual(590);expect(apply.y+apply.height).toBeLessThanOrEqual(bounds.y+bounds.height);
   expect(await scrolls()).toBe(true);
-  await page.getByRole('button',{name:'Close dialog',exact:true}).click();await page.getByRole('button',{name:'Browse values',exact:true}).click();
+  await page.getByRole('button',{name:'Close dialog',exact:true}).click();await page.locator('#title').click();
   expect((await page.getByRole('dialog').boundingBox())!.height).toBeLessThan(400);
 });
 
@@ -145,7 +145,7 @@ test('toolbar tools rearrange with mouse or touch, preserve actions and survive 
   await expect(page.locator('.toolbar [data-toolbar-tool]').nth(1)).toHaveAttribute('data-toolbar-tool','action:redo');
   await expect(page.locator('#save-state')).toContainText(/^Saved/);
   const ddOrder=(await snapshot()).toolbarOrder!;
-  expect(ddOrder).toContain('action:quick-add');
+  expect(ddOrder).not.toContain('action:quick-add');expect(ddOrder).not.toContain('action:browse');
   await page.getByRole('button',{name:'Finish arranging toolbar',exact:true}).click();await page.locator('.reference-manager').click();
   await expect(page.getByRole('button',{name:'View/hide hypo rows/columns'})).toBeVisible();expect((await snapshot()).toolbarOrder).toEqual(ddOrder);
 });
@@ -313,7 +313,7 @@ test('table column dialog manages dropdowns and formula patterns without replaci
 test('toolbar icons share size and styling while formatting and colors persist',async({page})=>{
   await page.goto('/');
   await expect(page.locator('[data-action="toolbar-layout"] .toolbar-icon')).toBeVisible();
-  const icons=await page.locator('.toolbar .toolbar-icon').evaluateAll(elements=>elements.map(el=>{
+  const icons=await page.locator('.toolbar .toolbar-icon:not(.summary-group-add .toolbar-icon)').evaluateAll(elements=>elements.map(el=>{
     const svg=el.getBoundingClientRect(),button=el.closest('button')!.getBoundingClientRect();
     return{width:svg.width,height:svg.height,center:Math.abs(svg.top+svg.height/2-button.top-button.height/2),stroke:el.getAttribute('stroke-width'),view:el.getAttribute('viewBox'),text:el.querySelector('text')!==null,paths:[...el.querySelectorAll('path')].map(p=>({stroke:getComputedStyle(p).strokeWidth,effect:getComputedStyle(p).vectorEffect}))};
   }));

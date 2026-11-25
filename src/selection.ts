@@ -51,6 +51,9 @@ export function selectionRanges(sheet:Sheet,active:SelectionBounds,areas:Selecti
     const columns=!area.table&&area.kind==='rows'?[[0,sheet.columns.length-1]]:runs(owner?area.columns.filter(id=>owner.columns.some(field=>field.column===id)):area.columns,sheet.columns);
     for(const [r1,r2] of rows)for(const [c1,c2] of columns)rectangles.push({r1,r2,c1,c2});
   }
+  return mergeSelectionRanges(rectangles);
+}
+export function mergeSelectionRanges(rectangles:SelectionBounds[]):SelectionBounds[]{
   const edges=[...new Set(rectangles.flatMap(r=>[r.r1,r.r2+1]))].sort((a,b)=>a-b),result:SelectionBounds[]=[],lastByColumns=new Map<string,SelectionBounds>();
   for(let i=0;i<edges.length-1;i++){
     const r1=edges[i],r2=edges[i+1]-1,intervals=rectangles.filter(r=>r.r1<=r1&&r.r2>=r2).map(r=>[r.c1,r.c2]).sort((a,b)=>a[0]-b[0]),merged:number[][]=[];

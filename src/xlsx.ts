@@ -70,7 +70,7 @@ export async function importXlsx(buffer:ArrayBuffer,name:string,options?:{sheets
         ...(font&&first(font,'strike')&&!['0','false'].includes(first(font,'strike')!.getAttribute('val')??'')?{strikethrough:true}:{}),
         ...(rgb?{color:'#'+rgb.slice(-6)}:{}),...(bg?{background:'#'+bg.slice(-6)}:{}),
         ...(code?{excelNumberFormat:code}:{}),
-        number:([14,15,16,17,18,19,20,21,22].includes(num)||/[ydhs]/i.test(tokens))?'date':[9,10].includes(num)||tokens.includes('%')?'percent':[2,4].includes(num)||/^0\.00$/.test(tokens)?'decimal':''});
+        number:([14,15,16,17,18,19,20,21,22].includes(num)||/[ydhs]/i.test(tokens))?'date':[9,10].includes(num)||tokens.includes('%')?'percent':[12,13].includes(num)||/[?#0]+\s*\/\s*(?:[?#0]+|\d+)/.test(tokens)?'fraction':[2,4].includes(num)||/^0\.00$/.test(tokens)?'decimal':''});
     }
   }
   const book:Workbook={schema:1,id:uid(),title:name.replace(/\.xlsx$/i,''),revision:0,sheets:[],tables:[],names:[],pickerSources:{}};
@@ -138,6 +138,7 @@ export async function importXlsx(buffer:ArrayBuffer,name:string,options?:{sheets
       else if(t==='b')v=raw==='1';else if(t==='e')v={error:raw};else if(t==='str'||t==='d')v=raw;else if(raw!=='')v=Number.isFinite(Number(raw))?Number(raw):raw;
       const arrayRef=f&&attr(f,'t')==='array'&&attr(f,'ref')?range(attr(f,'ref')):undefined;
       s.cells[key(r,c)]={value:f?undefined:v,format:formats[Number(attr(cell,'s'))],...(arrayRef?{spillHint:arrayRef.r1!==arrayRef.r2||arrayRef.c1!==arrayRef.c2}:{})};
+      if(!f&&typeof v==='string'&&s.cells[key(r,c)].format?.number==='fraction')s.cells[key(r,c)].fractionLiteral=true;
       if(f){report.formulaCount++;formulas.push({sheet:s,row:a.r,col:a.c,source:f.textContent??'',shared:attr(f,'t')==='shared'?attr(f,'si'):undefined});}
       if(f&&attr(f,'t')==='array'&&attr(f,'ref'))arrayRanges.push({sheet:s,ref:attr(f,'ref'),row:a.r,col:a.c});
     }

@@ -1,6 +1,6 @@
 import {shiftCells,type CellRange} from './cell-operations';
 import {Engine,scalar} from './formula';
-import { allTables,allSheets,getCell,isFault,key,uid,uniqueName,type Table,type TableSort,type Workbook} from './model';
+import { allTables,allSheets,getCell,isFault,key,uid,uniqueName,updateFormulaDefaults,type Table,type TableSort,type Workbook} from './model';
 
 export function sortedTables(book:Workbook,sort:TableSort):Table[]{
   const alphabetical=(a:Table,b:Table)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base',numeric:true})||a.id.localeCompare(b.id);
@@ -47,7 +47,8 @@ function tableName(book:Workbook,name:string,id?:string):string{
 export function renameTable(book:Workbook,id:string,name:string):void{
   const table=allTables(book).find(table=>table.id===id);
   if(!table)throw Error('This table no longer exists.');
-  table.name=tableName(book,name,id);
+  const validName=tableName(book,name,id);
+  updateFormulaDefaults(book,table,()=>{table.name=validName;});
 }
 
 export function createTable(book:Workbook,sheetId:string,range:CellRange,name:string,hasHeaders:boolean):Table{

@@ -136,6 +136,63 @@ remain viewable only in history.
 
 ## Use
 
+- **One page / Date pages** in the bottom navigator opens Page settings.
+  Master defaults to the most recent 90-calendar-day window, with entries in
+  chronological order inside each page; other sheets default to the existing
+  continuous view. Next shows the previous 90-day window; `<` returns to a
+  newer window and `<<` returns to the latest. Master opens at the table's
+  bottom with two plain sheet rows visible below it, including on website
+  load; returning after scrolling up restores the previous page and position.
+  `<<` resets Master to the latest page's table bottom. Master reserves 20
+  plain sheet rows below its tables without expanding table membership.
+  Top and Bottom scroll within
+  the current page. Click its date range to choose a page using a lightweight
+  calendar picker. The final page can be shorter,
+  and unlogged calendar gaps can produce empty windows.
+  **File > Page settings for this sheet** changes the day count, date table,
+  date field and optional day-header marker. Following detail rows stay with
+  their header's date; undated records and independent worksheet notes have
+  an **Undated** view. Pagination changes only the display, not records,
+  dates, formulas or group identities. Settings use stable field/table IDs
+  and survive moves, renames and native backups. Missing configured fields
+  display an error and keep One page available.
+  Cell editing, row insertion, row grips, group moves, Move to top and
+  whole-row cut/move work in Date pages. Whole dated groups still appear
+  chronologically; moving rows does not change their saved day dates.
+  Master day-header formulas become stable date anchors before row moves,
+  with their original calculations retained for Undo/recovery.
+  Use One page for partial-cell cut/move, multi-row paste and fill.
+  Sheets start unlocked; an explicit table lock is remembered per sheet.
+- **Add to group**, immediately before Hypo, joins selected row or column
+  headers to the plain and/or summary groups immediately above or to the left.
+  It preserves cells and axis order, inherits group Hypo tagging, and uses
+  one Undo step. Table selection confines it to that table's groups.
+- Master has a separate **New day / Food / New day settings** bar. Its saved
+  next logging date and Forward/Backward direction are independent of existing
+  days; Reset to today changes only the settings draft until Apply. Only a newly
+  created real day advances the cursor. New day options creates an immediate,
+  undated hypothetical group with an editable name and its own totals.
+  Day-header dates are anchored before date-sensitive moves; the original
+  formulas remain available as calculations and in Undo/recovery. Correcting a
+  day date chronologically moves its complete block, preserving identities,
+  grouping, notes and overrides. Food and ordinary grid entry remain available
+  without a required logging dialog.
+- **123 > Fraction quantity** accepts `1/2`, `1 1/2`, `1½`, `⅛`, and signed
+  fractions. Quantities are numeric for arithmetic, lookups and nutrition
+  calculations; the editor retains exactly what you typed. Display uses reduced
+  mixed fractions only when they represent the stored number exactly, otherwise
+  it keeps the decimal. Existing whole-fraction text in this format is interpreted
+  without rewriting its stored value. Invalid fractions and zero denominators
+  produce explicit errors; a leading apostrophe keeps a fraction literal.
+  `VALUE("1/2")` also reads fraction text explicitly. Ordinary text/formula
+  results and dates are not globally converted to quantities.
+  Apply this to **Amount** in Master/Meals, not their **Unit** labels.
+  `1/2 shot glass  ` remains intact freeform text, not a silently split quantity.
+  Column moves/renames, Undo and native backups retain fraction input and values.
+  Excel projection writes numeric fraction quantities with a fraction format;
+  Excel's external display may approximate them, but its stored numeric values
+  and the embedded native archive do not change. Imported Excel fraction-formatted
+  text remains literal. Combined/split quantity columns are not implemented.
 - Date-formatted cells display `M/DD` (for example `9/29` or `10/02`).
   Dates before the current calendar year display `YY/MM/DD`, such as
   `25/09/29`. Stored date serials, formulas, text notes and original Excel
@@ -705,11 +762,11 @@ remain viewable only in history.
 - Bottom places the last row containing an entered value, linked choice or note
   at the viewport bottom, ignoring formula-only trailing rows. Top, row
   navigation, and temporary selected-column pinning keep large
-  sheets navigable. All rows occupy one continuous scrollable sheet; a bounded
-  rendering window keeps large sheets responsive without paging. Column moves
+  sheets navigable. One page mode uses a continuous scrollable sheet; a bounded
+  rendering window keeps large sheets responsive. Date pages provide calendar
+  windows without rearranging the underlying records. Column moves
   retain the current vertical and horizontal viewport.
-  **Browse values** searches and scrubs dates or values from a chosen column,
-  then jumps to the corresponding row. Pinned columns use IDs and can be
+  Pinned columns use IDs and can be
   non-first or multi-column selections; pinning changes only the temporary view.
   Frozen columns retain their natural order and position while visible, then
   stick to the left or right edge as scrolling takes them out of view.

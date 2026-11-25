@@ -100,6 +100,11 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
           expression=source&&sr>=0&&sc>=0&&t?.rows.includes(cell.binding.row)?`'${source.name.replace(/'/g,"''")}'!$${letters(sc)}$${sr+1}`:'#REF!';
         }
         if(expression!==undefined){const spill=!!cell.spillHint;if(spill)dynamic=true;return `<c r="${address}" s="${style}"${spill?' cm="1"':''}><f${spill?` t="array" ref="${address}"`:''}>${x(expression)}</f></c>`;}
+        if(cell.format?.number==='fraction'&&!cell.fractionLiteral&&typeof cell.value==='string'){
+          const fraction=parseFraction(cell.value);
+          if(fraction.kind==='fraction')return `<c r="${address}" s="${style}"><v>${fraction.value}</v></c>`;
+          if(fraction.kind==='invalid')return `<c r="${address}" s="${style}" t="e"><v>${x(fraction.error)}</v></c>`;
+        }
         if(cell.value===undefined||cell.value===null)return `<c r="${address}" s="${style}"/>`;
         if(isFault(cell.value)){if(!/^#(?:REF!|DIV\/0!|VALUE!|N\/A|NAME\?|NUM!|SPILL!|CALC!|NULL!)$/.test(cell.value.error))throw Error('A Fnt-only error value cannot be faithfully represented in Excel. Use the native backup.');return `<c r="${address}" s="${style}" t="e"><v>${x(cell.value.error)}</v></c>`;}
         if(typeof cell.value==='number'){if(!Number.isFinite(cell.value))throw Error('Non-finite numeric value cannot be exported.');return `<c r="${address}" s="${style}"><v>${cell.value}</v></c>`;}
@@ -166,7 +171,7 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
     put(`xl/worksheets/sheet${number}.xml`,`<worksheet xmlns="${main}"><sheetData>${Array.from({length},(_,r)=>`<row r="${r+1}">${helperColumns.map((column,c)=>column[r]===undefined?'':`<c r="${letters(c)}${r+1}" t="inlineStr"><is><t xml:space="preserve">${cellString(column[r])}</t></is></c>`).join('')}</row>`).join('')}</sheetData></worksheet>`);
     workbookRels.push({id:'rSheet'+number,type:'worksheet',target:`worksheets/sheet${number}.xml`});sheetXml.push(`<sheet name="${x(helperName)}" sheetId="${number}" state="veryHidden" r:id="rSheet${number}"/>`);overrides.push({path:`xl/worksheets/sheet${number}.xml`,type:'worksheet'});
   }
-  const numFormats=formats.map((f,i)=>({id:164+i,code:x(f.excelNumberFormat??(f.number==='date'?'yyyy-mm-dd':f.number==='date-compact'?`[<${excelDate(new Date().getFullYear(),1,1)}]yy/m/dd;m/dd`:f.number==='percent'?'0.00%':f.number==='decimal'?'0.00':'General'))}));
+  const numFormats=formats.map((f,i)=>({id:164+i,code:x(f.excelNumberFormat??(f.number==='date'?'yyyy-mm-dd':f.number==='date-compact'?`[<${excelDate(new Date().getFullYear(),1,1)}]yy/m/dd;m/dd`:f.number==='fraction'?'# ?/??????':f.number==='percent'?'0.00%':f.number==='decimal'?'0.00':'General'))}));
   put('xl/styles.xml',`<styleSheet xmlns="${main}"><numFmts count="${numFormats.length}">${numFormats.map(f=>`<numFmt numFmtId="${f.id}" formatCode="${f.code}"/>`).join('')}</numFmts><fonts count="${formats.length}">${formats.map(f=>`<font><sz val="11"/><name val="Calibri"/>${f.bold?'<b/>':''}${f.italic?'<i/>':''}${f.underline?'<u/>':''}${f.strikethrough?'<strike/>':''}${f.color?`<color rgb="FF${f.color.slice(1)}"/>`:''}</font>`).join('')}</fonts><fills count="${formats.length+2}"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>${formats.map(f=>`<fill><patternFill patternType="${f.background?'solid':'none'}">${f.background?`<fgColor rgb="FF${f.background.slice(1)}"/><bgColor indexed="64"/>`:''}</patternFill></fill>`).join('')}</fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${formats.length}">${formats.map((f,i)=>`<xf numFmtId="${164+i}" fontId="${i}" fillId="${i+2}" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyAlignment="1"><alignment wrapText="${f.wrap?1:0}"/></xf>`).join('')}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`);
   if(dynamic){
     put('xl/metadata.xml',`<metadata xmlns="${main}" xmlns:xda="http://schemas.microsoft.com/office/spreadsheetml/2017/dynamicarray"><metadataTypes count="1"><metadataType name="XLDAPR" minSupportedVersion="120000" copy="1" pasteAll="1" pasteValues="1" merge="1" splitFirst="1" rowColShift="1" clearFormats="1" clearComments="1" assign="1" coerce="1" cellMeta="1"/></metadataTypes><futureMetadata name="XLDAPR" count="1"><bk><extLst><ext uri="{bdbb8cdc-fa1e-496e-a857-3c3f30c029c3}"><xda:dynamicArrayProperties fDynamic="1" fCollapsed="0"/></ext></extLst></bk></futureMetadata><cellMetadata count="1"><bk><rc t="1" v="0"/></bk></cellMetadata></metadata>`);
@@ -185,3 +190,4 @@ export async function exportXlsx(backup:Backup):Promise<Uint8Array> {
   const bytes=zipSync(entries,{level:6});if(bytes.length>30*1048576)throw Error('XLSX export exceeds the safe 30 MB reimport limit. Download the native backup instead.');
   return bytes;
 }
+import {parseFraction} from './quantity';

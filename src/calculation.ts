@@ -91,7 +91,7 @@ export function quantityDiagnostic(book:Workbook,sheet:Sheet,row:string,column:s
   const read=(id:string)=>scalar(engine.cell(sheet.id,row,id)),unitValue=read(unit.column),amountValue=read(amount.column);
   if(isFault(unitValue)||isFault(amountValue))return 'The amount or unit has a reference/calculation error.';
   if(amountValue===null&&unitValue===null)return;
-  if(typeof amountValue!=='number'||!Number.isFinite(amountValue))return 'Enter a numeric Amount.';
+  if(typeof amountValue!=='number'||!Number.isFinite(amountValue))return 'Enter a numeric Amount; for fractions, use Fraction quantity formatting.';
   if(compare(unitValue,'g')===0)return;
   if(typeof unitValue!=='string'||!unitValue)return 'Choose a conversion unit, or enter grams manually.';
   const source=allTables(book).find(t=>dependencies.has(t.id)&&['Conversion Unit','Conversion Amount','Serving (g)'].every(name=>t.columns.some(c=>c.name===name)));

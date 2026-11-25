@@ -175,6 +175,8 @@ function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook
     id(s.id);
     if (typeof s.name !== 'string' || !Array.isArray(s.rows) || !s.rows.length || s.rows.length>100000 || !Array.isArray(s.columns) || !s.columns.length || s.columns.length>512 || !s.cells || !Array.isArray(s.groups) || !Array.isArray(s.validations)) throw Error('Invalid or oversized sheet.');
     if(s.outlineView!==undefined&&(!s.outlineView||typeof s.outlineView!=='object'||Array.isArray(s.outlineView)||Object.entries(s.outlineView).some(([k,v])=>!['tree','plainGroupHints'].includes(k)||typeof v!=='boolean')))throw Error('Invalid sheet outline preferences.');
+    if(s.pagination!==undefined)validatePagination(s.pagination);
+    if(s.dayLogging!==undefined)validateDayLogging(s.dayLogging);
     s.rows.forEach(r => id(r.id)); s.columns.forEach(c => id(c.id));
     if([...s.rows,...s.columns].some(item=>item.hypothetical!==undefined&&typeof item.hypothetical!=='boolean'))throw Error('Invalid hypothetical tag.');
     for(const item of [...s.rows,...s.columns])if(item.hypotheticalTables!==undefined&&(!item.hypotheticalTables||typeof item.hypotheticalTables!=='object'||Array.isArray(item.hypotheticalTables)||Object.entries(item.hypotheticalTables).some(([table,value])=>!safeId(table)||typeof value!=='boolean')))throw Error('Invalid table hypo tag.');
@@ -191,6 +193,8 @@ function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook
       if(c.formula)ast(c.formula);
       if(c.calculation)ast(c.calculation);
       if(c.dateLiteral!==undefined&&typeof c.dateLiteral!=='boolean')throw Error('Invalid literal date text.');
+      if(c.dayDateTable!==undefined&&!safeId(c.dayDateTable))throw Error('Invalid inherited day-date table.');
+      if(c.fractionInput!==undefined&&typeof c.fractionInput!=='string'||c.fractionLiteral!==undefined&&typeof c.fractionLiteral!=='boolean')throw Error('Invalid fraction input metadata.');
       if(c.format)for(const color of[c.format.color,c.format.background])if(color&&!/^#[0-9a-f]{6}$/i.test(color))throw Error('Invalid cell color.');
       if(c.format?.excelNumberFormat!==undefined&&typeof c.format.excelNumberFormat!=='string')throw Error('Invalid Excel number format.');
       if(c.format?.dateWhen!==undefined&&(!c.format.dateWhen||typeof c.format.dateWhen!=='object'||!safeId(c.format.dateWhen.table)||!safeId(c.format.dateWhen.column)))throw Error('Invalid conditional date format.');
@@ -492,3 +496,5 @@ export async function syncGitHub(state: LocalState, token: string, fetcher: type
   if (!ack.content?.sha) throw Error('GitHub did not acknowledge a file revision. Sync not confirmed.');
   return {sha:ack.content.sha};
 }
+import {validatePagination} from './date-pagination';
+import {validateDayLogging} from './day-logging';

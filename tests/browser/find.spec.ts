@@ -313,9 +313,10 @@ test('Find reuses the existing dialog field and button styles without overflowin
   const find={input:await style('#find-text'),button:await style('#find-next'),close:await style('.find-dialog .close')};
   const frame=await style('.find-scope'),results=await style('#find-results');
   expect(results.radius).toBe(frame.radius);expect(results.border).toBe(frame.border);
-  await page.getByRole('button',{name:'Close dialog'}).click();await page.getByRole('button',{name:'Browse values',exact:true}).click();
-  expect(await style('#browse-search')).toEqual(find.input);
-  expect(await style('#browse-go')).toEqual(find.button);expect(await style('dialog .close')).toEqual(find.close);
+  await page.getByRole('button',{name:'Close dialog'}).click();await page.locator('#title').click();
+  await page.locator('#answer').evaluate(el=>(el as HTMLInputElement).blur());
+  expect(await style('#answer')).toEqual(find.input);
+  expect(await style('#ask-form button.primary')).toEqual(find.button);expect(await style('dialog .close')).toEqual(find.close);
   await page.getByRole('button',{name:'Close dialog'}).click();await page.keyboard.press('Control+f');
   const bounds=await page.getByRole('dialog').boundingBox(),button=await page.locator('#replace-all').boundingBox(),viewport=page.viewportSize()!;
   expect(bounds!.x).toBeGreaterThanOrEqual(0);expect(bounds!.x+bounds!.width).toBeLessThanOrEqual(viewport.width);

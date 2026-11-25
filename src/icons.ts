@@ -29,11 +29,15 @@ export const toolbarIconPaths={
   structure:'M3 3h18v18H3ZM3 9h18M9 3v18M13 15h6M16 12v6',
   'summary-group':'M5 4h14q1 0 1 1v2q0 1-1 1H5q-1 0-1-1V5q0-1 1-1ZM6 8v12h3m-3-6h3m3 0h8m-8 6h8',
   'plain-group':'M6 5H3v14h3m-3-7h3M8 3h13v4H8ZM8 10h13v4H8ZM8 17h13v4H8Z',
+  'add-to-group':'M3 3h13v4H3ZM4 7v14h3M9 11h12M9 17h12M17 14v6',
   pin:'M8 3h8M9 3v6l-3 4v2h12v-2l-3-4V3M12 15v7',
-  browse:'M3 4h9M3 9h7M3 14h6M3 19h9M20 13a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm-1 3 3 4',
   'text-color':'M6 17l6-13 6 13M8 13h8',
   'background-color':'M5 3l10 10M9 5l7 7-6 6-7-7 6-6ZM4 12h12M20 12s-2 3-2 4a2 2 0 0 0 4 0c0-1-2-4-2-4'
 };
+export function navigationIcon(name:'up'|'down'|'newest'|'previous'|'next'):string{
+  const paths={up:'M12 19V5m-6 6 6-6 6 6',down:'M12 5v14m-6-6 6 6 6-6',newest:'M13 6l-6 6 6 6M20 6l-6 6 6 6',previous:'M15 6l-6 6 6 6',next:'M9 6l6 6-6 6'};
+  return `<svg class="navigation-icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><path d="${paths[name]}"/></svg>`;
+}
 export function toolbarIcon(name:keyof typeof toolbarIconPaths,color?:string):string{
   const safeColor=color?.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
   return `<svg class="toolbar-icon" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">${name==='hypothetical'?`<path class="stamp-frame" vector-effect="non-scaling-stroke" d="${stampFrame}" fill="var(--stamp-fill,none)" stroke="var(--stamp-frame-color,currentColor)"/>`:''}<path vector-effect="non-scaling-stroke" d="${toolbarIconPaths[name]}"/>${name==='references'?'<path vector-effect="non-scaling-stroke" d="M9 8h5a6 6 0 0 1 0 12H9Z"/>':''}${name==='dropdown-source'?'<path vector-effect="non-scaling-stroke" d="M15 4h4l-2 2Z" fill="currentColor"/>':''}${name==='hypothetical-settings'?'<rect vector-effect="non-scaling-stroke" x="3" y="3" width="18" height="18" rx="1.5" stroke-dasharray="2 2"/>':''}${safeColor?`<path vector-effect="non-scaling-stroke" d="M4 22h16" stroke="${safeColor}"/>`:''}</svg>`;

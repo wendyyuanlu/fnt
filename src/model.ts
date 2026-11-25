@@ -1,5 +1,6 @@
-import { compile,Engine,maySpill,scalar,type Ast } from './formula';
+import { compile,displayFormula,Engine,maySpill,scalar,type Ast } from './formula';
 import {parseDateInput} from './dates';
+import {parseFraction} from './quantity';
 
 export type Scalar = string | number | boolean | null | Fault;
 export interface Fault { error: string; detail?: string }
@@ -11,7 +12,8 @@ export interface Format {
 }
 export interface Cell {
   value?: Scalar; formula?: Ast; calculation?: Ast; original?: string; format?: Format; note?: string; link?: string;
-  spillHint?: boolean; dateLiteral?: boolean;
+  spillHint?: boolean; dateLiteral?: boolean; fractionInput?:string; fractionLiteral?:boolean;
+  dayDateTable?:string;
   binding?: { table: string; row: string; column: string };
 }
 export interface Column { id: string; label: string; width?: number; wrap?:boolean; hidden?: boolean; hypothetical?:boolean; hypotheticalTables?:Record<string,boolean> }
@@ -55,6 +57,8 @@ export interface Sheet {
   cells: Record<string, Cell>; groups: Group[]; validations: Validation[];
   supporting?:boolean;
   outlineView?:{tree?:boolean;plainGroupHints?:boolean};
+  pagination?:import('./date-pagination').DatePagination;
+  dayLogging?:import('./day-logging').DayLogging;
 }
 export interface ReferenceSource {
   id:string;name:string;kind:'list'|'units'|'conversions'|'derived';table?:string;column?:string;
@@ -146,6 +150,11 @@ export function setInput(book: Workbook, sheet: Sheet, row: string, column: stri
     }
   }
   const cell: Cell = { format: previous.format, note: previous.note };
+  if(previous.format?.number==='fraction'&&!input.startsWith('=')&&!input.startsWith("'")){
+    const fraction=parseFraction(input);
+    if(fraction.kind==='invalid')throw Error(fraction.message);
+    if(fraction.kind==='fraction'){cell.fractionInput=input;input=String(fraction.value);}
+  }
   if(!input.startsWith('='))cell.calculation=previous.formula??previous.calculation;
   if (input.startsWith('=')) {
     cell.original = input;
@@ -154,6 +163,7 @@ export function setInput(book: Workbook, sheet: Sheet, row: string, column: stri
     cell.spillHint=maySpill(cell.formula);
   } else {
     if(input.startsWith("'")&&['date','date-compact'].includes(previous.format?.number??''))cell.dateLiteral=true;
+    if(input.startsWith("'")&&previous.format?.number==='fraction')cell.fractionLiteral=true;
     cell.value = input === '' ? null : /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/.test(input) ? Number(input)
       : input === 'TRUE' ? true : input === 'FALSE' ? false : input.startsWith("'") ? input.slice(1) : input;
     if(typeof cell.value==='number'&&!Number.isFinite(cell.value))cell.value=fault('#NUM!','Number is outside the supported numeric range.');
@@ -172,9 +182,21 @@ export function renameColumn(book: Workbook, table: Table, id: string, name: str
   if (!name.trim() || table.columns.some(c => c.id !== id && c.name.toLowerCase() === name.toLowerCase())) throw Error('Column names must be nonempty and unique in the table.');
   const col = table.columns.find(c => c.id === id);
   if (!col) throw Error('Column no longer exists.');
-  col.name = name;
+  updateFormulaDefaults(book,table,()=>{col.name=name;},col.id);
   const sheet = allSheets(book).find(s => s.id === table.sheet)!;
   sheet.cells[key(table.header, col.column)] = { ...getCell(sheet, table.header, col.column), value: name };
+}
+export function updateFormulaDefaults(book:Workbook,table:Table,rename:()=>void,column?:string):void{
+  const defaults:{field:Table['columns'][number];formula:Ast}[]=[];
+  const name=column?table.columns.find(field=>field.id===column)!.name:table.name;
+  for(const owner of allTables(book))for(const field of owner.columns){
+    if(!field.formulaDefault?.toLowerCase().includes(name.toLowerCase()))continue;
+    const formula=compile(field.formulaDefault,book,owner.sheet,owner.rows[0]??owner.header,field.column);let uses=false;
+    mapAst(formula,node=>{if(node.kind==='structured'&&node.table===table.id&&(!column||node.columns.includes(column)))uses=true;return node;});
+    if(uses)defaults.push({field,formula});
+  }
+  rename();
+  for(const pending of defaults)pending.field.formulaDefault=displayFormula(pending.formula,book);
 }
 export function move<T>(items: T[], from: number, to: number): void {
   if (from < 0 || from >= items.length || to < 0 || to >= items.length) throw Error('Move is outside the sheet.');

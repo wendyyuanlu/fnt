@@ -33,10 +33,7 @@ test('non-first selected columns retain natural positions and stick at the left 
   const after=await cell(page,0,2).boundingBox(),corner=await page.locator('.corner').boundingBox();
   expect(after!.x).toBeCloseTo(corner!.x+corner!.width,0);
   expect((await cell(page,0,3).boundingBox())!.x).toBeCloseTo(after!.x+after!.width,0);
-  await page.getByRole('button',{name:'Browse values',exact:true}).click();await page.locator('#browse-column').selectOption('2');
-  await expect(page.locator('#browse-preview')).toContainText('2025-06-01');
-  await page.locator('#browse-position').focus();await page.locator('#browse-position').press('ArrowRight');
-  await expect(page.locator('#browse-preview')).toContainText('2025-06-02');await page.getByRole('button',{name:'Go to row',exact:true}).click();
+  await cell(page,1,2).click();
   await expect(page.locator('.address')).toHaveText('C2');await expect(cell(page,1,2)).toHaveText('2025-06-02');
   await page.getByRole('button',{name:'Unpin columns',exact:true}).click();await expect(cell(page,1,2)).toHaveCSS('position','relative');
 });
