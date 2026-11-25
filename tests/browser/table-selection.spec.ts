@@ -32,6 +32,21 @@ async function snapshot(page:Page){
   });
 }
 const activate=(locator:Locator,mobile:boolean)=>mobile?locator.tap():locator.click();
+test('column wrap defaults persist for inserted and appended rows despite a last-row override',async({page})=>{
+  await fixture(page);const toggle=page.getByRole('button',{name:'Table-constrained header selection'});
+  if(await toggle.getAttribute('aria-pressed')!=='true')await toggle.click();await chooseTarget(page,'scope-top');
+  await page.locator('td[data-r="3"][data-c="1"]').click();await page.locator('th[data-col="1"]').click();await page.locator('[data-action="wrap"]').click();
+  await page.locator('td[data-r="6"][data-c="1"]').click();await page.locator('[data-action="wrap"]').click();
+  await expect(page.locator('td[data-r="6"][data-c="1"]')).not.toHaveClass(/wrapped/);
+  await page.locator('[data-insert-row="7"]').click();await expect(page.locator('td[data-r="7"][data-c="1"]')).toHaveClass(/wrapped/);
+  const book=await snapshot(page);expect(book.tables.find(t=>t.id==='scope-top')!.columns[0].wrap).toBe(true);expect(book.tables.find(t=>t.id==='scope-middle')!.columns[0].wrap).toBeUndefined();
+  await page.reload();await expect(page.locator('td[data-r="7"][data-c="1"]')).toHaveClass(/wrapped/);
+  await page.locator('td[data-r="8"][data-c="1"]').click();await page.locator('#formula').fill('New wrapped record');await page.locator('#formula').press('Enter');
+  await expect(page.locator('td[data-r="8"][data-c="1"]')).toHaveClass(/wrapped/);await expect(page.locator('td[data-r="6"][data-c="1"]')).not.toHaveClass(/wrapped/);
+  for(let i=0;i<4;i++)await page.locator('[data-action="undo"]').click();
+  expect((await snapshot(page)).tables.find(t=>t.id==='scope-top')!.columns[0].wrap).toBeUndefined();
+  await page.locator('[data-action="redo"]').click();expect((await snapshot(page)).tables.find(t=>t.id==='scope-top')!.columns[0].wrap).toBe(true);
+});
 async function chooseTarget(page:Page,id:string){
   const names:Record<string,string>={'scope-top':'Top','scope-middle':'Middle','scope-right':'Right'};
   await page.getByLabel('Table selection target',{exact:true}).click();
@@ -412,6 +427,58 @@ for(const axis of ['row','column'] as const)test(`table ${axis} duplication and 
   expect(others(await snapshot(page))).toEqual(others(before));
   await page.reload();await expect(page.getByLabel('Table selection target',{exact:true})).toHaveAttribute('data-value','scope-top');
   const current=await snapshot(page);expect(axis==='row'?current.tables.find(table=>table.id==='scope-top')!.rows.length:current.tables.find(table=>table.id==='scope-top')!.columns.length).toBe(axis==='row'?5:4);
+});
+test('Move to top precedes table settings in a saved layout and moves only the selected table record',async({page})=>{
+  await fixture(page);
+  await page.evaluate(async()=>{
+    const p='/src/storage.ts',{Store}=await import(p) as typeof import('../../src/storage'),store=await Store.open();
+    try{const state=(await store.load())!;state.book.toolbarOrder=['action:tables','action:copy','action:undo'];await store.save(state.book,state.version,'Synthetic legacy toolbar');}finally{store.close();}
+  });
+  await page.reload();const button=page.getByRole('button',{name:'Move to top',exact:true});
+  expect(await page.locator('[data-action="tables"]').evaluate(el=>el.previousElementSibling?.getAttribute('data-action'))).toBe('move-to-top');
+  await expect(button.locator('svg')).toHaveAttribute('width','18');
+  const toggle=page.getByRole('button',{name:'Table-constrained header selection'});
+  if(await toggle.getAttribute('aria-pressed')!=='true')await toggle.click();
+  await page.locator('td[data-r="9"][data-c="1"]').click();await expect(button).toBeDisabled();
+  await page.locator('td[data-r="1"][data-c="1"]').click();await expect(button).toBeDisabled();
+  await page.locator('td[data-r="13"][data-c="1"]').click();const before=await snapshot(page);await button.click();
+  await expect(page.locator('td[data-r="10"][data-c="1"]')).toHaveText('Middle 4 Name');
+  const after=await snapshot(page);
+  expect(after.sheets[0].rows).toEqual(before.sheets[0].rows);
+  for(const table of before.tables.filter(table=>table.id!=='scope-middle'))for(const row of [table.header,...table.rows])for(const field of table.columns)expect(after.sheets.find(s=>s.id===table.sheet)!.cells[`${row}:${field.column}`]).toEqual(before.sheets.find(s=>s.id===table.sheet)!.cells[`${row}:${field.column}`]);
+  await page.locator('[data-action="undo"]').click();expect((await snapshot(page)).sheets[0].cells).toEqual(before.sheets[0].cells);
+});
+for(const local of [true,false])for(const collapsed of [false,true])test(`Move to top preserves a nested ${collapsed?'collapsed':'expanded'} ${local?'table':'sheet'} summary group`,async({page})=>{
+  await fixture(page);
+  await page.evaluate(async({local,collapsed})=>{
+    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{setInput}=await import(p+'model.ts') as typeof import('../../src/model'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets[0],owner=state.book.tables.find(t=>t.id==='scope-middle')!,scope=local?{table:owner.id}:{};
+      s.groups.push({id:'moving-parent',axis:'row',kind:'summary',members:s.rows.slice(11,14).map(r=>r.id),collapsed,...scope,label:'Moving parent'},{id:'moving-child',axis:'row',kind:'summary',members:s.rows.slice(12,14).map(r=>r.id),collapsed:false,...scope,label:'Moving child'});
+      setInput(state.book,s,s.rows[11].id,owner.columns[2].column,'=[@Name]&" note"');
+      s.cells[`${s.rows[11].id}:${s.columns[0].id}`]={value:'Keep neighboring note'};
+      await store.save(state.book,state.version,'Synthetic move-to-top summaries');
+    }finally{store.close();}
+  },{local,collapsed});
+  await page.reload();
+  const toggle=page.getByRole('button',{name:'Table-constrained header selection'});
+  if((await toggle.getAttribute('aria-pressed')==='true')!==local)await toggle.click();
+  await page.locator('td[data-r="11"][data-c="1"]').click();const before=await snapshot(page);await page.getByRole('button',{name:'Move to top',exact:true}).click();
+  const after=await snapshot(page),s=after.sheets[0];
+  await expect(page.locator('td[data-r="10"][data-c="1"]')).toHaveText('Middle 2 Name');
+  expect(s.groups.find(g=>g.id==='moving-parent')?.collapsed).toBe(collapsed);
+  expect(s.groups.find(g=>g.id==='moving-child')).toBeDefined();
+  if(local){
+    expect(s.rows).toEqual(before.sheets[0].rows);
+    expect(s.cells[`${s.rows[10].id}:${s.columns[3].id}`].formula).toEqual(before.sheets[0].cells[`${before.sheets[0].rows[11].id}:${s.columns[3].id}`].formula);
+    for(const row of before.tables.find(t=>t.id==='scope-right')!.rows)for(const field of before.tables.find(t=>t.id==='scope-right')!.columns)expect(s.cells[`${row}:${field.column}`]).toEqual(before.sheets[0].cells[`${row}:${field.column}`]);
+    expect(s.cells[`${s.rows[11].id}:${s.columns[0].id}`]).toEqual(before.sheets[0].cells[`${s.rows[11].id}:${s.columns[0].id}`]);
+  }else{
+    expect(s.rows.slice(10,14).map(r=>r.id)).toEqual([11,12,13,10].map(i=>before.sheets[0].rows[i].id));
+    expect(s.cells).toEqual(before.sheets[0].cells);
+  }
+  await page.locator('[data-action="undo"]').click();const undone=await snapshot(page);
+  expect(undone.sheets[0].rows).toEqual(before.sheets[0].rows);expect(undone.sheets[0].cells).toEqual(before.sheets[0].cells);expect(undone.sheets[0].groups).toEqual(before.sheets[0].groups);
 });
 test('table-mode block moves, grouping and new hypo headers stay local; shared resizing is refused',async({page})=>{
   await fixture(page);

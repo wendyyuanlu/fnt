@@ -183,14 +183,17 @@ function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook
     for(const g of s.groups)if(!['row','column'].includes(g.axis)||!Array.isArray(g.members)||g.members.some(m=>!safeId(m))||g.table!==undefined&&!safeId(g.table)||g.kind!==undefined&&!['summary','range'].includes(g.kind)||g.kind==='summary'&&g.members.length<2)throw Error('Invalid outline group.');
     if(!/^#[0-9a-f]{6}$/i.test(s.color))throw Error('Invalid tab color.');
     for(const c of s.columns)if(typeof c.label!=='string'||(c.width!==undefined&&(!Number.isFinite(c.width)||c.width<40||c.width>1000)))throw Error('Invalid column layout.');
+    for(const c of s.columns)if(c.wrap!==undefined&&typeof c.wrap!=='boolean')throw Error('Invalid column wrap default.');
     const rows = new Set(s.rows.map(r => r.id)), columns = new Set(s.columns.map(c => c.id));
     for(const g of s.groups)if(g.kind==='summary'&&(new Set(g.members).size!==g.members.length||g.members.some(id=>!(g.axis==='row'?rows:columns).has(id))))throw Error('A summary group has missing or duplicate members.');
     if(cells)for (const [k,c] of Object.entries(s.cells)) {
       const [r,col] = k.split(':'); if (!rows.has(r) || !columns.has(col) || !c || typeof c !== 'object') throw Error('Invalid cell address.');
       if(c.formula)ast(c.formula);
       if(c.calculation)ast(c.calculation);
+      if(c.dateLiteral!==undefined&&typeof c.dateLiteral!=='boolean')throw Error('Invalid literal date text.');
       if(c.format)for(const color of[c.format.color,c.format.background])if(color&&!/^#[0-9a-f]{6}$/i.test(color))throw Error('Invalid cell color.');
       if(c.format?.excelNumberFormat!==undefined&&typeof c.format.excelNumberFormat!=='string')throw Error('Invalid Excel number format.');
+      if(c.format?.dateWhen!==undefined&&(!c.format.dateWhen||typeof c.format.dateWhen!=='object'||!safeId(c.format.dateWhen.table)||!safeId(c.format.dateWhen.column)))throw Error('Invalid conditional date format.');
       if(c.value!==undefined&&c.value!==null&&!['string','number','boolean'].includes(typeof c.value)&&!(typeof c.value==='object'&&typeof c.value.error==='string'))throw Error('Invalid cell value.');
       if(typeof c.value==='number'&&!Number.isFinite(c.value))throw Error('Invalid numeric cell value.');
     }
@@ -200,7 +203,7 @@ function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook
     const s=sheets.find(s=>s.id===t.sheet);if(!s||!s.rows.some(r=>r.id===t.header))throw Error('Missing table header.');
     const rows=new Set(s.rows.map(r=>r.id)),cols=new Set(s.columns.map(c=>c.id));
     if(t.rows.some(r=>!rows.has(r)))throw Error('Missing table record.');
-    t.columns.forEach(c=>{id(c.id);if(!cols.has(c.column)||typeof c.name!=='string')throw Error('Missing table column.');});
+    t.columns.forEach(c=>{id(c.id);if(!cols.has(c.column)||typeof c.name!=='string')throw Error('Missing table column.');if(c.wrap!==undefined&&typeof c.wrap!=='boolean')throw Error('Invalid table column wrap default.');});
   }
   for (const n of b.names) {id(n.id);ast(n.formula);}
   if(b.references!==undefined){

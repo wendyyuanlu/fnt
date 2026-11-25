@@ -8,7 +8,11 @@ export function mountToolbar(toolbar:HTMLElement,host:ToolbarHost):()=>void{
     tool.dataset.toolbarTool=id;return [id,tool] as const;
   }));
   const order=[...host.order??[]].filter(id=>identities.has(id));
-  order.push(...[...identities.keys()].filter(id=>!order.includes(id)));
+  for(const [id,tool]of identities){
+    if(order.includes(id))continue;
+    const before=tool.dataset.toolbarBefore,at=before?order.indexOf(before):-1;
+    if(at>=0)order.splice(at,0,id);else order.push(id);
+  }
   const dividers=[...host.dividers??groups.slice(0,-1).flatMap(group=>{
     const last=group.lastElementChild;return last instanceof HTMLElement&&last.dataset.toolbarTool?[last.dataset.toolbarTool]:[];
   })];

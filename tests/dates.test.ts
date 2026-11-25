@@ -1,7 +1,7 @@
 import { describe,expect,it } from 'vitest';
 import { compile,Engine } from '../src/formula';
 import { createDemo } from '../src/model';
-import { displayExcelDate,excelDate,excelDateText } from '../src/dates';
+import { displayExcelDate,excelDate,excelDateText,parseDateInput } from '../src/dates';
 
 describe('year-aware date display',()=>{
   it('uses an unpadded month and two-digit day except for earlier years',()=>{
@@ -17,8 +17,22 @@ describe('year-aware date display',()=>{
     expect(displayExcelDate(serial,2027)).toBe('26/12/31');
     expect(excelDateText(serial)).toBe('2026-12-31');
   });
+  it('supports compact prior-year months without changing existing date formats',()=>{
+    expect(displayExcelDate(excelDate(2026,9,29)!,2026,true)).toBe('9/29');
+    expect(displayExcelDate(excelDate(2026,11,1)!,2026,true)).toBe('11/01');
+    expect(displayExcelDate(excelDate(2025,9,1)!,2026,true)).toBe('25/9/01');
+    expect(displayExcelDate(excelDate(2026,9,1)!,2027,true)).toBe('26/9/01');
+  });
   it('retains explicit invalid-date handling',()=>{
     for(const value of [-1,Infinity,NaN,2958466])expect(displayExcelDate(value,2026)).toBeUndefined();
+  });
+  it('parses whole date inputs while retaining recipe notes and invalid calendar dates as text',()=>{
+    expect(parseDateInput('nov 22',2026,true)).toBe(excelDate(2026,11,22));
+    expect(parseDateInput('November 22, 2025',2026,true)).toBe(excelDate(2025,11,22));
+    expect(parseDateInput('11/01',2026,true)).toBe(excelDate(2026,11,1));
+    expect(parseDateInput('25/9/01',2026,true)).toBe(excelDate(2025,9,1));
+    expect(parseDateInput('2025-09-01',2026,true)).toBe(excelDate(2025,9,1));
+    for(const value of ['nov 31','feb 29 2025','Recipe: nov 22','100g','nov 22 then chill'])expect(parseDateInput(value,2026,true)).toBeUndefined();
   });
 });
 

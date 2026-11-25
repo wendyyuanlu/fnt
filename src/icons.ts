@@ -9,6 +9,7 @@ export const toolbarIconPaths={
   settings:'M10 2h4l.7 3 2 .9 2.8-.9 2 3.5-2.1 2.1V13l2.1 2.1-2 3.5-2.8-.9-2 .9L14 22h-4l-.7-3-2-.9-2.8.9-2-3.5L4.6 13v-2.4L2.5 8.5l2-3.5 2.8.9 2-.9ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
   'convert-table':'M3 2h18v9H3ZM3 6.5h18M9 2v9M3 19h18v4H3ZM9 19v4M12 17v-4m-3 3 3-3 3 3',
   tables:'M3 3h18v18H3ZM3 8h18M3 14h18M9 8v13M15 8v13',
+  'move-to-top':'M4 4h16M12 20V8m-5 5 5-5 5 5',
   'dropdown-source':'M5 2h14q2 0 2 2v3q0 2-2 2H5q-2 0-2-2V4q0-2 2-2ZM6 14h12M6 19h12',
   'toolbar-layout':'M3 3h18v6H3ZM8 3v6M13 3v6M18 3v6M12 18l8-8 3 3-8 8-4 1 1-4ZM18 12l3 3',
   bold:'M7 5h5a3.5 3.5 0 0 1 0 7H7m5 0h1a3.5 3.5 0 0 1 0 7H7V5',

@@ -1,5 +1,5 @@
 import {displayFormula,Engine,type Ast} from './formula';
-import { allSheets,allTables,addTableColumns,addTableRows,clone,getCell,inheritInsertedGroups,isFault,letters,uid,type Value,type Workbook} from './model';
+import { allSheets,allTables,addTableColumns,addTableRows,clone,getCell,inheritInsertedGroups,inheritSheetRowWrap,isFault,letters,uid,type Value,type Workbook} from './model';
 import {editTableAxis,TableExpansionConflict,type TableAxisEdit,type CellMoveTrace} from './table-operations';
 import {editSnapshot} from './undo-history';
 
@@ -73,6 +73,7 @@ export function planTableAxisEdit(book:Workbook,tableId:string,axis:'row'|'colum
     const insertions=Array.from({length:count},()=>({id:uid(),label:'New column',width:145}));
     inheritInsertedGroups(sheet,axis,insertions.map(item=>({at:boundary,id:item.id})),new Set(crossing.map(other=>other.id)));
     if(axis==='row')sheet.rows.splice(boundary,0,...insertions.map(({id})=>({id})));else sheet.columns.splice(boundary,0,...insertions);
+    if(axis==='row')inheritSheetRowWrap(sheet,insertions.map(({id})=>id));
     for(const other of crossing)if(axis==='row')addTableRows(next,sheet,other,insertions.map(item=>item.id));else addTableColumns(next,sheet,other,insertions.map(item=>item.id));
     const trace=new Map<string,{sheet:string;row:string;column:string}|null>(),ids=editTableAxis(next,tableId,axis,edit,trace,{ownedCandidate:true});
     if(options.trace)for(const [source,target] of trace)options.trace(source,target);

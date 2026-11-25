@@ -140,6 +140,26 @@ remain viewable only in history.
   Dates before the current calendar year display `YY/MM/DD`, such as
   `25/09/29`. Stored date serials, formulas, text notes and original Excel
   export format codes are unchanged.
+- **123 > Date: M/DD; past years YY/M/DD** provides the compact date style:
+  `9/29`, `11/01`, or `25/9/01`. Choose **Only when Meal is filled** for Meals'
+  Date column; recipe notes and numeric entries on ingredient rows stay freeform.
+  The condition follows stable table/field identities through moves and renames.
+  Click an enabled date cell for a light, cell-anchored picker below the cell
+  without a modal dialog or blurred spreadsheet, or enter `nov 22`, `11/01`,
+  `25/9/01`, or an ISO date. Missing years use the current year. A leading
+  apostrophe keeps date-looking text literal; invalid dates and whole recipe
+  notes remain text. Opening/cancelling the calendar never changes a cell.
+  Native backups/Excel recovery archives retain this rule; the external Excel
+  view cannot reproduce the Meal-dependent condition for numeric recipe notes.
+- **Move to top**, immediately before Table manager, moves the selected records
+  or a complete nested summary group below its table header and reveals it.
+  Table-constrained mode leaves neighboring columns/tables alone; sheet mode
+  moves whole physical rows. Both preserve formulas and support Undo.
+  Unwrapped cell text now clips at the right border instead of leaving a gutter.
+  Setting Wrap on a selected column remembers its default for newly inserted
+  and appended rows, including empty tables. Table-scoped column defaults stay
+  with their fields through renames and moves without affecting neighboring
+  tables; individual cell overrides do not change the column default.
 - Dialogs fit their contents and grow only as needed, up to 1000px or the
   available screen height. Dropdown lists and search results use that room
   before scrolling; short dialogs remain compact.
@@ -552,6 +572,10 @@ remain viewable only in history.
   dropdowns, or edit column formulas. Matching-pattern edits retain other formula
   patterns and manual overrides, updating their saved restore calculations.
   Replacing all manual values requires explicitly choosing **All data rows**.
+  **Calculated and empty cells; preserve manual values** can add Unit lookups
+  such as `=XLOOKUP(Master[@[Food]],Ingredients[Ingredients],Ingredients[Conversion Unit],"")`
+  without replacing entered units. These use the same lighter calculated-cell
+  presentation as Meals and are inherited by new table rows.
 - **Assign DD** assigns a source to selected cells or a table's selected columns
   without changing their contents. The button highlights when the active cell has
   a dropdown assignment, even with a manual value; it reflects assignments, not

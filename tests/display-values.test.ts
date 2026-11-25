@@ -1,9 +1,33 @@
 import {expect,it} from 'vitest';
-import {cachedCellText} from '../src/display-values';
+import {cachedCellText,dateFormatContext} from '../src/display-values';
 import {Engine,scalar} from '../src/formula';
-import {createDemo,getCell,key,setInput} from '../src/model';
+import {createDemo,duplicateSheet,getCell,key,moveColumns,setInput} from '../src/model';
+import {displayExcelDate,excelDate} from '../src/dates';
 import {applyUndo,capturePatch} from '../src/undo-history';
 
+it('conditional dates track label edits, renamed/moved columns, copied sheets and the current year',()=>{
+  const book=createDemo(),table=book.tables.find(table=>table.name==='Meals')!,s=book.sheets.find(s=>s.id===table.sheet)!,row=table.rows[0],label=table.columns[0],column=table.columns[4].column;
+  s.cells[key(row,column)]={value:excelDate(2026,9,1)!,format:{number:'date-compact',dateWhen:{table:table.id,column:label.id}}};
+  const engine=new Engine(book),date=getCell(s,row,column);
+  const text=(year:number)=>{const context=dateFormatContext(engine,book,s.id,row,date,year);return cachedCellText(engine,s.id,row,column,date,value=>context.enabled?displayExcelDate(Number(value),year,true)!:String(value),context.key);};
+  expect(text(2026)).toBe('9/01');
+  setInput(book,s,row,column,'nov 22');expect(getCell(s,row,column).value).toBe(excelDate(new Date().getFullYear(),11,22));
+  s.cells[key(row,column)]=date;
+  setInput(book,s,row,label.column,'');engine.invalidate([`${s.id}:${key(row,label.column)}`]);
+  expect(text(2026)).toBe(String(excelDate(2026,9,1)));
+  setInput(book,s,row,column,'nov 22');expect(getCell(s,row,column).value).toBe('nov 22');
+  setInput(book,s,row,column,"'nov 22");expect(getCell(s,row,column).value).toBe('nov 22');
+  s.cells[key(row,column)]=date;
+  setInput(book,s,row,label.column,'New meal');engine.invalidate([`${s.id}:${key(row,label.column)}`]);
+  expect(text(2027)).toBe('26/9/01');
+  label.name='Renamed meal';moveColumns(book,s,[label.column],s.columns.length);
+  expect(dateFormatContext(new Engine(book),book,s.id,row,date).enabled).toBe(true);
+  const copy=duplicateSheet(book,s),copiedTable=book.tables.find(table=>table.sheet===copy.id)!;
+  const conditional=Object.values(copy.cells).find(cell=>cell.format?.dateWhen)!;
+  expect(dateFormatContext(new Engine(book),book,copy.id,copiedTable.rows[0],conditional).enabled).toBe(true);
+  table.columns=table.columns.filter(field=>field.id!==label.id);
+  expect(dateFormatContext(new Engine(book),book,s.id,row,date).error).toBe('#REF!');
+});
 it('reuses displayed text only while the cell and dependency-tracked value remain current',()=>{
   const book=createDemo(),s=book.sheets.at(-1)!,row=s.rows[0].id,column=s.columns[0].id,formula=s.columns[1].id;
   setInput(book,s,row,column,'4');setInput(book,s,row,formula,'=A1*2');

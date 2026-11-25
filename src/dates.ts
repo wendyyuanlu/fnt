@@ -26,9 +26,27 @@ export function excelDateText(serial:number):string|undefined {
   return date?`${String(date.year).padStart(4,'0')}-${String(date.month).padStart(2,'0')}-${String(date.day).padStart(2,'0')}`:undefined;
 }
 
-export function displayExcelDate(serial:number,currentYear=new Date().getFullYear()):string|undefined {
+export function displayExcelDate(serial:number,currentYear=new Date().getFullYear(),compactPastMonth=false):string|undefined {
   const date=excelDateParts(serial);
   if(!date)return;
   const day=String(date.day).padStart(2,'0');
-  return date.year<currentYear?`${String(date.year%100).padStart(2,'0')}/${String(date.month).padStart(2,'0')}/${day}`:`${date.month}/${day}`;
+  return date.year<currentYear?`${String(date.year%100).padStart(2,'0')}/${String(date.month).padStart(compactPastMonth?1:2,'0')}/${day}`:`${date.month}/${day}`;
+}
+export function parseDateInput(input:string,currentYear=new Date().getFullYear(),yearFirst=false):number|undefined{
+  const text=input.trim();let year=currentYear,month:number,day:number;
+  const iso=/^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text),numeric=/^(\d{1,4})\/(\d{1,2})(?:\/(\d{1,4}))?$/.exec(text),named=/^([a-z]+)\s+(\d{1,2})(?:,?\s+(\d{2}|\d{4}))?$/i.exec(text);
+  if(iso){year=Number(iso[1]);month=Number(iso[2]);day=Number(iso[3]);}
+  else if(named){
+    const names=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'],full=['january','february','march','april','may','june','july','august','september','october','november','december'],name=named[1].toLowerCase();
+    const index=name==='sept'?8:names.indexOf(name)>=0?names.indexOf(name):full.indexOf(name);if(index<0)return;
+    month=index+1;day=Number(named[2]);if(named[3])year=Number(named[3]);
+  }else if(numeric){
+    const first=Number(numeric[1]),second=Number(numeric[2]),third=numeric[3]===undefined?undefined:Number(numeric[3]);
+    if(third!==undefined&&(numeric[1].length===4||first>12||yearFirst&&numeric[3].length<=2&&third<=31&&second<=12)){
+      year=first;month=second;day=third;
+    }else{month=first;day=second;if(third!==undefined)year=third;}
+  }else return;
+  if(year<100)year+=2000;
+  const serial=excelDate(year,month,day),parts=serial===undefined?undefined:excelDateParts(serial);
+  return parts?.year===year&&parts.month===month&&parts.day===day?serial:undefined;
 }

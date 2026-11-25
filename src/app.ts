@@ -3,11 +3,11 @@ import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTable
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
 import { Store, SyncConflict, syncGitHub, validateBook,validateBookMetadata,validateCellChanges, type Backup, type LocalState } from './storage';
 import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch} from './undo-history';
-import {cachedCellText} from './display-values';
+import {cachedCellText,dateFormatContext} from './display-values';
 import { parseArchive, stringifyArchive } from './archive';
 import { parseTsv,serializeTsv } from './clipboard';
 import { cutCells, shiftCells } from './cell-operations';
-import { displayExcelDate,excelDate,excelDateText } from './dates';
+import { displayExcelDate,excelDate,excelDateText,parseDateInput } from './dates';
 import { RowViewport } from './row-viewport';
 import {captureSelection,headerSelectionTables,nearestHeaderTables,tableHeaderBounds,selectionCount,selectionRanges,type SelectionArea,type SelectionBounds} from './selection';
 import { defaultHeaderFormula,groupBlockToTop,positionalBlock } from './meal-block';
@@ -167,6 +167,31 @@ const selectedAxisIndices=(axis:'row'|'column')=>{
   const ranges=currentSelections(),items=axis==='row'?sheet().rows:sheet().columns;
   return items.map((_,i)=>i).filter(i=>ranges.some(r=>axis==='row'?i>=r.r1&&i<=r.r2:i>=r.c1&&i<=r.c2));
 };
+function moveToTopTarget(){
+  if(referenceId||selectionMode()==='columns'||extraSelections.some(area=>area.table!==selectionScope))return;
+  const s=sheet(),roots=selectedAxisIndices('row').map(i=>s.rows[i].id);
+  const active=tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??tableAt(book,s.id,s.rows[anchor.r].id,s.columns[anchor.c].id);
+  const candidates=allTables(book).filter(table=>table.sheet===s.id&&roots.every(id=>table.rows.includes(id)));
+  const table=scopedSelectionTable()??(tableSelectionTarget?candidates.find(table=>table.id===tableSelectionTarget):active??(candidates.length===1?candidates[0]:undefined));
+  if(!table)return;
+  const local=tableSelectionMode||!!selectionScope;
+  const groups=s.groups.filter(group=>local?group.table===table.id:!group.table),rows=summaryMoveMembers({...s,groups},'row',roots,local?table.id:undefined);
+  if(!rows.length||rows.some(id=>!table.rows.includes(id)))return;
+  return{table,rows,local};
+}
+function moveSelectionToTop():void{
+  const target=moveToTopTarget();
+  if(!target){flash('Select data rows or a summary group within one table, not its header or neighboring cells.');return;}
+  const {table,rows,local}=target,s=sheet(),boundary=s.rows.findIndex(row=>row.id===table.header)+1,members=new Set(rows);
+  const prefix=local?table.rows.slice(0,rows.length):s.rows.slice(boundary,boundary+rows.length).map(row=>row.id);
+  if(prefix.length===rows.length&&prefix.every(id=>members.has(id)))return;
+  if(local){runTableEdit(table.id,'row',{kind:'move',ids:rows,boundary},'Move to top',{reveal:true});return;}
+  mutate('Move to top',()=>{
+    const at=moveRows(book,s,rows,boundary);
+    movingRows=movingColumns=undefined;clearMovePreview();extraSelections=[];selectionScope=undefined;
+    anchor={r:at,c:0};selected={r:at+rows.length-1,c:s.columns.length-1};selectionKind='rows';page=Math.floor(at/60);scrollTarget=at;
+  });
+}
 let hypotheticalView:{generation:number;sheet:Sheet;row:{members:Set<string>;projection:ReturnType<typeof hypotheticalProjection>};column:{members:Set<string>;projection:ReturnType<typeof hypotheticalProjection>}}|undefined;
 function hypotheticalSelection(){
   const mode=selectionMode();if(mode!=='rows'&&mode!=='columns')return;
@@ -271,7 +296,7 @@ function projectedBoundary(table:string,axis:'row'|'column',boundary:number):num
   }
   throw Error('Expand the table group before moving its hidden records.');
 }
-function runTableEdit(tableId:string,axis:'row'|'column',edit:TableAxisEdit,label:string,options:{finish?:(ids:string[])=>void}={}):void{
+function runTableEdit(tableId:string,axis:'row'|'column',edit:TableAxisEdit,label:string,options:{finish?:(ids:string[])=>void;reveal?:boolean}={}):void{
   try{
     if(!editableReference()||gridReference()?.error)throw Error('This source is read-only or unavailable. Edit its original table instead.');
     const before=book,expected=generation,table=allTables(book).find(t=>t.id===tableId)!;
@@ -297,8 +322,8 @@ function runTableEdit(tableId:string,axis:'row'|'column',edit:TableAxisEdit,labe
           const first=Math.min(...positions),last=Math.max(...positions),range=tableHeaderBounds(s,owner,axis,last,first);
           anchor={r:range.r1,c:range.c1};selected={r:range.r2,c:range.c2};selectionKind=axis==='row'?'rows':'columns';
         }
-        renderedTarget=`${sheetId}:${selected.r}`;scrollTarget=edit.kind==='insert'||edit.kind==='move'?undefined:selected.r;
-      },false,edit.kind==='move'?{preserveViewport:true}:undefined);
+        renderedTarget=`${sheetId}:${selected.r}`;scrollTarget=options.reveal?anchor.r:edit.kind==='insert'||edit.kind==='move'?undefined:selected.r;
+      },false,edit.kind==='move'&&!options.reveal?{preserveViewport:true}:undefined);
     });
   }catch(error){flash(error);}
 }
@@ -360,19 +385,27 @@ function restoreView(remembered?:string|null,saved?:string|null):{scroll:number;
   }catch(e){error=`View preference could not be restored: ${String(e)}`;}
 }
 const inputText = (cell: Cell): string => cell.formula ? displayFormula(cell.formula,book) : cell.binding ? String(scalar(engine.cell(sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id)) ?? '') : String(cell.value ?? '');
-const cellText = (cell: Cell, s: Sheet, r: number,c: number): string => cachedCellText(engine,s.id,s.rows[r].id,s.columns[c].id,cell,raw=>{
+const cellText = (cell: Cell, s: Sheet, r: number,c: number): string => {
+  const date=cell.format?.number==='date'||cell.format?.number==='date-compact'?dateFormatContext(engine,book,s.id,s.rows[r].id,cell):undefined;
+  return cachedCellText(engine,s.id,s.rows[r].id,s.columns[c].id,cell,raw=>{
   const value = scalar(raw);
   if (isFault(value)) return value.error;
+  if(date?.error)return date.error;
   if (value === null) return '';
   if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
   if (typeof value === 'number') {
     if(!Number.isFinite(value))return '#NUM!';
-    if (cell.format?.number === 'date') return displayExcelDate(value)??'#NUM!';
+    if(date?.enabled)return displayExcelDate(value,date.year,cell.format?.number==='date-compact')??'#NUM!';
     if (cell.format?.number === 'percent') return `${+(value*100).toFixed(2)}%`;
     return cell.format?.number === 'decimal' ? value.toFixed(2) : String(+value.toPrecision(11));
   }
+  if(date?.enabled&&!cell.dateLiteral&&cell.format?.number==='date-compact'){
+    const serial=parseDateInput(value,date.year,true);
+    if(serial!==undefined)return displayExcelDate(serial,date.year,true)!;
+  }
   return value;
-});
+  },date?.key);
+};
 let searchPriming:{engine:Engine;generation:number;timer?:ReturnType<typeof setTimeout>}|undefined;
 function primeSearchValues():void{
   if(searchPriming?.engine===engine&&searchPriming.generation===generation)return;
@@ -653,6 +686,8 @@ function renderStatus(): void {
   }
   const addSummary=root.querySelector<HTMLButtonElement>('[data-action="add-summary-group"]');
   if(addSummary)addSummary.disabled=!arrangingToolbar&&(root.querySelector('[data-action="summary-group"]')?.getAttribute('aria-pressed')!=='true'||busy||!editableReference()||!!gridReference()?.error);
+  const moveTop=root.querySelector<HTMLButtonElement>('[data-action="move-to-top"]');
+  if(moveTop)moveTop.disabled=!arrangingToolbar&&(busy||!moveToTopTarget());
   const assignment=root.querySelector<HTMLButtonElement>('[data-action="dropdown-source"]');
   if(assignment){
     const s=sheet(),row=s.rows[selected.r].id,column=s.columns[selected.c].id;
@@ -846,7 +881,7 @@ function render(options?:{preserveViewport:boolean}): void {
       <div class="tool-set">${(['find','copy','cut','paste','fill'] as const).map(name=>{const label={find:'Find / replace',copy:'Copy',cut:'Cut',paste:'Paste',fill:'Fill down'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}</div>
       <div class="tool-set"><button class="icon-button" data-action="pin" aria-pressed="${pins.length>0}" title="${pins.length?'Unpin columns':'Pin selected columns'}" aria-label="${pins.length?'Unpin columns':'Pin selected columns'}">${toolbarIcon('pin')}</button><button class="icon-button" data-action="browse" title="Browse values" aria-label="Browse values">${toolbarIcon('browse')}</button><button class="icon-button" data-action="hypothetical" aria-label="Add/remove ${esc(hypotheticalStyle.label)} tag" aria-pressed="false" data-shortcut-label="Add/remove ${esc(hypotheticalStyle.label)} tag" data-shortcut-keys="Ctrl|H" aria-keyshortcuts="Control+H">${toolbarIcon('hypothetical')}</button><button class="icon-button" data-action="hypothetical-settings" aria-label="Hypo tag styling" title="Customize ${esc(hypotheticalStyle.label)} row and column treatments">${toolbarIcon('hypothetical-settings')}</button><button id="status-filter" class="icon-button" data-action="hypothetical-visibility" data-toolbar-control="status-filter" aria-label="View/hide hypo rows/columns" aria-pressed="${!showHypothetical}" title="${showHypothetical?'Hide':'Show'} ${esc(hypotheticalStyle.label)} rows and columns">${toolbarIcon('hypothetical-visibility')}</button></div>
       ${referenceId?'':'<div class="tool-set"><button data-action="quick-add">+ Add entry</button></div>'}
-      ${referenceId?'':`<div class="tool-set"><button class="icon-button" data-action="convert-table" aria-label="Convert to table" title="Create a table, or join selected rows/columns to their surrounding table">${toolbarIcon('convert-table')}</button><button class="icon-button" data-action="tables" aria-label="Table manager" title="Table manager; rename the table containing the selected cell">${toolbarIcon('tables')}</button><button data-action="block">Meal / day</button></div>`}
+      ${referenceId?'':`<div class="tool-set"><button class="icon-button" data-action="convert-table" aria-label="Convert to table" title="Create a table, or join selected rows/columns to their surrounding table">${toolbarIcon('convert-table')}</button><button class="icon-button" data-action="move-to-top" data-toolbar-before="action:tables" aria-label="Move to top" title="Move selected rows or a summary group below the table header">${toolbarIcon('move-to-top')}</button><button class="icon-button" data-action="tables" aria-label="Table manager" title="Table manager; rename the table containing the selected cell">${toolbarIcon('tables')}</button><button data-action="block">Meal / day</button></div>`}
       <div class="tool-set toolbar-layout-controls"><button class="icon-button" data-action="toolbar-layout" aria-label="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar'}" aria-pressed="${arrangingToolbar}" title="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar: drag tools or use Alt+Left/Right'}">${toolbarIcon('toolbar-layout')}</button></div>
     </nav>
     <form class="formula-bar" id="formula-form"><span class="address">${letters(selected.c)}${selected.r+1}</span><span class="fx">fx</span><input id="formula" aria-label="Cell value or formula" autocomplete="off" spellcheck="false" value="${esc(draft??inputText(current()))}"><span id="calculation-state"></span></form>
@@ -1069,6 +1104,52 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
     }else if(matchMedia('(pointer:fine)').matches)panel.querySelector<HTMLElement>('input,textarea')?.focus({preventScroll:true});
   }catch(e){close();flash(`Dropdown could not open: ${e instanceof Error?e.message:String(e)}`);}
 }
+function openCellDatePicker(cell:HTMLElement):boolean{
+  const s=sheet(),row=s.rows[Number(cell.dataset.r)].id,column=s.columns[Number(cell.dataset.c)].id,previous=getCell(s,row,column);
+  if(!['date','date-compact'].includes(previous.format?.number??'')||allTables(book).some(t=>t.sheet===s.id&&t.header===row&&t.columns.some(c=>c.column===column)))return false;
+  const context=dateFormatContext(engine,book,s.id,row,previous);
+  if(!context.enabled)return false;
+  if(busy||!editableReference()||!commitDraft())return true;
+  closeCellDropdown?.();
+  const value=scalar(engine.cell(s.id,row,column)),iso=typeof value==='number'?excelDateText(value):typeof value==='string'?parseDateInput(value,context.year,previous.format?.number==='date-compact'):undefined;
+  const initial=typeof iso==='string'?iso:typeof iso==='number'?excelDateText(iso):'';
+  const popup=document.createElement('div'),controller=new AbortController();
+  popup.className='cell-dropdown cell-date-picker';popup.setAttribute('role','group');popup.setAttribute('aria-label','Date picker');
+  popup.innerHTML=`<div class="dropdown-panel"><form id="cell-date-form"><div class="button-row"><input id="cell-date" aria-label="Date" type="date" min="1900-01-01" max="9999-12-31" value="${esc(initial??'')}" required><button id="clear-cell-date" type="button" aria-label="Clear date">Clear</button><button id="close-cell-date" class="icon-button" type="button" aria-label="Close date picker">${toolbarIcon('close')}</button></div><p id="cell-date-error" role="alert" hidden></p></form></div>`;
+  const input=popup.querySelector<HTMLInputElement>('#cell-date')!,message=popup.querySelector<HTMLElement>('#cell-date-error')!;
+  const close=()=>{controller.abort();popup.remove();if(closeCellDropdown===close)closeCellDropdown=undefined;};
+  closeCellDropdown=close;
+  const position=()=>{
+    const r=s.rows.findIndex(r=>r.id===row),c=s.columns.findIndex(c=>c.id===column),anchor=root.querySelector<HTMLElement>(`td[data-r="${r}"][data-c="${c}"]`);
+    if(!anchor){close();return;}
+    const rect=anchor.getBoundingClientRect(),viewport=visualViewport,left=viewport?.offsetLeft??0,top=viewport?.offsetTop??0,width=viewport?.width??innerWidth,height=viewport?.height??innerHeight;
+    popup.style.width=Math.min(336,width-12)+'px';const box=popup.getBoundingClientRect();
+    popup.style.left=Math.max(left+6,Math.min(rect.left,left+width-box.width-6))+'px';
+    popup.style.top=Math.max(top+6,Math.min(rect.bottom+4,top+height-box.height-6))+'px';
+  };
+    const apply=(clear=false)=>{
+      if(!clear&&(!input.value||!input.reportValidity()))return;
+      const serial=clear?undefined:parseDateInput(input.value);
+      if(!clear&&serial===undefined){message.hidden=false;message.textContent='Choose a valid date.';position();return;}
+      if(mutate(clear?'Clear date':'Choose date',()=>{
+        if(!s.rows.some(r=>r.id===row)||!s.columns.some(c=>c.id===column)||!dateFormatContext(engine,book,s.id,row,getCell(s,row,column)).enabled)throw Error('The date target changed. Open it again.');
+        writeGridCell(book,s,row,column,clear?'':String(serial));
+      }))close();
+    };
+    popup.querySelector<HTMLFormElement>('form')!.onsubmit=e=>{e.preventDefault();apply();};
+    input.onchange=()=>{if(input.value)apply();};
+    popup.querySelector<HTMLButtonElement>('#clear-cell-date')!.onclick=()=>apply(true);
+    popup.querySelector<HTMLButtonElement>('#close-cell-date')!.onclick=close;
+    popup.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();close();cell.focus({preventScroll:true});}e.stopPropagation();};
+    popup.addEventListener('focusout',e=>{if(e.relatedTarget instanceof Node&&!popup.contains(e.relatedTarget)&&!cell.contains(e.relatedTarget))close();});
+    document.addEventListener('pointerdown',e=>{if(!popup.contains(e.target as Node)&&!cell.contains(e.target as Node))close();},{capture:true,signal:controller.signal});
+    document.addEventListener('scroll',position,{capture:true,signal:controller.signal});
+    window.addEventListener('resize',position,{signal:controller.signal});visualViewport?.addEventListener('resize',position,{signal:controller.signal});
+    document.body.append(popup);position();
+    input.focus({preventScroll:true});
+    if(input.showPicker)try{input.showPicker();}catch(error){message.hidden=false;message.textContent=`Calendar could not open automatically. Use the date field. ${error instanceof Error?error.message:String(error)}`;position();}
+  return true;
+}
 function bindRowControls():void {
   root.querySelectorAll<HTMLElement>('td[data-r]').forEach(el=>{
     el.onpointerdown=e=>{
@@ -1081,7 +1162,7 @@ function bindRowControls():void {
       if(touchSelection){e.preventDefault();touchPointer=e.pointerId;(root.querySelector('#grid-scroll') as HTMLElement).setPointerCapture(e.pointerId);}
       refreshSelection();(root.querySelector('#grid-scroll') as HTMLElement).focus({preventScroll:true});
     };
-    el.onclick=e=>{if(!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!extraSelections.length&&e.detail<2&&!(e.target as HTMLElement).closest('a,textarea,input,button')&&anchor.r===selected.r&&anchor.c===selected.c)openCellDropdown(el,false);};
+    el.onclick=e=>{if(!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!extraSelections.length&&e.detail<2&&!(e.target as HTMLElement).closest('a,textarea,input,button')&&anchor.r===selected.r&&anchor.c===selected.c&&!openCellDatePicker(el))openCellDropdown(el,false);};
     el.ondblclick=()=>{closeCellDropdown?.();openEditor();};
   });
   root.querySelector<HTMLButtonElement>('[data-fill-handle]')?.addEventListener('pointerdown',e=>{
@@ -1586,9 +1667,19 @@ async function action(name:string):Promise<void> {
     }
     case 'bold':case 'italic':case 'underline':case 'strikethrough':case 'wrap':{
       let enabled=true;eachSelected((s,r,c)=>{if(!getCell(s,s.rows[r].id,s.columns[c].id).format?.[name])enabled=false;});
-      mutate(`Toggle ${name}`,()=>eachSelected((s,r,c)=>{
+      mutate(`Toggle ${name}`,()=>{
+      eachSelected((s,r,c)=>{
         const cell=clone(getCell(s,s.rows[r].id,s.columns[c].id));cell.format={...cell.format,[name]:!enabled};s.cells[key(s.rows[r].id,s.columns[c].id)]=cell;
-      }));break;
+      });
+      if(name==='wrap'&&selectionMode()==='columns'){
+        const s=sheet(),table=scopedSelectionTable(),columns=new Set(selectedAxisIndices('column').map(c=>s.columns[c].id));
+        if(table){for(const field of table.columns)if(columns.has(field.column))field.wrap=!enabled;}
+        else{
+          for(const column of s.columns)if(columns.has(column.id))column.wrap=!enabled;
+          for(const owner of allTables(book).filter(t=>t.sheet===s.id))for(const field of owner.columns)if(columns.has(field.column))field.wrap=!enabled;
+        }
+      }
+      });break;
     }
     case 'text-color':openColorPalette('color');break;
     case 'background-color':openColorPalette('background');break;
@@ -1636,6 +1727,7 @@ async function action(name:string):Promise<void> {
     case 'new-sheet':askText('New sheet','Untitled',name=>mutate('Add sheet',()=>{const s=blankSheet(uniqueName(allSheets(book).map(s=>s.name),name));book.sheets.push(s);sheetId=s.id;selected={r:0,c:0};anchor={...selected};selectionKind='cells';page=0;}));break;
     case 'structure':openStructure();break;
     case 'tables':openTables();break;
+    case 'move-to-top':moveSelectionToTop();break;
     case 'convert-table':convertSelectionToTable();break;
     case 'references':if(referenceId)backToWorkbook();else openReferences();break;
     case 'back-workbook':backToWorkbook();break;
@@ -1749,8 +1841,29 @@ function changeHypotheticalTags(axis:Group['axis'],ids:string[],enabled:boolean,
   d.querySelector<HTMLButtonElement>('#cancel-hypothetical')!.onclick=()=>d.close();
 }
 function openFormat():void {
-  dialog('Cell formatting',`<form><label>Number display<select id="number-format"><option value="">General</option><option value="decimal">Two decimals</option><option value="percent">Percent</option><option value="date">Date</option></select></label><label>Text color<input type="color" id="text-color" value="#193c34"></label><label>Background<input type="color" id="bg-color" value="#ffffff"></label><button class="primary">Apply to selection</button></form>`,d=>d.querySelector('form')!.onsubmit=e=>{
-    e.preventDefault();mutate('Format cells',()=>eachSelected((s,r,c)=>{const cell=clone(getCell(s,s.rows[r].id,s.columns[c].id));cell.format={...cell.format,excelNumberFormat:undefined,number:d.querySelector<HTMLSelectElement>('#number-format')!.value,color:d.querySelector<HTMLInputElement>('#text-color')!.value,background:d.querySelector<HTMLInputElement>('#bg-color')!.value};s.cells[key(s.rows[r].id,s.columns[c].id)]=cell;}));d.close();
+  const s=sheet(),owner=scopedSelectionTable()??tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id)??tableAt(book,s.id,s.rows[anchor.r].id,s.columns[anchor.c].id);
+  const initial=current().format,color=initial?.color??'#193c34',background=initial?.background??'#ffffff';
+  dialog('Cell formatting',`<form><label>Number display<select id="number-format"><option value="">General</option><option value="decimal">Two decimals</option><option value="percent">Percent</option><option value="date">Date</option><option value="date-compact">Date: M/DD; past years YY/M/DD</option></select></label>${owner?`<label id="date-condition-label" hidden>Date rows<select id="date-format-condition"><option value="">Every selected row</option>${owner.columns.map(field=>`<option value="${field.id}">Only when ${esc(field.name)} is filled</option>`).join('')}</select></label>`:''}<label>Text color<input type="color" id="text-color" value="${color}"></label><label>Background<input type="color" id="bg-color" value="${background}"></label><button class="primary">Apply to selection</button></form>`,d=>{
+    const number=d.querySelector<HTMLSelectElement>('#number-format')!,condition=d.querySelector<HTMLSelectElement>('#date-format-condition');
+    number.value=initial?.number??'';
+    const when=initial?.dateWhen;
+    if(condition&&when&&when.table===owner?.id)condition.value=when.column;
+    const refresh=()=>{const label=d.querySelector<HTMLElement>('#date-condition-label');if(label)label.hidden=!['date','date-compact'].includes(number.value);};
+    number.onchange=refresh;refresh();
+    d.querySelector('form')!.onsubmit=e=>{
+      e.preventDefault();
+      const field=['date','date-compact'].includes(number.value)?condition?.value:undefined;
+      if(field&&!owner?.columns.some(column=>column.id===field)){flash('The date condition field is no longer available.');return;}
+      if(mutate('Format cells',()=>eachSelected((s,r,c)=>{
+        const row=s.rows[r].id,column=s.columns[c].id;
+        if(field&&(!owner!.rows.includes(row)||!owner!.columns.some(f=>f.column===column)))return;
+        const cell=clone(getCell(s,row,column)),chosenColor=d.querySelector<HTMLInputElement>('#text-color')!.value,chosenBackground=d.querySelector<HTMLInputElement>('#bg-color')!.value;
+        cell.format={...cell.format,excelNumberFormat:undefined,number:number.value,dateWhen:field?{table:owner!.id,column:field}:undefined};
+        if(chosenColor.toLowerCase()!==color.toLowerCase())cell.format.color=chosenColor;
+        if(chosenBackground.toLowerCase()!==background.toLowerCase())cell.format.background=chosenBackground;
+        s.cells[key(row,column)]=cell;
+      })))d.close();
+    };
   });
 }
 function openColorPalette(property:'color'|'background'):void{

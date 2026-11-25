@@ -1,4 +1,4 @@
-import { allTables,allSheets,clone,createTranslationContext,getCell,groupMoveTarget,inheritTableRow,key,summaryMoveMembers,translate,uid,uniqueName,type Cell,type TranslationContext,type Workbook} from './model';
+import { allTables,allSheets,clone,createTranslationContext,getCell,groupMoveTarget,inheritSheetRowWrap,inheritTableRow,key,summaryMoveMembers,translate,uid,uniqueName,type Cell,type TranslationContext,type Workbook} from './model';
 import {relocate} from './cell-operations';
 import {Engine} from './formula';
 import {editSnapshot} from './undo-history';
@@ -63,6 +63,7 @@ export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableA
     if(neighbors.some(other=>other.rows.has(target.row)&&other.columns.has(target.column)))throw new TableExpansionConflict(axis,last+1,extra);
   }
   if(axis==='row')sheet.rows.push(...additions.map(({id})=>({id})));else sheet.columns.push(...additions);
+  if(axis==='row')inheritSheetRowWrap(sheet,additions.map(({id})=>id));
   const itemById=new Map(items.map(item=>[item.id,item]));
   const snapshots=new Map<string,Cell[]>();
   if(edit.kind==='duplicate')for(const source of selected)snapshots.set(source,across.map(cross=>clone(getCell(sheet,address(source,cross).row,address(source,cross).column))));
@@ -85,7 +86,7 @@ export function editTableAxis(book:Workbook,tableId:string,axis:Axis,edit:TableA
     table.columns=entries.map((entry,i)=>{
       if(entry.source)return{...fieldByColumn.get(entry.source)!,column:slots[i]};
       const source=entry.copy?fieldByColumn.get(entry.copy):undefined,name=uniqueName(names,source?source.name+' copy':'New column');names.push(name);
-      return{id:uid(),column:slots[i],name};
+      return{id:uid(),column:slots[i],name,...(source?.wrap===undefined?{}:{wrap:source.wrap})};
     });
   }
   for(const slot of slots){const item=itemById.get(slot)!;if(item.hypotheticalTables)delete item.hypotheticalTables[table.id];}

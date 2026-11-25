@@ -2,6 +2,25 @@ import { describe, expect, it } from 'vitest';
 import { compile, displayFormula, Engine, flatten, type Ast } from '../src/formula';
 import { addRow, addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, createDemo, createTranslationContext, deleteColumn, deleteRows, duplicateSheet, fillCells, getCell, inheritTableRow, insertColumn, insertSheetRows, isFault, key, mapAst, move, moveColumns, moveRows, outlineMembers, renameColumn, setInput, translate, type Workbook } from '../src/model';
 
+it('retains explicit column wrap defaults across row overrides, insertion, extension and column moves',()=>{
+  const book=createDemo(),s=blankSheet('Wrap defaults',10,5);book.sheets.push(s);
+  const field={id:'wrapped-field',column:s.columns[1].id,name:'Notes',wrap:true},table={id:'wrapped-table',name:'WrapRows',sheet:s.id,header:s.rows[0].id,rows:[s.rows[1].id],columns:[field]};book.tables.push(table);
+  s.cells[key(s.rows[1].id,field.column)]={value:'Keep the note',note:'Keep this too',format:{wrap:false,color:'#112233',number:'decimal'}};
+  const inserted=addRow(book,s,2,table),cell=getCell(s,inserted.id,field.column);
+  expect(cell.format).toMatchObject({wrap:true,color:'#112233',number:'decimal'});
+  expect(getCell(s,s.rows[1].id,field.column)).toMatchObject({value:'Keep the note',note:'Keep this too',format:{wrap:false}});
+  renameColumn(book,table,field.id,'Renamed notes');moveColumns(book,s,[field.column],s.columns.length);
+  const next=s.rows[s.rows.findIndex(row=>row.id===inserted.id)+1];setInput(book,s,next.id,field.column,'New record');
+  expect(getCell(s,next.id,field.column)).toMatchObject({value:'New record',format:{wrap:true}});
+  field.wrap=false;const unwrapped=addRow(book,s,s.rows.findIndex(row=>row.id===next.id)+1,table);
+  expect(getCell(s,unwrapped.id,field.column).format?.wrap).toBe(false);
+});
+it('initializes wrap defaults in freeform and empty-table rows without leaking table settings',()=>{
+  const book=createDemo(),s=blankSheet('Empty wrap table',5,4);book.sheets.push(s);s.columns[0].wrap=true;
+  const field={id:'empty-field',column:s.columns[1].id,name:'Notes',wrap:false},table={id:'empty-wrap',name:'EmptyWrap',sheet:s.id,header:s.rows[0].id,rows:[],columns:[field]};book.tables.push(table);
+  const record=addRow(book,s,1,table);expect(getCell(s,record.id,s.columns[0].id).format?.wrap).toBe(true);expect(getCell(s,record.id,field.column).format?.wrap).toBe(false);
+  const free=addRow(book,s,s.rows.length);expect(getCell(s,free.id,s.columns[0].id).format?.wrap).toBe(true);expect(getCell(s,free.id,field.column).format?.wrap).toBeUndefined();
+});
 it('maps independently mutable AST occurrences without changing shared source subtrees',()=>{
   const field:Ast={kind:'structured',table:'table',columns:['field'],mode:'row'};
   const error:Ast={kind:'error',value:{error:'#REF!',detail:'original'}};

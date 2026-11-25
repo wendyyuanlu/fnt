@@ -23,7 +23,10 @@ it('retains real Meals dependency results after quantity, portion, ingredient an
   expect(edit(sheet,detail,meals.columns[4].column,String(grams*2))).not.toEqual(original);
   const doubled=edit(sheet,summary,meals.columns[2].column,'7');
   const before=calculate(engine);
-  expect(edit(sheet,meals.rows[2],meals.columns[5].column,'2')).not.toEqual(before);
+  const quantityRow=meals.rows.slice(1,11).find(row=>getCell(sheet,row,meals.columns[4].column).formula&&typeof getCell(sheet,row,meals.columns[5].column).value==='number'&&Number(scalar(engine.cell(sheet.id,row,nutrients[0])))>0)!;
+  expect(quantityRow).toBeDefined();
+  const quantity=Number(getCell(sheet,quantityRow,meals.columns[5].column).value);
+  expect(edit(sheet,quantityRow,meals.columns[5].column,String(quantity*2+1))).not.toEqual(before);
   const ingredient=ingredients.rows.find(row=>Number(scalar(engine.cell(source.id,row,ingredients.columns[4].column)))>0)!;
   const name=scalar(engine.cell(source.id,ingredient,ingredients.columns[0].column));
   const beforeIngredient=calculate(engine);

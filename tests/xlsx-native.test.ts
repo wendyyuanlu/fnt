@@ -8,6 +8,15 @@ import type { Backup } from '../src/storage';
 
 const fixture=():Backup=>({format:'fnt-backup',version:1,state:{book:createDemo(),version:1,pending:[{id:'pending-edit',label:'Invented edit',time:'now'}],updated:'now'},originals:[]});
 describe('native Excel recovery archive',()=>{
+  it('retains identity-backed date rules and deliberately literal date text',async()=>{
+    const backup=fixture(),book=backup.state.book,sheet=book.sheets[0],table=book.tables.find(t=>t.sheet===sheet.id)!;
+    const field=table.columns[0],format={number:'date-compact',dateWhen:{table:table.id,column:field.id}};
+    sheet.cells[key(table.rows[0],table.columns[1].column)]={value:46000,format};
+    sheet.cells[key(table.rows[0],table.columns[2].column)]={value:'nov 22',dateLiteral:true,format};
+    sheet.columns[0].wrap=true;table.columns[1].wrap=false;
+    const parts=unzipSync(await exportXlsx(backup));
+    expect((await inspectNative(parts,10*1048576)).backup).toEqual(backup);
+  });
   it('detects changed projection parts and additions without applying the stale snapshot',async()=>{
     const backup=fixture(),parts=unzipSync(await exportXlsx(backup));
     expect((await inspectNative(parts,10*1048576)).backup).toEqual(backup);

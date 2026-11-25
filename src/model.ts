@@ -1,4 +1,5 @@
 import { compile,Engine,maySpill,scalar,type Ast } from './formula';
+import {parseDateInput} from './dates';
 
 export type Scalar = string | number | boolean | null | Fault;
 export interface Fault { error: string; detail?: string }
@@ -6,13 +7,14 @@ export type Value = Scalar | Value[];
 export interface Format {
   bold?: boolean; italic?:boolean; underline?: boolean; strikethrough?:boolean; wrap?: boolean;
   color?: string; background?: string; number?: string; excelNumberFormat?: string;
+  dateWhen?: {table:string;column:string};
 }
 export interface Cell {
   value?: Scalar; formula?: Ast; calculation?: Ast; original?: string; format?: Format; note?: string; link?: string;
-  spillHint?: boolean;
+  spillHint?: boolean; dateLiteral?: boolean;
   binding?: { table: string; row: string; column: string };
 }
-export interface Column { id: string; label: string; width?: number; hidden?: boolean; hypothetical?:boolean; hypotheticalTables?:Record<string,boolean> }
+export interface Column { id: string; label: string; width?: number; wrap?:boolean; hidden?: boolean; hypothetical?:boolean; hypotheticalTables?:Record<string,boolean> }
 export interface Row { id: string; hidden?: boolean; height?: number; status?: 'real' | 'planned' | 'hypothetical'; hypothetical?:boolean; hypotheticalTables?:Record<string,boolean> }
 export interface Group { id: string; axis: 'row' | 'column'; members: string[]; collapsed: boolean; label: string; kind?:'summary'|'range'; table?:string }
 export function hypotheticalTagDescendants(sheet:Sheet,axis:Group['axis'],ids:string[],table?:string):Set<string>{
@@ -67,7 +69,7 @@ export interface ReferenceSource {
 }
 export interface Table {
   id: string; name: string; sheet: string; rows: string[];
-  columns: { id: string; column: string; name: string; formulaDefault?:string }[]; header: string;
+  columns: { id: string; column: string; name: string; formulaDefault?:string; wrap?:boolean }[]; header: string;
 }
 export type TableSort='activity'|'frequent'|'az'|'za';
 export interface TableActivity {editedAt?:number;visits?:number}
@@ -135,6 +137,14 @@ export function setInput(book: Workbook, sheet: Sheet, row: string, column: stri
   }
   if(input!=='')expandAdjacentTable(book,sheet,row,column);
   const previous = getCell(sheet, row, column);
+  if(!input.startsWith('=')&&!input.startsWith("'")&&['date','date-compact'].includes(previous.format?.number??'')){
+    const when=previous.format?.dateWhen,table=when?allTables(book).find(t=>t.id===when.table&&t.sheet===sheet.id&&t.rows.includes(row)):undefined,field=table?.columns.find(c=>c.id===when?.column);
+    const label=field?scalar(new Engine(book).cell(sheet.id,row,field.column)):null;
+    if(!when||field&&!isFault(label)&&label!==null&&(typeof label!=='string'||!!label.trim())){
+      const date=parseDateInput(input,new Date().getFullYear(),previous.format?.number==='date-compact');
+      if(date!==undefined)input=String(date);
+    }
+  }
   const cell: Cell = { format: previous.format, note: previous.note };
   if(!input.startsWith('='))cell.calculation=previous.formula??previous.calculation;
   if (input.startsWith('=')) {
@@ -143,6 +153,7 @@ export function setInput(book: Workbook, sheet: Sheet, row: string, column: stri
     catch (e) { cell.formula = { kind: 'error', value: fault('#PARSE!', String(e)) }; }
     cell.spillHint=maySpill(cell.formula);
   } else {
+    if(input.startsWith("'")&&['date','date-compact'].includes(previous.format?.number??''))cell.dateLiteral=true;
     cell.value = input === '' ? null : /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/.test(input) ? Number(input)
       : input === 'TRUE' ? true : input === 'FALSE' ? false : input.startsWith("'") ? input.slice(1) : input;
     if(typeof cell.value==='number'&&!Number.isFinite(cell.value))cell.value=fault('#NUM!','Number is outside the supported numeric range.');
@@ -189,6 +200,12 @@ export function deleteColumn(book: Workbook, sheet: Sheet, id: string): void {
 export function addRow(book: Workbook, sheet: Sheet, at: number, table?: Table): Row {
   return insertRows(book,sheet,at,1,table?[table]:[])[0];
 }
+export function inheritSheetRowWrap(sheet:Sheet,rows:readonly string[]):void{
+  for(const column of sheet.columns)if(column.wrap!==undefined)for(const row of rows){
+    const cell=getCell(sheet,row,column.id);
+    sheet.cells[key(row,column.id)]={...cell,format:{...cell.format,wrap:column.wrap}};
+  }
+}
 export function insertSheetRows(book:Workbook,sheet:Sheet,at:number,count:number,table?:Table):Row[]{
   const positions=new Map(sheet.rows.map((row,index)=>[row.id,index]));
   const owners=allTables(book).filter(owner=>owner.sheet===sheet.id&&(positions.get(owner.header)??Infinity)<at&&owner.rows.some(id=>(positions.get(id)??-1)>=at));
@@ -202,6 +219,7 @@ function insertRows(book:Workbook,sheet:Sheet,at:number,count:number,owners:Tabl
   const insertions=owners.map(table=>({table,before:table.rows.filter(id=>{const index=positions.get(id);return index!==undefined&&index<at;}).length}));
   inheritInsertedGroups(sheet,'row',rows.map(row=>({at,id:row.id})),new Set(owners.map(table=>table.id)));
   sheet.rows.splice(at,0,...rows);
+  inheritSheetRowWrap(sheet,rows.map(row=>row.id));
   for(const {table,before}of insertions)table.rows.splice(before,0,...rows.map(row=>row.id));
   if(owners.length){
     const translation=createTranslationContext(book),engine=owners.some(table=>table.columns.some(column=>['ismeal','isday','meal','weight'].includes(column.name.toLowerCase())))?new Engine(book):undefined;
@@ -248,17 +266,24 @@ export function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string
   const header=candidates.length?isHeader(row):false,sameKind=candidates.filter(id=>isHeader(id)===header);
   for(const col of table.columns){
     const current=getCell(sheet,row,col.column);
-    if(preserve&&(current.formula||current.calculation||current.binding))continue;
+    const wrap=col.wrap??sheet.columns.find(column=>column.id===col.column)?.wrap;
+    if(preserve&&(current.formula||current.calculation||current.binding)){
+      if(wrap!==undefined&&current.format?.wrap===undefined)sheet.cells[key(row,col.column)]={...current,format:{...current.format,wrap}};
+      continue;
+    }
     const matching=col===marker?candidates:sameKind;
     const template=matching.find(id=>getCell(sheet,id,col.column).formula??getCell(sheet,id,col.column).calculation)??matching[0];
-    if(!template)continue;
-    const source=getCell(sheet,template,col.column);
+    if(!template&&wrap===undefined)continue;
+    const source=template?getCell(sheet,template,col.column):{};
     const formula=source.formula??source.calculation;
-    const inherited=formula?translate(formula,book,sheet.id,template,col.column,row,col.column,sheet.id,translation):undefined;
+    const inherited=formula&&template?translate(formula,book,sheet.id,template,col.column,row,col.column,sheet.id,translation):undefined;
     sheet.cells[key(row,col.column)]=preserve?{
-      ...current,format:current.format??((current.value==null||current.value==='')&&!current.note&&!current.link&&source.format?clone(source.format):undefined),
+      ...current,format:(current.value==null||current.value==='')&&!current.note&&!current.link&&source.format?{...clone(source.format),...current.format}:current.format,
       ...(inherited?current.value!=null&&current.value!==''?{calculation:inherited}:{formula:inherited,spillHint:maySpill(formula!)}:{})
     }:{format:source.format?clone(source.format):undefined,...(inherited?{formula:inherited,spillHint:maySpill(formula!)}:{})};
+    if(wrap!==undefined&&(!preserve||current.format?.wrap===undefined)){
+      const cell=sheet.cells[key(row,col.column)];cell.format={...cell.format,wrap};
+    }
   }
   context?.engine?.invalidate(table.columns.map(col=>`${sheet.id}:${key(row,col.column)}`));
   for(const validation of [...sheet.validations]){
@@ -334,7 +359,7 @@ export function expandAdjacentTable(book:Workbook,sheet:Sheet,row:string,column:
   const at=sheet.rows.findIndex(r=>r.id===row);
   table.rows.push(row);
   inheritTableRow(book,sheet,table,row,table.rows.length-1);
-  if(at===sheet.rows.length-1)sheet.rows.push({id:uid()});
+  if(at===sheet.rows.length-1)addRow(book,sheet,sheet.rows.length);
   return table;
 }
 export function insertColumn(book:Workbook,sheet:Sheet,at:number,scope?:Table):Column {

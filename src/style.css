@@ -122,6 +122,7 @@ dialog .picker-results{max-height:none}
 .grid td.table-header{height:33px}
 .grid tbody tr[style] td,.grid tbody tr[style] th{height:var(--row-height)}
 .cell-display{display:block;overflow:auto;text-overflow:clip;white-space:inherit}
+.spreadsheet-grid td:not(.wrapped),.sticky-table-header{padding-right:0}
 .hypothetical-badge{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:1px;border:1px solid #98764e;border-radius:0;margin-right:5px;background:#fff7e6;color:#785a30;line-height:1;vertical-align:middle}
 .hypothetical-badge::before{content:"";position:absolute;inset:-1px;pointer-events:none;background-image:var(--hyp-badge-horizontal,none),var(--hyp-badge-horizontal,none),var(--hyp-badge-vertical,none),var(--hyp-badge-vertical,none);background-size:100% 1px,100% 1px,1px 100%,1px 100%;background-position:left top,left bottom,left top,right top;background-repeat:no-repeat}
 .hypothetical-badge .toolbar-icon,.treatment-section>.inline .toolbar-icon{width:14px;height:14px}
@@ -155,6 +156,7 @@ dialog .picker-results{max-height:none}
 .hypothetical-preview td.selected{background-color:#f0f6e8;box-shadow:inset 0 1px #789583,inset 0 -1px #789583}
 .hypothetical-dialog .treatment-error{margin:12px 0}
 .grid tbody tr[style] td{padding:0}.grid tbody tr[style] td .cell-display{box-sizing:border-box;height:auto;min-height:calc(var(--row-height) - 1px);padding:6px 10px;padding-left:calc(10px + var(--summary-text-inset,0px))}
+.grid tbody tr[style] td:not(.wrapped) .cell-display{padding-right:0}
 .grid th .resize-edge{position:absolute;padding:0;min-height:0;border:0;border-radius:0;background:transparent;z-index:8}
 .grid th .resize-column{right:-4px;top:23px;bottom:0;width:8px;cursor:col-resize}
 .grid th .resize-row{left:26px;right:0;bottom:-4px;height:8px;cursor:row-resize}
@@ -301,6 +303,8 @@ dialog .picker-results{max-height:none}
 .dropdown-add-source{flex-shrink:0;width:26px;min-height:30px;padding:3px;background:#fff;border:0;color:#765093}
 .dropdown-panel{display:flex;flex-direction:column;gap:7px;min-height:0;flex:1;overflow:hidden}
 .cell-dropdown input{min-width:0;width:100%}
+.cell-date-picker .button-row{flex-wrap:nowrap;align-items:center}
+.cell-date-picker input{flex:1;width:0}
 .cell-dropdown-options{overflow:auto;min-height:32px;flex:1}
 .cell-dropdown-options button{display:block;width:100%;border:0;text-align:left;padding:9px 8px;white-space:pre-wrap}
 .cell-dropdown-options button[aria-selected=true]{background:#e8efdf}
