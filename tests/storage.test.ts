@@ -200,6 +200,21 @@ describe('recoverable local storage',()=>{
   });
 });
 describe('private opt-in sync',()=>{
+  it('loads a comparison copy read-only even at the acknowledged SHA, and never creates a missing remote file',async()=>{
+    const book=createDemo(),state:LocalState={book,version:1,pending:[{id:'local',label:'Edit',time:''}],updated:'',remoteSha:'same',sync:{owner:'example',repo:'data',branch:'main',path:'book.json'}};
+    const before=stringifyArchive(state),methods:string[]=[];
+    const fetcher:typeof fetch=async(_url,init)=>{
+      methods.push(init?.method??'GET');
+      return new Response(JSON.stringify(methods.length===1?{private:true,has_pages:false}:{sha:'same',content:encode64(JSON.stringify({format:'fnt-sync-v1',book,operations:[]}))}));
+    };
+    expect((await syncGitHub(state,'synthetic',fetcher,[],{readOnly:true})).remote).toEqual(book);
+    expect(methods).toEqual(['GET','GET']);expect(stringifyArchive(state)).toBe(before);
+    state.remoteSha=undefined;let calls=0;
+    await expect(syncGitHub(state,'synthetic',async(_url,init)=>{
+      expect(init?.method).not.toBe('PUT');return ++calls===1?new Response(JSON.stringify({private:true,has_pages:false})):new Response('',{status:404});
+    },[],{readOnly:true})).rejects.toThrow('No saved GitHub workbook');
+    expect(calls).toBe(2);
+  });
   const setup=():LocalState=>({book:createDemo(),version:1,pending:[{id:'op1',label:'Edit',time:'now'}],updated:'now',sync:{owner:'example',repo:'data',branch:'main',path:'book.json'}});
   const response=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});
   it('checks acknowledged revisions without downloading unchanged blobs or writing another commit',async()=>{

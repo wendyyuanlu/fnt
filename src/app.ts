@@ -1,4 +1,5 @@
 import './style.css';
+import {mountWorkbookComparison} from './sync-comparison';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
 import { Store, SyncConflict, syncGitHub, hasPendingContent,validateBook,validateBookMetadata,validateCellChanges, type Backup, type LocalState } from './storage';
@@ -786,7 +787,8 @@ async function manualSave(automatic=false): Promise<void> {
   } finally { busy = false; renderStatus();schedulePrivateSync(); }
 }
 function openConflict(conflict:SyncConflict):void {
-  dialog('Sync conflict - choose deliberately',`<p>Both versions were saved as recovery checkpoints. No automatic merge or upload occurred. Structural edits are conservatively treated as conflicts.</p><div class="menu"><button id="use-remote">Use remote version on this device</button><button id="keep-local">Keep local version and explicitly replace remote</button></div><p class="muted">Closing this dialog leaves both versions unchanged. A remote change after this decision will cause another conflict, never an unconditional overwrite.</p>`,d=>{
+  dialog('Sync conflict - choose deliberately',`<p>Both versions were saved as recovery checkpoints. No automatic merge or upload occurred. Structural edits are conservatively treated as conflicts.</p><div class="menu"><button id="compare-conflict" class="primary">Compare versions or a backup</button><button id="use-remote">Use remote version on this device</button><button id="keep-local">Keep local version and explicitly replace remote</button></div><p class="muted">Closing this dialog leaves both versions unchanged. A remote change after this decision will cause another conflict, never an unconditional overwrite.</p>`,d=>{
+    d.querySelector<HTMLButtonElement>('#compare-conflict')!.onclick=()=>openComparison(conflict);
     d.querySelector<HTMLButtonElement>('#use-remote')!.onclick=async()=>{
       if(busy)return;
       try{
@@ -803,6 +805,21 @@ function openConflict(conflict:SyncConflict):void {
       });
     };
   });
+}
+function openComparison(conflict?:SyncConflict):void{
+  const d=dialog('Compare workbooks and backups',`${state.sync?`<button id="comparison-github" ${token?'':'disabled'}>Load saved GitHub version for right side</button>${token?'':'<p class="muted">Reconnect private sync first to authenticate a GitHub read. Backup comparisons work offline.</p>'}`:''}<section id="workbook-comparison"></section>`);
+  const comparison=mountWorkbookComparison(d.querySelector<HTMLElement>('#workbook-comparison')!,book,conflict?.remote,flash);
+  const load=d.querySelector<HTMLButtonElement>('#comparison-github');
+  if(load)load.onclick=async()=>{
+    load.disabled=true;load.textContent='Reading GitHub copy…';
+    try{
+      const received=await syncGitHub(state,token,fetch,[],{readOnly:true});
+      if(!received.remote)throw Error('The saved GitHub workbook was not returned. Neither copy was changed.');
+      if(d.isConnected)comparison.setRemote(received.remote);
+    }catch(e){if(d.isConnected)flash(e);}
+    finally{load.disabled=false;load.textContent='Load saved GitHub version for right side';}
+  };
+  d.addEventListener('close',()=>{comparison.dispose();if(conflict)openConflict(conflict);},{once:true});
 }
 function renderStatus(): void {
   const title=root.querySelector('#title');if(title)title.textContent=book.title;
@@ -3514,7 +3531,8 @@ async function exportBackup():Promise<void> {
   }catch(e){flash(e);}
 }
 function openFile():void {
-  dialog('Workbook & recovery',`<div class="menu"><button id="sync">Private GitHub sync</button><button id="backup" class="primary">Download independent full backup</button>${referenceId?'':'<button id="file-page-settings">Page settings for this sheet</button>'}${book.importReport?'<button id="original">Download unchanged original XLSX</button><button id="report">Compatibility report</button>':''}<label>Import Ingredients into this workbook<input type="file" id="import-ingredients" accept=".xlsx"></label><label>Restore Fnt backup<input type="file" id="restore" accept=".json"></label><label>Replace workbook from Excel (pre-import recovery)<input type="file" id="import" accept=".xlsx"></label><button id="history">Recovery checkpoints</button><button id="privacy">Storage & privacy</button></div><p class="muted">Ingredients import keeps existing records and other sheets, saves a full pre-import recovery archive, and disconnects sync. Backups contain your data; keep them private. XLSX compatibility is not certified.</p>`,d=>{
+  dialog('Workbook & recovery',`<div class="menu"><button id="sync">Private GitHub sync</button><button id="compare-backup">Compare workbooks and backups</button><button id="backup" class="primary">Download independent full backup</button>${referenceId?'':'<button id="file-page-settings">Page settings for this sheet</button>'}${book.importReport?'<button id="original">Download unchanged original XLSX</button><button id="report">Compatibility report</button>':''}<label>Import Ingredients into this workbook<input type="file" id="import-ingredients" accept=".xlsx"></label><label>Restore Fnt backup<input type="file" id="restore" accept=".json"></label><label>Replace workbook from Excel (pre-import recovery)<input type="file" id="import" accept=".xlsx"></label><button id="history">Recovery checkpoints</button><button id="privacy">Storage & privacy</button></div><p class="muted">Ingredients import keeps existing records and other sheets, saves a full pre-import recovery archive, and disconnects sync. Backups contain your data; keep them private. XLSX compatibility is not certified.</p>`,d=>{
+    d.querySelector<HTMLButtonElement>('#compare-backup')!.onclick=()=>openComparison();
     const pageSettings=d.querySelector<HTMLButtonElement>('#file-page-settings');if(pageSettings)pageSettings.onclick=()=>{d.close();openPageSettings();};
     const masterLabel=document.createElement('label'),masterInput=document.createElement('input');
     masterLabel.textContent='Review Master import (no changes until approved)';masterInput.type='file';masterInput.id='import-master';masterInput.accept='.xlsx';masterLabel.append(masterInput);

@@ -470,16 +470,16 @@ export const decode64 = (s: string) => new TextDecoder().decode(Uint8Array.from(
 export class SyncConflict extends Error {
   constructor(public remote: Workbook, public sha: string,public originals:Original[]=[]) { super('Remote changes found. Both versions are preserved in recovery. No upload was made.'); }
 }
-export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[]): Promise<{sha:string;remote?:Workbook;originals?:Original[]}> {
+export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[],options?:{readOnly?:boolean}): Promise<{sha:string;remote?:Workbook;originals?:Original[]}> {
   const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
   try{
     return await Promise.race([
-      privateSync(state,token,(url,init)=>fetcher(url,{...init,signal:controller.signal}),originals),
+      privateSync(state,token,(url,init)=>fetcher(url,{...init,signal:controller.signal}),originals,options?.readOnly===true),
       new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('Private sync timed out while transferring data. Local edits are retained.')),90000);}),
     ]);
   }finally{clearTimeout(timer);controller.abort();}
 }
-async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[]):Promise<{sha:string;remote?:Workbook;originals?:Original[]}>{
+async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[],readOnly:boolean):Promise<{sha:string;remote?:Workbook;originals?:Original[]}>{
   const cfg = state.sync;
   if (!cfg || !token) throw Error('Connect a private repository and enter a token for this browser session.');
   if (!/^[\w.-]+$/.test(cfg.owner) || !/^[\w.-]+$/.test(cfg.repo) || !cfg.branch || !cfg.path || cfg.path.split('/').some(s => s === '..') || !cfg.path.endsWith('.json')) throw Error('Invalid sync destination. Use a JSON file in a private data repository.');
@@ -506,8 +506,8 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
     let data = await response.json() as {sha:string;content:string;encoding?:string;size?:number};
     sha = data.sha;
     if(typeof sha!=='string'||!sha)throw Error('GitHub did not return a file revision. Nothing overwritten.');
-    if(sha===state.remoteSha&&!hasPendingContent(state))return{sha};
-    if(sha!==state.remoteSha){
+    if(!readOnly&&sha===state.remoteSha&&!hasPendingContent(state))return{sha};
+    if(readOnly||sha!==state.remoteSha){
       if(data.encoding==='none'||(!data.content&&data.size)){
         const blob=await request(`${root}/git/blobs/${encodeURIComponent(sha)}`,{headers,cache:'no-store',redirect:'error'});
         if(!blob.ok)throw Error(`Cannot read larger remote workbook (${blob.status}). Nothing overwritten.`);
@@ -520,13 +520,14 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
       validateBook(envelope.book); remote = envelope.book;
       const remoteOriginals=envelope.originals??[];
       validateOriginals(remote,remoteOriginals);
-      if (!hasPendingContent(state)) return {sha,remote,originals:remoteOriginals};
+      if (readOnly||!hasPendingContent(state)) return {sha,remote,originals:remoteOriginals};
       const pendingIds = state.pending.map(p => p.id);
       if (Array.isArray(envelope.operations) && pendingIds.every(id => envelope.operations.includes(id)) && stringifyArchive(remote) === stringifyArchive(state.book)) return {sha};
       throw new SyncConflict(remote,sha,remoteOriginals);
     }
   } else if (response.status !== 404) throw Error(`Cannot read sync file (${response.status}). Local edits retained.`);
   else if (state.remoteSha) throw Error('Remote file was removed. Local edits retained; refusing to recreate it silently.');
+  if(readOnly)throw Error('No saved GitHub workbook exists at this path. Comparison did not upload anything.');
   if (!hasPendingContent(state) && sha) return {sha};
   validateOriginals(state.book,originals);
   const packed={format:'fnt-sync-v2',payload:compressArchive({format:'fnt-sync-v1',book:state.book,operations:state.pending.map(p=>p.id),originals})};

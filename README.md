@@ -871,6 +871,20 @@ visit counts, which are batched with the next actual content edit.
 Real content divergence pauses automatic sync until the user chooses a version.
 Exact remote conflict checkpoints are not substituted with the local journal.
 
+**File > Compare workbooks and backups** opens a read-only, browser-local
+comparison. Load a native full Fnt backup on either side; this does not restore,
+save or upload it. With authenticated sync, **Load saved GitHub version for right
+side** performs a read-only fetch, never a sync/upload, including when local edits
+are pending. The conflict dialog also offers **Compare versions or a
+backup**, initially comparing this device with the received GitHub version.
+Cells match by stable identities, not current row/column positions. Values,
+formulas, notes, formatting, rows/columns, table definitions, groups, dropdowns
+and settings are compared; results are searchable and paged. Long values expand
+on demand, and scanning yields to the browser. Revision/activity counters are
+ignored. There is no common-base three-way merge: differences do not prove both
+devices changed the same cell. The tool does not merge or replace either copy;
+whole-workbook resolution remains separate and explicit.
+
 **Publication is not device sync.** An edited local workbook is never replaced
 by a website snapshot. A browser with no private connection is explicitly local-only.
 Tokens stay in tab memory by default. **Remember on this trusted device** stores
