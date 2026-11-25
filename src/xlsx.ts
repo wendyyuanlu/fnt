@@ -148,7 +148,7 @@ export async function importXlsx(buffer:ArrayBuffer,name:string,options?:{sheets
       const totals=Number(attr(table,'totalsRowCount')||0);
       book.tables.push({id:uid(),name:attr(table,'displayName')||attr(table,'name'),sheet:s.id,header:s.rows[b.r1].id,
         rows:s.rows.slice(b.r1+1,b.r2+1-totals).map(r=>r.id),
-        columns:elements(table,'tableColumn').map((c,i)=>({id:uid(),column:s.columns[b.c1+i].id,name:attr(c,'name')}))});
+        columns:elements(table,'tableColumn').map((c,i)=>({id:uid(),column:s.columns[b.c1+i].id,name:attr(c,'name'),...(first(c,'calculatedColumnFormula')?{formulaDefault:value(c,'calculatedColumnFormula')}:{})}))});
       if(totals)report.entries.push('Table totals rows preserved as cells; structured #Totals references are not yet calculated.');
     }
     for(const hl of included?elements(doc,'hyperlink'):[]){

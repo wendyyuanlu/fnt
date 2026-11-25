@@ -8,6 +8,8 @@ async function snapshot(p:Page){await saved(p);return p.evaluate(async()=>{const
 test('DD uses the same grid, maintains duplicate identities and formats across row movement, archive, undo and reload',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Notebook',exact:true}).click();await page.locator('td[data-r="1"][data-c="1"]').click();
   await dd(page);await page.locator('[data-action="new-reference"]').click();await page.locator('#answer').fill('Invented types');await page.getByRole('button',{name:'Create',exact:true}).click();
+  const append=page.locator('.reference-append-row input');await append.focus();
+  await expect(append).toHaveCSS('border-width','0px');await expect(append).toHaveCSS('border-radius','0px');await expect(append).toHaveCSS('background-color','rgba(0, 0, 0, 0)');
   for(let i=0;i<2;i++){await page.locator('.reference-append-row input').fill('Same');await page.locator('.reference-append-row input').press('Enter');}
   await expect(rows(page)).toHaveCount(2);await rows(page).last().locator('td').click();
   await page.locator('[data-action="bold"]').click();await page.locator('[data-action="format"]').click();await page.locator('#text-color').fill('#cc1122');await page.locator('#bg-color').fill('#ddeeff');await page.getByRole('button',{name:'Apply to selection'}).click();

@@ -8,6 +8,14 @@ Reuse shared header and toolbar styles rather than adding per-icon size, stroke,
 
 Every toolbar button, including new group controls, must reuse `.icon-button` styling.
 
+All `span.format-caret` chevrons reuse `dropdownArrowHtml` from
+`src/dropdown-ui.ts`, rendered at 14px by 14px. Keep its existing `0 0 12 12`
+viewBox and path, `fill="none"`, `stroke="currentColor"` and 1px non-scaling
+stroke. Do not replace this shared SVG with CSS-border chevrons.
+Workbook and DD tab categories share `categoryTabHtml` and `.tab-category`
+presentation, including the same 14px SVG, padding and expanded/collapsed arrows;
+only their mode/depth colors differ.
+
 # Dialogs
 
 All dialogs, including the nonmodal group manager, reuse `.dialog-surface` and the

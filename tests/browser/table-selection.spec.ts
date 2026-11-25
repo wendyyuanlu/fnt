@@ -80,9 +80,20 @@ test('table summary tree toggles local indentation and rails without changing ad
   await expect(nested.locator('.row-outline-rail[data-group-id="scoped-outer"]')).toHaveCount(1);
   await expect(neighbor.locator('.row-outline-rail,.row-group-controls')).toHaveCount(0);await expect(neighbor).not.toHaveClass(/summary-cell/);
   const before=await snapshot(page);
+  await nested.click();
+  const colors=await nested.evaluate(cell=>{
+    const rail=cell.querySelector('.row-outline-rail')!,button=document.querySelector('.grid .group-control[data-group-id="scoped-outer"]')!,tab=document.querySelector('.sheet-tab.current')!;
+    return{rail:getComputedStyle(rail).borderLeftColor,button:getComputedStyle(button).borderColor,tab:getComputedStyle(tab).borderBottomColor,active:getComputedStyle(document.querySelector('.grid td.active')!).outlineColor};
+  });
+  expect(colors.rail).toBe(colors.button);expect(colors.tab).toBe(colors.active);
   await page.getByRole('button',{name:'Group controls',exact:true}).click();
+  await expect(page.getByRole('switch',{name:'Tree view',exact:true})).toHaveAttribute('aria-checked','true');
   await page.getByRole('switch',{name:'Tree view',exact:true}).click();
   await expect(nested).toHaveCSS('--summary-text-inset','24px');await expect(page.locator('.row-outline-rail')).toHaveCount(0);
+  await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.reload();
+  await expect(nested).toHaveCSS('--summary-text-inset','24px');
+  await page.getByRole('button',{name:'Group controls',exact:true}).click();
+  await expect(page.getByRole('switch',{name:'Tree view',exact:true})).toHaveAttribute('aria-checked','false');
   await page.getByRole('switch',{name:'Tree view',exact:true}).click();
   await expect(nested).toHaveCSS('--summary-text-inset','48px');await page.keyboard.press('Escape');
   await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.reload();
@@ -892,6 +903,21 @@ test('table headers remain sticky through virtual scrolling, align horizontally 
     return{top:Math.abs(button.getBoundingClientRect().top-grid.querySelector('thead')!.getBoundingClientRect().bottom),left:Math.abs(button.getBoundingClientRect().left-target.getBoundingClientRect().left),column};
   });
   expect(alignment.top).toBeLessThan(2);expect(alignment.left).toBeLessThan(2);
+  const layering=await grid.evaluate(el=>{
+    const head=el.querySelector<HTMLElement>('thead')!,edge=head.getBoundingClientRect().bottom;
+    const row=[...el.querySelectorAll<HTMLElement>('tbody th')].find(th=>{
+      const r=th.getBoundingClientRect();return r.top<edge-5&&r.bottom>edge;
+    })!;
+    row.querySelector<HTMLButtonElement>('button')!.focus({preventScroll:true});
+    const corner=head.querySelector<HTMLElement>('.corner')!,r=corner.getBoundingClientRect();
+    const header=el.querySelector<HTMLElement>('.sticky-table-header[data-table="scope-top"]')!,h=header.getBoundingClientRect();
+    return{
+      focusedRow:row.matches(':focus-within'),
+      columnHeaderOnTop:!!document.elementFromPoint(r.right-5,edge-4)?.closest('thead'),
+      tableHeaderOnTop:document.elementFromPoint(h.left+h.width/2,h.top+5)===header
+    };
+  });
+  expect(layering).toEqual({focusedRow:true,columnHeaderOnTop:true,tableHeaderOnTop:true});
   await grid.evaluate(el=>el.scrollTop=58*33+5);await expect(page.locator('td[data-r="59"][data-c="1"]')).toBeAttached();
   await grid.evaluate(el=>{const last=el.querySelector('td[data-r="59"][data-c="1"]')!;el.scrollTop+=last.getBoundingClientRect().bottom-el.querySelector('thead')!.getBoundingClientRect().bottom+1;});
   await expect(page.locator('.sticky-table-header[data-table="scope-top"]')).toHaveCount(0);

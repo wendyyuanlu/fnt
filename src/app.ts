@@ -656,8 +656,11 @@ function renderStatus(): void {
     tag.title=mixed?`Add ${label} to the selection (mixed tags)`:`${all?'Remove':'Add'} ${label} tag`;
   }
 }
+function categoryTabHtml(kind:'sheet'|'reference',group:string,label:string,expanded:boolean,source?:ReferenceSource):string{
+  return`<button type="button" class="sheet-tab tab-category${source?.archived?' archived':''}" data-${kind}-group="${esc(group)}"${source?` data-reference="${source.id}"`:''} aria-expanded="${expanded}">${esc(label)}<span class="category-chevron">${dropdownArrowHtml}</span></button>`;
+}
 function referenceTabsHtml():string{
-  const button=(source:ReferenceSource,label=referenceLabel(source),category?:string)=>`<button class="sheet-tab ${!category&&source.id===referenceId?'current ':''}${source.archived?'archived':''}" data-reference="${source.id}" ${category?`data-reference-group="${esc(category)}"`:''}>${esc(label)}</button>`;
+  const button=(source:ReferenceSource,label=referenceLabel(source),category?:string)=>category?categoryTabHtml('reference',category,label,book.pickerSources[`dd-group-collapsed:${category.toLowerCase()}`]!=='true',source):`<button class="sheet-tab ${source.id===referenceId?'current ':''}${source.archived?'archived':''}" data-reference="${source.id}">${esc(label)}</button>`;
   const node=(g:ReferenceNavigation,depth=1):string=>g.group?`<span class="reference-tab-group reference-group-depth-${depth}" role="group" aria-label="${esc(g.group)}">${button(g.members.find(s=>s.id===referenceId)??g.members[0],g.label,g.group)}<span class="reference-group-members" ${book.pickerSources[`dd-group-collapsed:${g.group.toLowerCase()}`]==='true'?'hidden':''}>${g.children.map(child=>node(child,depth+1)).join('')}</span></span>`:button(g.members[0]);
   return`<div class="tabs">${referenceNavigation(book).map(g=>node(g)).join('')}<span class="tab-drop-marker" hidden></span></div>`;
 }
@@ -667,7 +670,7 @@ function workbookTabsHtml():string{
     const group=book.sheetTabGroups?.[tab.id];if(!group)return button(tab);
     if(seen.has(group))return'';seen.add(group);
     const collapsed=book.sheetTabCollapsed?.includes(group);
-    return`<span class="reference-tab-group reference-group-depth-1 sheet-tab-group" role="group" aria-label="${esc(group)}"><button type="button" data-sheet-group="${esc(group)}" aria-expanded="${!collapsed}">${esc(group)}</button><span class="reference-group-members"${collapsed?' hidden':''}>${book.sheets.filter(sheet=>book.sheetTabGroups?.[sheet.id]===group).map(button).join('')}</span></span>`;
+    return`<span class="reference-tab-group reference-group-depth-1 sheet-tab-group" role="group" aria-label="${esc(group)}">${categoryTabHtml('sheet',group,group,!collapsed)}<span class="reference-group-members"${collapsed?' hidden':''}>${book.sheets.filter(sheet=>book.sheetTabGroups?.[sheet.id]===group).map(button).join('')}</span></span>`;
   }).join('');
   return`<div class="tabs">${tabs}<span class="tab-drop-marker" hidden></span></div>`;
 }
@@ -684,7 +687,12 @@ function render(options?:{preserveViewport:boolean}): void {
   if(draft===undefined)closeExpandedEditor();
   if(ensureTableSheetSpace(book)){const warning=error;changed('Add blank sheet space');error=warning;}
   engine.beginPass();
-  if(referenceId&&!activeReference())referenceId=book.references?.[0]?.id;
+  if(referenceId&&!activeReference())referenceId=book.references?.find(source=>!source.workbookOnly)?.id;
+  if(activeReference()?.workbookOnly){
+    const table=book.tables.find(table=>table.id===activeReference()!.table);
+    referenceId=undefined;workbookView=undefined;
+    if(table)sheetId=table.sheet;else flash(Error('The workbook-only dropdown backing table is missing.'));
+  }
   document.body.classList.toggle('dd-mode',!!referenceId);
   const view=gridReference();
   if(view?.sheet)sheetId=view.sheet.id;
@@ -738,7 +746,7 @@ function render(options?:{preserveViewport:boolean}): void {
   navigationRows=rows.map(r=>r.i);navigationColumns=columns.map(c=>c.i);
   const groups=s.groups.filter(g=>(!g.table||allTables(book).some(table=>table.id===g.table&&table.sheet===s.id))&&(!view||g.members.some(id=>(g.axis==='row'?view.rows:view.columns).includes(id))));
   const sheetGroups=groups.filter(g=>!g.table);
-  const tree=!!s.outlineView?.tree,hints=s.outlineView?.plainGroupHints!==false,outlines=outlineGroups(sheetGroups),gutter=outlineGutter(outlines,rows.map(r=>r.id),tree,s.rows.length,hints);
+  const tree=s.outlineView?.tree??true,hints=s.outlineView?.plainGroupHints!==false,outlines=outlineGroups(sheetGroups),gutter=outlineGutter(outlines,rows.map(r=>r.id),tree,s.rows.length,hints);
   const firstColumn=columns[0],rowLayouts=constantSummaryRowLayout(sheetGroups,rows.map(r=>r.id),tree);
   const tableRowLayouts=new Map(sheetTables.filter(({owner})=>groups.some(group=>group.table===owner.id&&group.kind==='summary'&&group.axis==='row')).flatMap(({owner,rows:ownedRows,columns:ownedColumns})=>{
     const column=columns.find(column=>ownedColumns.has(column.id)&&groupProjection!.display(owner.header,column.id));
@@ -807,7 +815,7 @@ function render(options?:{preserveViewport:boolean}): void {
     <div id="error" role="alert" class="error" ${error?'':'hidden'}><span class="error-message">${esc(error)}</span><button type="button" class="error-dismiss" aria-label="Dismiss error" title="Dismiss error">${toolbarIcon('close')}</button></div>
     <nav class="toolbar" aria-label="Spreadsheet tools">
       <div class="tool-set">${(['undo','redo'] as const).map(name=>`<button class="icon-button" data-action="${name}" aria-label="${name==='undo'?'Undo':'Redo'}" title="${name==='undo'?'Undo (Ctrl+Z)':'Redo (Ctrl+Y)'}" ${(name==='undo'?undo:redo).length?'':'disabled'}>${toolbarIcon(name)}</button>`).join('')}</div>
-      <div class="tool-set">${(['bold','italic','underline','strikethrough','wrap'] as const).map(name=>{const label={bold:'Bold',italic:'Italic',underline:'Underline',strikethrough:'Strikethrough',wrap:'Wrap text'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}<button class="icon-button palette-button" data-action="text-color" title="Text color" aria-label="Text color">${toolbarIcon('text-color',current().format?.color??'#cc1122')}<span class="format-caret"></span></button><button class="icon-button palette-button" data-action="background-color" title="Cell background color" aria-label="Cell background color">${toolbarIcon('background-color',current().format?.background??'#ffdf00')}<span class="format-caret"></span></button><button data-action="format">123</button></div>
+      <div class="tool-set">${(['bold','italic','underline','strikethrough','wrap'] as const).map(name=>{const label={bold:'Bold',italic:'Italic',underline:'Underline',strikethrough:'Strikethrough',wrap:'Wrap text'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}<button class="icon-button palette-button" data-action="text-color" title="Text color" aria-label="Text color">${toolbarIcon('text-color',current().format?.color??'#cc1122')}<span class="format-caret">${dropdownArrowHtml}</span></button><button class="icon-button palette-button" data-action="background-color" title="Cell background color" aria-label="Cell background color">${toolbarIcon('background-color',current().format?.background??'#ffdf00')}<span class="format-caret">${dropdownArrowHtml}</span></button><button data-action="format">123</button></div>
       <div class="tool-set">${referenceId?'<button data-action="reference-settings">DD settings</button>':''}<button class="icon-button" data-action="dropdown-source" aria-label="Assign DD" aria-pressed="false" title="Assign a dropdown without changing cell contents">${toolbarIcon('dropdown-source')}</button></div>
       <div class="tool-set"><button type="button" class="icon-button group-menu-button" data-toolbar-id="action:table-selection" aria-label="Group controls" title="Group controls"></button><button type="button" class="icon-button group-toggle" data-action="summary-group" aria-label="Create/remove summary group" aria-pressed="false" title="Create summary group">${toolbarIcon('summary-group')}</button><button type="button" class="icon-button group-toggle" data-action="plain-group" aria-label="Create/remove plain group" aria-pressed="false" title="Create plain group">${toolbarIcon('plain-group')}</button><button class="icon-button" data-action="structure" title="Rows & columns" aria-label="Rows & columns">${toolbarIcon('structure')}</button>${referenceId?'<button data-action="archive-options">Hide / show selected options</button>':''}</div>
       <div class="tool-set">${(['find','copy','cut','paste','fill'] as const).map(name=>{const label={find:'Find / replace',copy:'Copy',cut:'Cut',paste:'Paste',fill:'Fill down'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}</div>
@@ -2203,7 +2211,7 @@ function openBlock():void {
 function openReferences(id?:string,notice=''):void{
   if(!commitDraft())return;
   if(!referenceId){const grid=root.querySelector<HTMLElement>('#grid-scroll');workbookView={sheet:sheetId,selected:{...selected},anchor:{...anchor},kind:selectionKind,scope:selectionScope,tableMode:tableSelectionMode,target:tableSelectionTarget,scroll:grid?.scrollTop??0,left:grid?.scrollLeft??0};}
-  referenceId=id??referenceId??book.references?.find(s=>s.kind!=='units'&&s.kind!=='conversions')?.id;
+  referenceId=id??referenceId??book.references?.find(s=>!s.workbookOnly&&s.kind!=='units'&&s.kind!=='conversions')?.id;
   if(!referenceId){newReference(referenceHost());return;}
   document.querySelector<HTMLDialogElement>('dialog')?.close();
   const view=gridReference();if(view?.sheet){sheetId=view.sheet.id;const row=view.rows[1]??view.rows[0];selected={r:Math.max(0,view.sheet.rows.findIndex(r=>r.id===row)),c:Math.max(0,view.sheet.columns.findIndex(c=>c.id===view.columns[0]))};anchor={...selected};}
@@ -2615,7 +2623,7 @@ function bindTabs():void{
   root.querySelectorAll<HTMLButtonElement>('[data-sheet-group]').forEach(button=>{
     button.onclick=()=>{
       if(!commitDraft())return;const group=button.dataset.sheetGroup!;
-      selectedTabs.clear();for(const sheet of book.sheets)if(book.sheetTabGroups?.[sheet.id]===group)selectedTabs.add(sheet.id);
+      selectedTabs.clear();
       book.sheetTabCollapsed=book.sheetTabCollapsed?.includes(group)?book.sheetTabCollapsed.filter(name=>name!==group):[...book.sheetTabCollapsed??[],group];
       changed('Toggle visual sheet group',false,false,capturePatch(book,[['sheetTabCollapsed']]));render();
     };
@@ -2988,6 +2996,56 @@ async function exportBackup():Promise<void> {
 }
 function openFile():void {
   dialog('Workbook & recovery',`<div class="menu"><button id="backup" class="primary">Download independent full backup</button>${book.importReport?'<button id="original">Download unchanged original XLSX</button><button id="report">Compatibility report</button>':''}<label>Import Ingredients into this workbook<input type="file" id="import-ingredients" accept=".xlsx"></label><label>Restore Fnt backup<input type="file" id="restore" accept=".json"></label><label>Replace workbook from Excel (pre-import recovery)<input type="file" id="import" accept=".xlsx"></label><button id="history">Recovery checkpoints</button><button id="sync">Private GitHub sync</button><button id="privacy">Storage & privacy</button></div><p class="muted">Ingredients import keeps existing records and other sheets, saves a full pre-import recovery archive, and disconnects sync. Backups contain your data; keep them private. XLSX compatibility is not certified.</p>`,d=>{
+    const masterLabel=document.createElement('label'),masterInput=document.createElement('input');
+    masterLabel.textContent='Review Master import (no changes until approved)';masterInput.type='file';masterInput.id='import-master';masterInput.accept='.xlsx';masterLabel.append(masterInput);
+    d.querySelector('#import-ingredients')!.closest('label')!.after(masterLabel);
+    masterInput.onchange=async()=>{
+      const file=masterInput.files?.[0];if(!file)return;
+      if(busy||draft!==undefined||appendDraft||colorPicker?.pending){flash('Finish the current edit or save before reviewing Master import.');return;}
+      busy=true;status='Reviewing Master locally - no workbook changes are being applied';renderStatus();
+      let expected=state.version,revision=book.revision;
+      try{
+        await flush();if(savedGeneration!==generation)throw Error('Save failed. Master review cancelled.');
+        expected=state.version;revision=book.revision;
+        const [{importXlsx},{stageMasterImport}]=await Promise.all([import('./xlsx'),import('./master-import')]);
+        const source=await importXlsx(await file.arrayBuffer(),file.name,{sheets:['Master']});
+        if(source.nativeBackup)throw Error('Restore a native Fnt snapshot instead of reimporting its Master identities.');
+        const stage=stageMasterImport(book,source.book);
+        if(state.version!==expected||book.revision!==revision)throw Error('The workbook changed during review. Select the file again to create a fresh preflight.');
+        status=stage.conflicts.length?'Master staged - review required; no changes applied':'Master preflight ready - no changes applied';
+        let page=0;
+        const show=()=>{
+          const count=stage.conflicts.length,entries=stage.conflicts.slice(page*25,(page+1)*25);
+          dialog('Master import review',`<p>${stage.source.records} records; ${stage.source.formulas} formulas retained. ${stage.summary.unique} unique Food matches eligible for linking, ${stage.summary.manual} manual inputs kept as typed, ${stage.summary.ambiguous} ambiguous inputs, ${stage.summary.sourceReview} inputs awaiting source or nutrition review.</p><p><strong>No workbook changes have been applied.</strong> ${count?`${count} unresolved decisions block the entire import. Resolve source identity and record conflicts before importing; no first-match or static-list fallback is used.`:'The preflight is conflict-free. Applying adds Master without replacing existing sheets and creates a full pre-import recovery archive.'}</p><div id="master-conflicts">${entries.map(entry=>`<details><summary>${esc(entry.kind)}: ${esc(entry.message)}</summary><p>${esc(entry.locations.join(', ')||'Source-level decision')}</p>${entry.candidates.map(candidate=>`<p>${esc(candidate.label)}<br><small>${esc([candidate.table,candidate.row,candidate.column].filter(Boolean).join(' / '))}</small></p>`).join('')}</details>`).join('')}</div><div class="menu"><button id="master-previous" ${page===0?'disabled':''}>Previous decisions</button><span>Page ${page+1} of ${Math.max(1,Math.ceil(count/25))}</span><button id="master-next" ${(page+1)*25>=count?'disabled':''}>Next decisions</button><button id="master-download">Download private review report</button>${stage.prepared?'<button id="master-apply" class="primary">Apply reviewed Master import</button>':''}</div>`,review=>{
+            review.querySelector<HTMLButtonElement>('#master-previous')!.onclick=()=>{page--;show();};
+            review.querySelector<HTMLButtonElement>('#master-next')!.onclick=()=>{page++;show();};
+            review.querySelector<HTMLButtonElement>('#master-download')!.onclick=()=>download('master-import-private-review.json',JSON.stringify({format:'fnt-master-import-preflight',version:1,importApplied:false,stateVersion:expected,sourceFile:file.name,...stage,prepared:undefined},null,2));
+            const apply=review.querySelector<HTMLButtonElement>('#master-apply');
+            if(apply)apply.onclick=async()=>{
+              if(busy||!stage.prepared)return;
+              busy=true;renderStatus();let committed=false;
+              try{
+                if(state.version!==expected||book.revision!==revision||draft!==undefined||appendDraft)throw Error('The workbook changed since preflight. Review the file again; nothing was imported.');
+                const durable=await store.load();
+                if(!durable||durable.version!==expected)throw Error('Another tab changed this workbook. Review the latest saved data before importing.');
+                const before=await store.backup(durable),previousHistory=await store.undoHistory(expected,book.id)??{undo:[],redo:[]},original=before.originals.find(original=>original.data===source.original.data)??source.original;
+                const incoming=stage.prepared.book;
+                incoming.importReport??={...source.book.importReport!,originalId:original.id};
+                const history={undo:[...previousHistory.undo,structuralUndo(book,incoming)].slice(-undoLimit),redo:[]};
+                state=await store.save(incoming,expected,'Master import',true,original,{localOnly:true,recoveryArchive:stringifyArchive({...before,undoHistory:previousHistory}),undoHistory:history});
+                committed=true;
+                token='';adoptSavedWorkbook(stage.prepared.sheet);undo.push(...history.undo);
+                status=`Imported ${stage.source.records} Master records - recovery saved; sync disconnected`;
+                channel?.postMessage({version:state.version});render();review.close();
+              }catch(error){status=committed?'Master saved, but its view could not refresh - inspect recovery before retrying':'Master import not applied';flash(error);}
+              finally{busy=false;renderStatus();}
+            };
+          });
+        };
+        show();
+      }catch(error){status='Master review failed - workbook unchanged';flash(error);}
+      finally{busy=false;renderStatus();}
+    };
     const mealsLabel=document.createElement('label'),mealsInput=document.createElement('input');
     mealsLabel.textContent='Import Meals and link matching Ingredients';mealsInput.type='file';mealsInput.id='import-meals';mealsInput.accept='.xlsx';mealsLabel.append(mealsInput);d.querySelector('#import-ingredients')!.closest('label')!.after(mealsLabel);
     const mealsNote=document.createElement('p');mealsNote.className='muted';mealsNote.textContent='Meals import adds a separate sheet, retains the previous Meals table as Meals_PreImport, preserves formulas and manual nutrition, and links ingredient labels to the first case-insensitive match from the top of Ingredients. Unmatched text stays manual. A full recovery copy is saved and sync is disconnected.';mealsLabel.after(mealsNote);

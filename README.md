@@ -430,6 +430,32 @@ remain viewable only in history.
   would split table records, fragment a referenced range, or intersect generated
   spill cells are refused without changing the workbook; use whole rows/columns
   or edit the array anchor instead. Structural changes remain undoable.
+- **File > Review Master import** stages the original Master table locally before
+  writing anything. Food is matched case-insensitively against actual active
+  Ingredients and filtered Meals DD records together; only a unique record can
+  become an automatic stable binding, and only when all six nutrient fields retain their
+  original table-default formulas. Literal overrides, changed formulas and
+  explicit cleared overrides keep Food manual; uncertain formula/default
+  provenance requires review. Cached formula results are not manual overrides.
+  Unmatched text remains manual. Duplicate records,
+  missing DD identities (including a broken MealDD target), unknown validation
+  sources and unresolved formula dependencies block the entire import and can
+  be downloaded as a private review report. Suggested live Meals targets are
+  review candidates, never automatic repairs or static-label fallbacks.
+  Existing Custom cells and other sheets are not relinked. A conflict-free
+  preflight exposes an explicit Apply action with a current-version check,
+  full pre-import recovery, preserved original XLSX and persistent Undo.
+  Submitted per-cell review choices can explicitly select a duplicate record
+  without changing nutrient overrides. Exact MATCH, XMATCH and XLOOKUP against
+  registered record-label columns follow that record identity rather than the
+  first equal label. Reviewed MealDD repair keeps its existing source/name IDs;
+  stale decisions or changed connection impact block application.
+  Manual nutrition, original formula expressions, notes, formats, outlines and
+  non-Food validations remain intact; sync is disconnected on application.
+  Ingredients, Convert and Units can remain workbook-only navigation sources:
+  their existing backing sheets and tables stay intact, while source definitions,
+  dropdown choices and bindings remain available. This preference survives DD
+  migration and reload; it does not delete or duplicate the underlying records.
 - **File > Import Meals and link matching Ingredients** adds the Excel Meals
   sheet without replacing other sheets. The previous Meals table keeps its
   identities under `Meals_PreImport`. Existing Ingredients and conversion tables

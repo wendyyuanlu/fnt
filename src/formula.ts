@@ -265,6 +265,9 @@ export class Engine {
   private referenceMembers=0;
   private rangeSizes=new Map<string,number>();
   private rangeCells=0;
+  private labelBindings=new Set<string>();
+  private labelDomains=new Map<string,{table:string;column:string;header:string}[]>();
+  private recordVectors=new WeakMap<string[],Map<string,{bindings:Set<string>;positions:Map<string,number>}>>();
   private faults(values:Scalar[]):{first?:Fault;compatibility?:Fault}{
     let result=this.vectorFaults.get(values);
     if(!result){
@@ -308,6 +311,15 @@ export class Engine {
     this.rowSets=new Map(allSheets(book).map(s=>[s.id,new Set(s.rows.map(r=>r.id))]));
     this.colSets=new Map(allSheets(book).map(s=>[s.id,new Set(s.columns.map(c=>c.id))]));
     this.tableRows=new Map(allTables(book).map(t=>[t.id,new Set(t.rows)]));
+    for(const source of book.references??[]){
+      const table=allTables(book).find(t=>t.id===(source.derived?.table??source.table));
+      const field=table?.columns.find(c=>c.id===(source.derived?.column??source.column));
+      if(!table||!field)continue;
+      this.labelBindings.add(`${table.id}:${field.id}`);
+      const key=`${table.sheet}:${field.column}`,domains=this.labelDomains.get(key)??[];
+      if(!domains.some(d=>d.table===table.id&&d.column===field.id))domains.push({table:table.id,column:field.id,header:table.header});
+      this.labelDomains.set(key,domains);
+    }
     for(const s of allSheets(book)){
       const rows=new Map(s.rows.map((r,i)=>[r.id,i])),cols=new Map(s.columns.map((c,i)=>[c.id,i]));
       this.rowPositions.set(s.id,rows);this.columnPositions.set(s.id,cols);
@@ -544,6 +556,25 @@ export class Engine {
     }
     return compatibility??(match>=0?match+1:firstError??fault('#N/A'));
   }
+  private recordMatch(needle:Ast,lookup:Ast,sheet:string,row:string,col:string,env:Env):number|undefined{
+    const input=this.reference(needle,sheet,row,col,env);
+    if(!input||input.rows.length!==1||input.columns.length!==1)return;
+    const owner=this.sheets.get(input.sheet),binding=owner&&getCell(owner,input.rows[0],input.columns[0]).binding;
+    if(!binding||!this.labelBindings.has(`${binding.table}:${binding.column}`))return;
+    const ref=this.reference(lookup,sheet,row,col,env);
+    if(!ref||ref.columns.length!==1)return;
+    let columns=this.recordVectors.get(ref.rows);
+    if(!columns){columns=new Map();this.recordVectors.set(ref.rows,columns);}
+    let vector=columns.get(`${ref.sheet}:${ref.columns[0]}`);
+    if(!vector){
+      const domains=(this.labelDomains.get(`${ref.sheet}:${ref.columns[0]}`)??[])
+        .filter(d=>ref.rows.every(id=>id===d.header||this.tableRows.get(d.table)?.has(id)));
+      vector={bindings:new Set(domains.map(d=>`${d.table}:${d.column}`)),positions:new Map(ref.rows.map((id,i)=>[id,i]))};
+      columns.set(`${ref.sheet}:${ref.columns[0]}`,vector);
+    }
+    if(!vector.bindings.size)return;
+    return vector.bindings.has(`${binding.table}:${binding.column}`)?vector.positions.get(binding.row)??-1:-1;
+  }
   private call(ast: Extract<Ast, {kind:'call'}>, sheet: string, row: string, col: string, env: Env): Value {
     const args = ast.args, name = ast.name, ev = (i: number, fallback: Value = null) => args[i] ? this.evaluate(args[i],sheet,row,col,env) : fallback;
     if (!supportedFunctions.has(name)) return fault('#UNSUPPORTED!', `${name} is preserved, not calculated.`);
@@ -608,7 +639,14 @@ export class Engine {
       (args[2]?.kind==='literal'?args[2].value===0:name==='XMATCH')&&
       (name==='MATCH'||!args[3]||args[3].kind==='literal'&&(args[3].value===1||args[3].value===-1))){
       const needle=scalar(ev(0)),ref=this.reference(args[1],sheet,row,col,env);
-      if(ref){const result=this.referenceMatch(ref,needle,name==='XMATCH'&&args[3]?.kind==='literal'?Number(args[3].value):1);if(result!==undefined)return result;}
+      if(ref){
+        const result=this.referenceMatch(ref,needle,name==='XMATCH'&&args[3]?.kind==='literal'?Number(args[3].value):1);
+        if(result!==undefined){
+          const record=isFault(needle)?undefined:this.recordMatch(args[0],args[1],sheet,row,col,env);
+          if(record===undefined||isFault(result)&&['#UNSUPPORTED!','#LIMIT!'].includes(result.error))return result;
+          return record>=0?record+1:isFault(result)?result:fault('#N/A');
+        }
+      }
     }
     if(['XLOOKUP','XMATCH','MATCH'].includes(name)){
       const needle=scalar(ev(0)),lookup=ev(1),hay=this.flat(lookup);
@@ -618,14 +656,17 @@ export class Engine {
       if(![0,-1,1,2].includes(mode))return fault('#VALUE!','Invalid lookup match mode.');
       if(![1,-1].includes(search))return fault('#UNSUPPORTED!','Binary lookup search is not implemented.');
       const faults=this.faults(hay);if(faults.compatibility)return faults.compatibility;
-      let matches=this.exactMatches.get(hay);if(!matches){matches=new Map();this.exactMatches.set(hay,matches);}
-      let found=matches.get(needle);
-      if(!found){
-        found={first:-1,last:-1};
-        for(let i=0;i<hay.length;i++)if(!isFault(hay[i])&&compare(hay[i],needle)===0){if(found.first<0)found.first=i;found.last=i;}
-        matches.set(needle,found);
+      let index=mode===0?this.recordMatch(args[0],args[1],sheet,row,col,env):undefined;
+      if(index===undefined){
+        let matches=this.exactMatches.get(hay);if(!matches){matches=new Map();this.exactMatches.set(hay,matches);}
+        let found=matches.get(needle);
+        if(!found){
+          found={first:-1,last:-1};
+          for(let i=0;i<hay.length;i++)if(!isFault(hay[i])&&compare(hay[i],needle)===0){if(found.first<0)found.first=i;found.last=i;}
+          matches.set(needle,found);
+        }
+        index=search===-1?found.last:found.first;
       }
-      let index=search===-1?found.last:found.first;
       const indices=index<0&&mode!==0?hay.map((_,i)=>i):[];if(search===-1)indices.reverse();
       if(index<0&&mode===2&&typeof needle==='string'){
         let pattern='';for(let i=0;i<needle.length;i++){const c=needle[i];if(c==='~'&&i+1<needle.length){pattern+=needle[++i].replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}else pattern+=c==='*'?'.*':c==='?'?'.':c.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}

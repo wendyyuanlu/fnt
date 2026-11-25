@@ -17,7 +17,7 @@ export interface ReferenceNavigation {label:string;group?:string;members:Referen
 export function referenceNavigation(book:Workbook):ReferenceNavigation[]{
   const roots:ReferenceNavigation[]=[];
   const stored=new Set(book.dropdownData?.tables.map(table=>table.id));
-  for(const source of (book.references??[]).filter(source=>source.kind!=='units'&&source.kind!=='conversions'||!!source.table&&stored.has(source.table))){
+  for(const source of (book.references??[]).filter(source=>!source.workbookOnly&&(source.kind!=='units'&&source.kind!=='conversions'||!!source.table&&stored.has(source.table)))){
     let children=roots,path='';
     for(const label of source.group?.split('/').map(s=>s.trim()).filter(Boolean)??[]){
       path=path?`${path} / ${label}`:label;

@@ -209,6 +209,7 @@ function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook
       id(source.id);
       if(typeof source.name!=='string'||!['list','units','conversions','derived'].includes(source.kind)||!Array.isArray(source.archivedRows)||source.archivedRows.some(row=>!safeId(row)))throw Error('Invalid supporting source metadata.');
       for(const label of[source.label,source.group])if(label!==undefined&&(typeof label!=='string'||!label.trim()))throw Error('Invalid dropdown display name or group.');
+      if(source.workbookOnly!==undefined&&typeof source.workbookOnly!=='boolean')throw Error('Invalid dropdown navigation preference.');
       if(source.catalog&&(!safeId(source.catalog.id)||!safeId(source.catalog.table)||source.catalog.rows!==undefined&&(!Array.isArray(source.catalog.rows)||source.catalog.rows.some(r=>!safeId(r))||new Set(source.catalog.rows).size!==source.catalog.rows.length)))throw Error('Invalid bundled catalog provenance.');
       for(const identity of[source.table,source.column,source.nameId,source.origin?.original,source.derived?.table,source.derived?.column,...Object.values(source.conversion??{}),...Object.values(source.anchor??{})])if(identity!==undefined&&!safeId(identity))throw Error('Invalid supporting source binding.');
       if(source.derived?.filter&&!safeId(source.derived.filter.column))throw Error('Invalid derived filter binding.');

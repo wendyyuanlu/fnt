@@ -56,7 +56,7 @@ export interface Sheet {
 }
 export interface ReferenceSource {
   id:string;name:string;kind:'list'|'units'|'conversions'|'derived';table?:string;column?:string;
-  label?:string;group?:string;
+  label?:string;group?:string;workbookOnly?:boolean;
   archived?:boolean;archivedRows:string[];
   origin?:{original:string;table?:string;definition?:string};
   catalog?:{id:string;table:string;rows?:string[]};
@@ -67,7 +67,7 @@ export interface ReferenceSource {
 }
 export interface Table {
   id: string; name: string; sheet: string; rows: string[];
-  columns: { id: string; column: string; name: string }[]; header: string;
+  columns: { id: string; column: string; name: string; formulaDefault?:string }[]; header: string;
 }
 export type TableSort='activity'|'frequent'|'az'|'za';
 export interface TableActivity {editedAt?:number;visits?:number}

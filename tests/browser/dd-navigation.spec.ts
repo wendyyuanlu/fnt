@@ -43,7 +43,12 @@ test('Chrome DD pills nest tightly with one short trailing divider and keep surr
   }));
   expect(styles.outer).toEqual({height:'12px',width:'1px',color:'rgb(218, 220, 224)',right:'0px'});expect(styles.inner.every(c=>c==='none')).toBe(true);expect(styles.gaps.every(g=>g==='2px')).toBe(true);
   const imported=chrome.locator('[data-reference-group="Snack / Chocolate / Imported"]');
-  await imported.click();await expect(chrome.locator('.reference-group-depth-3>.reference-group-members')).toBeHidden();await imported.click();
+  expect(await imported.evaluate(button=>{const svg=button.querySelector('svg')!,rect=svg.getBoundingClientRect();return{width:rect.width,height:rect.height,paddingRight:getComputedStyle(button).paddingRight,path:svg.querySelector('path')!.getAttribute('d'),stroke:svg.getAttribute('stroke'),strokeWidth:svg.getAttribute('stroke-width'),transform:getComputedStyle(svg).transform};})).toEqual({width:14,height:14,paddingRight:'3px',path:'m3 4 3 3 3-3',stroke:'currentColor',strokeWidth:'1',transform:'matrix(0, 1, -1, 0, 0, 0)'});
+  await expect(page.locator('.format-caret svg')).toHaveCount(2);
+  expect(await page.locator('.format-caret svg').evaluateAll(icons=>icons.every(svg=>svg.getBoundingClientRect().width===14&&svg.getBoundingClientRect().height===14&&svg.querySelector('path')!.getAttribute('d')==='m3 4 3 3 3-3'))).toBe(true);
+  await imported.click();await expect(chrome.locator('.reference-group-depth-3>.reference-group-members')).toBeHidden();
+  expect(await imported.locator('svg').evaluate(svg=>getComputedStyle(svg).transform)).toBe('matrix(0, -1, 1, 0, 0, 0)');
+  await imported.click();
   await chrome.locator('[data-reference]:not([data-reference-group])').filter({hasText:/^Country$/}).click();
   await expect(page.locator('body')).toHaveClass(/dd-mode/);await expect(page.locator('#save-state')).toContainText(/^Saved/);
   await expect(chrome.locator('.reference-group-depth-3>.reference-group-members')).toBeVisible();
@@ -56,6 +61,35 @@ test('Chrome DD pills nest tightly with one short trailing divider and keep surr
   expect(await root.evaluate(el=>getComputedStyle(el,'::after').display)).toBe('none');
   await page.locator('[data-reference-group="Snack"]').click();
   expect(await root.evaluate(el=>getComputedStyle(el,'::after').display)).not.toBe('none');
+  await page.getByRole('button',{name:'DD settings',exact:true}).click();
+  const caret=page.getByRole('combobox',{name:'Group'}).locator('.format-caret svg');
+  await expect(caret).toHaveCount(1);expect(await caret.evaluate(svg=>svg.getBoundingClientRect().width)).toBe(14);
+  await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+});
+
+test('expanding workbook categories does not select or outline their member tabs',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  await page.evaluate(async()=>{
+    const path='/src/',{Store}=await import(path+'storage.ts') as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      const state=(await store.load())!,book=state.book;
+      book.sheetTabGroups={...book.sheetTabGroups,...Object.fromEntries(book.sheets.slice(0,3).map(sheet=>[sheet.id,'Tests']))};
+      book.sheetTabCollapsed=['Tests'];await store.save(book,state.version,'Synthetic workbook category');
+    }finally{store.close();}
+  });
+  await page.reload();await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  const category=page.locator('[data-sheet-group="Tests"]'),members=page.locator('.sheet-tab-group').filter({has:category}).locator('[data-sheet]');
+  await expect(category).toHaveClass(/tab-category/);
+  expect(await category.locator('svg').evaluate(svg=>({width:svg.getBoundingClientRect().width,height:svg.getBoundingClientRect().height,transform:getComputedStyle(svg).transform}))).toEqual({width:14,height:14,transform:'matrix(0, -1, 1, 0, 0, 0)'});
+  await category.click();await expect(members).toHaveCount(3);await expect(members.first()).toBeVisible();
+  expect(await category.locator('svg').evaluate(svg=>getComputedStyle(svg).transform)).toBe('matrix(0, 1, -1, 0, 0, 0)');
+  expect(await category.evaluate(button=>({padding:getComputedStyle(button).padding,border:getComputedStyle(button).borderWidth,radius:getComputedStyle(button).borderRadius}))).toEqual({padding:'3px 3px 3px 7px',border:'0px',radius:'5px'});
+  await expect(page.locator('.sheet-tab.tab-multi-selected')).toHaveCount(0);
+  expect(await members.evaluateAll(tabs=>tabs.every(tab=>tab.getAttribute('aria-pressed')==='false'&&getComputedStyle(tab,'::before').content==='none'))).toBe(true);
+  await category.click();await category.click();await expect(page.locator('.sheet-tab.tab-multi-selected')).toHaveCount(0);
+  await members.first().click();await members.last().click({modifiers:['Shift']});
+  await expect(page.locator('.sheet-tab.tab-multi-selected')).toHaveCount(3);
+  await category.click();await category.click();await expect(page.locator('.sheet-tab.tab-multi-selected')).toHaveCount(0);
 });
 
 test('Convert belongs to DD while Shift-click selects workbook tabs without editing records',async({page})=>{

@@ -1,8 +1,8 @@
 import {expect,it} from 'vitest';
-import {migrateDropdownData} from '../src/dd-storage';
+import {migrateDropdownData,moveReferencesToWorkbook} from '../src/dd-storage';
 import {allSheets,allTables,clone,createDemo,getCell,key,letters,setInput,type Workbook} from '../src/model';
 import {seedDropdownCatalog} from '../src/dropdown-catalog';
-import {addReferenceValue,createReference,duplicateReference,referenceChoices,referenceTable,renameReferenceValue} from '../src/references';
+import {addReferenceValue,createReference,duplicateReference,referenceChoices,referenceNavigation,referenceTable,renameReferenceValue} from '../src/references';
 import {compile,Engine,scalar} from '../src/formula';
 import {appendReferenceOption,conversionEditImpact,referenceView} from '../src/reference-grid';
 import {validateBook} from '../src/storage';
@@ -73,4 +73,33 @@ it('rejects duplicated DD identities and malformed DD storage on restore',()=>{
   const invalid=clone(moved);invalid.dropdownData!.sheets.push(clone(invalid.sheets[0]));expect(()=>validateBook(invalid)).toThrow(/duplicate identity/);
   const duplicate=clone(moved);duplicate.tables.push(clone(duplicate.dropdownData!.tables[0]));expect(()=>validateBook(duplicate)).toThrow(/owning sheet/);
   expect(allTables(moved)).toHaveLength(allTables(book).length);
+});
+
+it('shows selected backing tables only in workbook navigation without losing records, formulas or dropdown bindings on reload',()=>{
+  const book=createDemo(),target=book.sheets.find(sheet=>sheet.name==='Notebook')!;
+  const units=createReference(book,'Units','units'),conversion=createReference(book,'Convert','conversions'),ingredients=book.tables.find(table=>table.name==='Ingredients')!;
+  const picker={id:'ingredients-main-picker',name:'Ingredients',kind:'list' as const,table:ingredients.id,column:ingredients.columns[0].id,archivedRows:[]};book.references!.push(picker);
+  addReferenceValue(book,units,'unit-a');const convert=referenceTable(book,conversion),row=appendReferenceOption(book,conversion,convert.table.columns[0].column,'unit-a');
+  setInput(book,convert.sheet,row,convert.table.columns[1].column,'unit-b');setInput(book,convert.sheet,row,convert.table.columns[2].column,'2');
+  setInput(book,target,target.rows[6].id,target.columns[0].id,`=SUM(${convert.table.name}[Conversion Factor])`);
+  const before=migrateDropdownData(book).book,unchanged=clone(before),choices=referenceChoices(before,units),value=scalar(new Engine(before).cell(target.id,target.rows[6].id,target.columns[0].id));
+  const moved=moveReferencesToWorkbook(before,[picker.id,units.id,conversion.id]);
+  const records=(value:Workbook)=>allTables(value).map(table=>{
+    const owner=allSheets(value).find(sheet=>sheet.id===table.sheet)!;
+    return{...table,sheet:undefined,columns:table.columns.map(({column,...field})=>field),cells:[table.header,...table.rows].map(row=>table.columns.map(column=>getCell(owner,row,column.column)))};
+  }).sort((a,b)=>a.id.localeCompare(b.id));
+  expect(before).toEqual(unchanged);expect(records(moved)).toEqual(records(before));
+  expect(referenceChoices(moved,moved.references!.find(source=>source.id===units.id)!)).toEqual(choices);
+  expect(moved.tables.some(table=>table.id===units.table)).toBe(true);expect(moved.tables.some(table=>table.id===conversion.table)).toBe(true);
+  const navigation=referenceNavigation(moved).flatMap(group=>group.members.map(source=>source.id));
+  expect(navigation).not.toContain(picker.id);expect(navigation).not.toContain(units.id);expect(navigation).not.toContain(conversion.id);
+  expect(scalar(new Engine(moved).cell(target.id,target.rows[6].id,target.columns[0].id))).toBe(value);expect(value).toBe(2);
+  expect(migrateDropdownData(clone(moved))).toEqual({book:moved,changed:false});validateBook(moved);
+  const invalid=clone(moved);invalid.references![0].workbookOnly='true' as never;expect(()=>validateBook(invalid)).toThrow(/navigation preference/);
+});
+
+it('refuses to move a backing table whose rows also belong to another DD table',()=>{
+  const {book,source}=fixture(),moved=migrateDropdownData(book).book,neighbor=clone(referenceTable(moved,source).table);
+  neighbor.id='overlapping-dd-table';neighbor.name='Neighbor';neighbor.columns=neighbor.columns.map((column,i)=>({...column,id:'neighbor-field-'+i}));moved.dropdownData!.tables.push(neighbor);
+  const before=clone(moved);expect(()=>moveReferencesToWorkbook(moved,[source.id])).toThrow(/other tables/);expect(moved).toEqual(before);
 });

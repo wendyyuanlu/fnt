@@ -1,6 +1,6 @@
 import { createReference,duplicateReference,normalizeReferenceGroup,referenceCaption,referenceLabel,referenceNavigation,referenceUsages,setDerivedSource,setReferencePresentation,type ReferenceNavigation } from './references';
 import { allTables, clone,uniqueName,type ReferenceSource,type Workbook } from './model';
-import { dropdownManualActionHtml,dropdownOptionsKey,mountDropdownOptions } from './dropdown-ui';
+import { dropdownArrowHtml,dropdownManualActionHtml,dropdownOptionsKey,mountDropdownOptions } from './dropdown-ui';
 
 export interface ReferenceHost{
   book:()=>Workbook;esc:(v:unknown)=>string;mutate:(label:string,fn:()=>void)=>boolean;
@@ -13,7 +13,7 @@ export function mountGroupPicker(host:ReferenceHost,d:HTMLDialogElement,visualGr
   input.removeAttribute('list');input.hidden=true;d.querySelector('#reference-groups')?.remove();
   const trigger=document.createElement('button');trigger.type='button';trigger.className='reference-group-picker';trigger.setAttribute('role','combobox');trigger.setAttribute('aria-label','Group');trigger.setAttribute('aria-haspopup','listbox');trigger.setAttribute('aria-expanded','false');
   input.after(trigger);let closePopup:(()=>void)|undefined,manualStart=input.value,manualChanged=input.dataset.changed,manualEmpty=input.dataset.emptyLabel;
-  const display=()=>{trigger.replaceChildren(document.createTextNode(input.value||input.dataset.emptyLabel||'Standalone'));const caret=document.createElement('span');caret.className='format-caret';caret.setAttribute('aria-hidden','true');trigger.append(caret);};
+  const display=()=>{trigger.replaceChildren(document.createTextNode(input.value||input.dataset.emptyLabel||'Standalone'));const caret=document.createElement('span');caret.className='format-caret';caret.setAttribute('aria-hidden','true');caret.innerHTML=dropdownArrowHtml;trigger.append(caret);};
   input.addEventListener('input',()=>{input.dataset.changed='true';delete input.dataset.emptyLabel;});
   const finishManual=()=>{input.hidden=true;trigger.hidden=false;display();};
   input.onblur=finishManual;
