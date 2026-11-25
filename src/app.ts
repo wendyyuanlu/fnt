@@ -1,5 +1,5 @@
 import './style.css';
-import { allSheets,allTables,addRow,addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
+import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
 import { Store, SyncConflict, syncGitHub, validateBook,validateBookMetadata,validateCellChanges, type Backup, type LocalState } from './storage';
 import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch} from './undo-history';
@@ -955,7 +955,12 @@ function safeLink(value: string): boolean {
 }
 function cellValidation(s:Sheet,row:string,column:string){
   if(allTables(book).some(t=>t.sheet===s.id&&t.header===row&&t.columns.some(c=>c.column===column)))return;
-  const assigned=s.validations.find(v=>v.rows.includes(row)&&v.columns.includes(column));if(!assigned)return;
+  let assigned=s.validations.find(v=>v.rows.includes(row)&&v.columns.includes(column));
+  if(!assigned&&book.pickerSources[`${s.id}:${column}`]!=='manual'){
+    const previous=adjacentTableForCell(book,s,row,column)?.rows.at(-1);
+    if(previous)assigned=s.validations.find(v=>v.rows.includes(previous)&&v.columns.includes(column));
+  }
+  if(!assigned)return;
   const units=book.references?.filter(r=>r.kind==='units')??[];
   if(!units.some(u=>u.table&&assigned.source.includes(u.table)||u.nameId&&assigned.source.includes(u.nameId)))return assigned;
   const strip=(ast:Ast):Ast|undefined=>{if(validationReference(book,ast,s.id)?.kind==='units')return;if(ast.kind==='call'&&ast.name==='VSTACK'){const args=ast.args.map(strip).filter((arg):arg is Ast=>!!arg);return args.length>1?{...ast,args}:args[0];}return ast;};

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compile, displayFormula, Engine, flatten, type Ast } from '../src/formula';
-import { addRow, addTableRows, addTableColumns, tableMembershipGaps, blankSheet, clone, createDemo, createTranslationContext, deleteColumn, deleteRows, duplicateSheet, fillCells, getCell, inheritTableRow, insertColumn, insertSheetRows, isFault, key, mapAst, move, moveColumns, moveRows, outlineMembers, renameColumn, setInput, translate, type Workbook } from '../src/model';
+import { addRow, addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, createDemo, createTranslationContext, deleteColumn, deleteRows, duplicateSheet, fillCells, getCell, inheritTableRow, insertColumn, insertSheetRows, isFault, key, mapAst, move, moveColumns, moveRows, outlineMembers, renameColumn, setInput, translate, type Workbook } from '../src/model';
 
 it('maps independently mutable AST occurrences without changing shared source subtrees',()=>{
   const field:Ast={kind:'structured',table:'table',columns:['field'],mode:'row'};
@@ -230,6 +230,10 @@ describe('identity-bound calculation',()=>{
     const {book,ingredients:s,table:t}=fixture(),row=s.rows[4].id,columns=t.columns;
     s.validations.push({id:crypto.randomUUID(),sheet:s.id,rows:[t.rows[2]],columns:[columns[4].column],source:'="g,cup"',values:['g','cup']});
     s.validations.push({id:crypto.randomUUID(),sheet:s.id,rows:[t.rows[0]],columns:[columns[4].column],source:'="unrelated"',values:['unrelated']});
+    const beforePreview=clone(book);
+    expect(adjacentTableForCell(book,s,row,columns[0].column)).toBe(t);
+    expect(adjacentTableForCell(book,s,s.rows[5].id,columns[0].column)).toBeUndefined();
+    expect(book).toEqual(beforePreview);
     setInput(book,s,s.rows[5].id,columns[0].column,'Freeform after a gap');
     expect(t.rows).not.toContain(s.rows[5].id);
     setInput(book,s,row,columns[0].column,'New item');

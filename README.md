@@ -40,14 +40,16 @@ Refreshing does not sync edits from another browser profile. Both development an
 preserving a full recovery checkpoint first. Existing edited, synced or imported
 workbooks are never automatically replaced. **File > Load published testing
 workbook** explicitly loads that snapshot while preserving the previous archive.
-The authorized testing snapshot contains Meals, Ingredients, the existing
-**Tests** tabs (Meal TEST DATA, Daily log, Notebook TEST), and their required
-dropdown/conversion dependencies, including the owner's explicitly approved
-meal and ingredient data. The Tests Daily log is synthetic; unrelated original
-daily/weight-tracking sheets remain excluded.
-Meals row outlines have been converted to table-constrained summary groups
-where the preceding row is ungrouped; column plain groups retain their kind
-and are constrained to their containing table.
+The explicitly authorized game-character snapshot contains the saved workbook
+sheets and their required dropdown/conversion dependencies. Publication retains
+cell identities, formulas, notes, formats, row/column organization, table
+definitions, and existing sheet/table group scopes exactly as saved. A full
+independent local backup is retained and checked against the publication before
+uploading; the live browser workbook and its recovery history are not replaced.
+The next empty row below a table offers the neighboring column's dropdown.
+Opening or cancelling it does not extend the table; choosing a value extends it
+with the existing formula and validation inheritance. Gaps and occupied rows
+remain freeform.
 The authorized testing snapshot is the only published workbook data. Original
 Excel packages, recovery histories, tokens and subsequent browser edits are not
 automatically bundled or published.

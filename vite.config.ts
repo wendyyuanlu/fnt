@@ -12,7 +12,7 @@ function publishedId():string{
   return snapshot.id;
 }
 export default defineConfig({
-  base: process.env.FNT_BASE_PATH ?? './', server: { host: '127.0.0.1' },
+  base: process.env.FNT_BASE_PATH ?? './', server: { host: '127.0.0.1', watch: { ignored: ['**/docs/**'] } },
   plugins:[{
     name:'fnt-offline-shell',
     configResolved(config){publicDirectory=config.publicDir;},

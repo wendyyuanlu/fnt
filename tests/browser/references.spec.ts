@@ -114,6 +114,45 @@ test('cell and column dropdown assignment preserves values and precise scopes an
   await page.locator('[data-action="dropdown-source"]').click();await page.locator('#no-dropdown').click();await page.getByRole('button',{name:'Apply dropdown'}).click();
   await expect(page.locator('td[data-r="1"][data-c="0"]')).toHaveText('Example oats');
 });
+for(const boundary of ['blank','occupied','gap'] as const)test(`dropdown at the table boundary (${boundary}) preserves freeform cells and table membership`,async({page})=>{
+  await page.goto('/');await saved(page);
+  await page.evaluate(async boundary=>{
+    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),
+      {blankSheet,key,setInput,uid}=await import(p+'model.ts') as typeof import('../../src/model'),
+      {createTable}=await import(p+'table-management.ts') as typeof import('../../src/table-management'),
+      {createReference,addReferenceValue,referenceFormula}=await import(p+'references.ts') as typeof import('../../src/references'),store=await Store.open();
+    try{
+      const state=(await store.load())!,book=state.book,s=blankSheet('Picker preview',8,12);book.sheets.unshift(s);
+      for(const [index,name]of ['Food','Amount','Result'].entries())setInput(book,s,s.rows[0].id,s.columns[index+8].id,name);
+      const table=createTable(book,s.id,{r1:0,r2:3,c1:8,c2:10},'PickerTable',true),source=createReference(book,'Synthetic food');
+      addReferenceValue(book,source,'Invented option');
+      setInput(book,s,s.rows[3].id,s.columns[9].id,'5');setInput(book,s,s.rows[3].id,s.columns[10].id,'=[@Amount]*2');
+      s.validations.push({id:uid(),sheet:s.id,rows:[...table.rows],columns:[s.columns[8].id],source:JSON.stringify(referenceFormula(source))});
+      if(boundary==='occupied')s.cells[key(s.rows[4].id,s.columns[9].id)]={note:'Preserve this existing note'};
+      await store.save(book,state.version,'Synthetic table boundary');
+    }finally{store.close();}
+  },boundary);
+  await page.reload();await page.getByRole('button',{name:'Picker preview',exact:true}).click();const before=await snapshot(page);
+  const target=page.locator(`td[data-r="${boundary==='gap'?5:4}"][data-c="8"]`);await target.click();
+  const picker=page.locator('.cell-dropdown');
+  if(boundary!=='blank'){
+    await expect(picker).toHaveCount(0);
+    expect((await snapshot(page)).state.book.sheets.find(s=>s.name==='Picker preview')!.cells).toEqual(before.state.book.sheets.find(s=>s.name==='Picker preview')!.cells);
+    expect((await snapshot(page)).state.book.tables).toEqual(before.state.book.tables);return;
+  }
+  await expect(picker.getByRole('option',{name:'Invented option',exact:true})).toBeVisible();
+  expect((await snapshot(page)).state.book.tables).toEqual(before.state.book.tables);
+  await page.keyboard.press('Escape');expect((await snapshot(page)).state.book.sheets.find(s=>s.name==='Picker preview')).toEqual(before.state.book.sheets.find(s=>s.name==='Picker preview'));
+  await target.click();await picker.getByRole('option',{name:'Invented option',exact:true}).click();await expect(target).toHaveText('Invented option');
+  const after=await snapshot(page),s=after.state.book.sheets.find(s=>s.name==='Picker preview')!,table=after.state.book.tables.find(t=>t.name==='PickerTable')!;
+  expect(table.rows).toContain(s.rows[4].id);expect(s.cells[`${s.rows[4].id}:${s.columns[10].id}`].formula).toBeDefined();
+  expect(s.validations[0].rows).toContain(s.rows[4].id);
+  await page.locator('[data-action="undo"]').click();const undone=await snapshot(page);
+  expect(undone.state.book.tables).toEqual(before.state.book.tables);
+  const restored=undone.state.book.sheets.find(s=>s.name==='Picker preview')!,original=before.state.book.sheets.find(s=>s.name==='Picker preview')!;
+  // Rendering may retain additional empty viewport buffer rows.
+  expect({...restored,rows:restored.rows.slice(0,original.rows.length)}).toEqual(original);
+});
 test('live derived lists are filtered shared-grid previews, never editable replacements for the source',async({page})=>{
   await page.goto('/');await dd(page);await page.locator('[data-action="new-reference"]').click();await page.locator('#answer').fill('Meal choices');await page.locator('#reference-kind').selectOption('derived');await page.getByRole('button',{name:'Create',exact:true}).click();
   await page.locator('#derived-table').selectOption({label:'Meals'});await page.locator('#derived-column').selectOption({label:'Meal'});await page.locator('#derived-filter').selectOption({label:'Ingredient'});await page.locator('#derived-equals').fill('Example oats');await page.getByRole('button',{name:'Save connection'}).click();

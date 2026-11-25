@@ -314,18 +314,24 @@ export function tableMembershipGaps(book:Workbook):TableMembershipGap[]{
   }
   return gaps;
 }
-export function expandAdjacentTable(book:Workbook,sheet:Sheet,row:string,column:string):Table|undefined {
+export function adjacentTableForCell(book:Workbook,sheet:Sheet,row:string,column:string):Table|undefined {
   if(tableAt(book,sheet.id,row,column))return;
   const at=sheet.rows.findIndex(r=>r.id===row);
   if(at<1)return;
+  const positions=new Map(sheet.rows.map((row,index)=>[row.id,index]));
   const candidates=allTables(book).filter(t=>t.sheet===sheet.id&&t.columns.some(c=>c.column===column)&&
-    Math.max(sheet.rows.findIndex(r=>r.id===t.header),...t.rows.map(id=>sheet.rows.findIndex(r=>r.id===id)))===at-1);
+    Math.max(positions.get(t.header)??-1,...t.rows.map(id=>positions.get(id)??-1))===at-1);
   if(candidates.length!==1)return;
   const table=candidates[0];
   if(allTables(book).some(t=>t!==table&&t.sheet===sheet.id&&(t.header===row||t.rows.includes(row))&&t.columns.some(c=>table.columns.some(x=>x.column===c.column))))return;
   if(table.columns.some(c=>{
     const cell=getCell(sheet,row,c.column);return cell.formula||cell.calculation||cell.binding||cell.value!=null&&cell.value!==''||cell.note||cell.link;
   }))return;
+  return table;
+}
+export function expandAdjacentTable(book:Workbook,sheet:Sheet,row:string,column:string):Table|undefined {
+  const table=adjacentTableForCell(book,sheet,row,column);if(!table)return;
+  const at=sheet.rows.findIndex(r=>r.id===row);
   table.rows.push(row);
   inheritTableRow(book,sheet,table,row,table.rows.length-1);
   if(at===sheet.rows.length-1)sheet.rows.push({id:uid()});
