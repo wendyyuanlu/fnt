@@ -16,6 +16,7 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
   });
   const connect=async(target:typeof page,remember=false)=>{
     await target.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+    await expect(target.getByRole('dialog',{name:'Workbook & recovery',exact:true}).locator('.menu > :first-child')).toHaveText('Private GitHub sync');
     await target.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
     for(const [name,value]of [['owner','example'],['repo','private-test'],['branch','main'],['path','synthetic.json'],['token','synthetic-test-token']])await target.locator(`#sync-${name}`).fill(value);
     if(remember)await target.locator('#sync-remember').check();
