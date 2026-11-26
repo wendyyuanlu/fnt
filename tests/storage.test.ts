@@ -209,11 +209,47 @@ describe('private opt-in sync',()=>{
     };
     expect((await syncGitHub(state,'synthetic',fetcher,[],{readOnly:true})).remote).toEqual(book);
     expect(methods).toEqual(['GET','GET']);expect(stringifyArchive(state)).toBe(before);
-    state.remoteSha=undefined;let calls=0;
+    let calls=0;
     await expect(syncGitHub(state,'synthetic',async(_url,init)=>{
       expect(init?.method).not.toBe('PUT');return ++calls===1?new Response(JSON.stringify({private:true,has_pages:false})):new Response('',{status:404});
     },[],{readOnly:true})).rejects.toThrow('No saved GitHub workbook');
     expect(calls).toBe(2);
+  });
+  it('reads known renamed sync files only after a missing legacy path, without changing the connection or pending edits',async()=>{
+    for(const path of ['workbook.json','personal-workbook.json']){
+      const book=createDemo(),remote=structuredClone(book);remote.title='Invented renamed remote';
+      const state:LocalState={book,version:1,pending:[{id:'local',label:'Edit',time:''}],updated:'',remoteSha:'old-revision',sync:{owner:'wendyyuanlu',repo:'fnt-data',branch:'main',path}};
+      const before=stringifyArchive(state),reads:string[]=[];
+      const fetcher:typeof fetch=async(input,init)=>{
+        expect(init?.method??'GET').toBe('GET');
+        const url=new URL(String(input)),file=decodeURIComponent(url.pathname.split('/contents/')[1]??'');
+        if(!file)return Response.json({private:true,has_pages:false});
+        reads.push(file);
+        return file==='fnt-data.json'?Response.json({sha:'renamed-revision',encoding:'base64',content:encode64(JSON.stringify({format:'fnt-sync-v1',book:remote,operations:[]}))}):new Response('',{status:404});
+      };
+      const result=await syncGitHub(state,'invented',fetcher,[],{readOnly:true});
+      expect(result.remote).toEqual(remote);expect(result.readPath).toBe('fnt-data.json');
+      expect(reads).toEqual([path,'fnt-data.json']);expect(stringifyArchive(state)).toBe(before);
+      reads.length=0;
+      await expect(syncGitHub(state,'invented',fetcher)).rejects.toThrow('refusing to recreate');
+      expect(reads).toEqual([path]);expect(stringifyArchive(state)).toBe(before);
+    }
+  });
+  it('does not redirect existing legacy files or permission failures when comparing',async()=>{
+    const state:LocalState={book:createDemo(),version:1,pending:[],updated:'',remoteSha:'old',sync:{owner:'wendyyuanlu',repo:'fnt-data',branch:'main',path:'personal-workbook.json'}};
+    for(const status of [200,403]){
+      const paths:string[]=[];
+      const fetcher:typeof fetch=async(input,init)=>{
+        expect(init?.method??'GET').toBe('GET');
+        const file=new URL(String(input)).pathname.split('/contents/')[1];
+        if(!file)return Response.json({private:true,has_pages:false});
+        paths.push(file);
+        return status===200?Response.json({sha:'old',content:encode64(JSON.stringify({format:'fnt-sync-v1',book:state.book,operations:[]}))}):new Response('',{status});
+      };
+      if(status===200)expect((await syncGitHub(state,'invented',fetcher,[],{readOnly:true})).readPath).toBe('personal-workbook.json');
+      else await expect(syncGitHub(state,'invented',fetcher,[],{readOnly:true})).rejects.toThrow('(403)');
+      expect(paths).toEqual(['personal-workbook.json']);
+    }
   });
   const setup=():LocalState=>({book:createDemo(),version:1,pending:[{id:'op1',label:'Edit',time:'now'}],updated:'now',sync:{owner:'example',repo:'data',branch:'main',path:'book.json'}});
   const response=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});

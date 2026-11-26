@@ -1,4 +1,4 @@
-const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/main-f_mdXflx.js","assets/icons-Cj-zyyB4.js"])))=>i.map(i=>d[i]);
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/main-B_geR3Jg.js","assets/icons-LqVHy9u7.js"])))=>i.map(i=>d[i]);
 import{_ as s}from"./preload-helper-DO0sjJph.js";const t=`<!doctype html>\r
 <html lang="en">\r
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fnt - Visual comparison prototype</title><link rel="stylesheet" href="style.css"></head>\r
@@ -79,4 +79,4 @@ import{_ as s}from"./preload-helper-DO0sjJph.js";const t=`<!doctype html>\r
 </main>\r
 <script type="module" src="./main.ts"><\/script>\r
 </body></html>\r
-`,i=new DOMParser().parseFromString(t,"text/html").body;i.querySelectorAll("script").forEach(e=>e.remove());for(const e of i.attributes)document.body.setAttribute(e.name,e.value);document.body.dataset.production="true";document.body.replaceChildren(...i.childNodes);s(()=>import("./main-f_mdXflx.js"),__vite__mapDeps([0,1])).then(()=>{var e,a;(a=(e=navigator.serviceWorker)==null?void 0:e.controller)==null||a.postMessage({type:"fnt-shell-loaded",file:import.meta.url})}).catch(e=>{const a=document.querySelector("#error");a.hidden=!1,a.textContent=`Comparison could not be opened. Your workbook is unchanged. ${String(e)}`,document.body.dataset.loading="false"});
+`,i=new DOMParser().parseFromString(t,"text/html").body;i.querySelectorAll("script").forEach(e=>e.remove());for(const e of i.attributes)document.body.setAttribute(e.name,e.value);document.body.dataset.production="true";document.body.replaceChildren(...i.childNodes);s(()=>import("./main-B_geR3Jg.js"),__vite__mapDeps([0,1])).then(()=>{var e,a;(a=(e=navigator.serviceWorker)==null?void 0:e.controller)==null||a.postMessage({type:"fnt-shell-loaded",file:import.meta.url})}).catch(e=>{const a=document.querySelector("#error");a.hidden=!1,a.textContent=`Comparison could not be opened. Your workbook is unchanged. ${String(e)}`,document.body.dataset.loading="false"});

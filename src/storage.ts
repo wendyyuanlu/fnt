@@ -2,7 +2,7 @@ import { clone, uid, type Workbook } from './model';
 import { compressArchive, decompressArchive, stringifyArchive } from './archive';
 import {validateHypotheticalStyle} from './hypothetical';
 import {applyUndo,type History,type UndoHistory} from './undo-history';
-import {withPrivateGitHub} from './github-client';
+import {githubFormDefaults,withPrivateGitHub} from './github-client';
 
 export interface Pending { id: string; label: string; time: string }
 export interface SyncConfig { owner: string; repo: string; branch: string; path: string }
@@ -480,13 +480,20 @@ export const decode64 = (s: string) => new TextDecoder().decode(Uint8Array.from(
 export class SyncConflict extends Error {
   constructor(public remote: Workbook, public sha: string,public originals:Original[]=[]) { super('Remote changes found. Both versions are preserved in recovery. No upload was made.'); }
 }
-export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[],options?:{readOnly?:boolean}): Promise<{sha:string;remote?:Workbook;originals?:Original[]}> {
+export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[],options?:{readOnly?:boolean}): Promise<{sha:string;remote?:Workbook;originals?:Original[];readPath?:string}> {
   return privateSync(state,token,fetcher,originals,options?.readOnly===true);
 }
-async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[],readOnly:boolean):Promise<{sha:string;remote?:Workbook;originals?:Original[]}>{
-  return withPrivateGitHub(state.sync,token,fetcher,async({root,headers,request,config:cfg})=>{
+async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[],readOnly:boolean):Promise<{sha:string;remote?:Workbook;originals?:Original[];readPath?:string}>{
+  return withPrivateGitHub(state.sync,token,fetcher,async({root,headers,request,contentURL,config:cfg})=>{
   const url = `${root}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}`;
-  const response = await request(url,{headers,cache:'no-store',redirect:'error'});
+  let readPath=cfg.path,response=await request(url,{headers,cache:'no-store',redirect:'error'});
+  if(readOnly&&response.status===404){
+    const renamed=githubFormDefaults(cfg).path;
+    if(renamed!==cfg.path){
+      readPath=renamed;
+      response=await request(contentURL(readPath),{headers,cache:'no-store',redirect:'error'});
+    }
+  }
   let sha: string | undefined, remote: Workbook | undefined;
   if (response.ok) {
     let data = await response.json() as {sha:string;content:string;encoding?:string;size?:number};
@@ -506,14 +513,14 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
       validateBook(envelope.book); remote = envelope.book;
       const remoteOriginals=envelope.originals??[];
       validateOriginals(remote,remoteOriginals);
-      if (readOnly||!hasPendingContent(state)) return {sha,remote,originals:remoteOriginals};
+      if (readOnly||!hasPendingContent(state)) return {sha,remote,originals:remoteOriginals,...(readOnly?{readPath}:{})};
       const pendingIds = state.pending.map(p => p.id);
       if (Array.isArray(envelope.operations) && pendingIds.every(id => envelope.operations.includes(id)) && stringifyArchive(remote) === stringifyArchive(state.book)) return {sha};
       throw new SyncConflict(remote,sha,remoteOriginals);
     }
   } else if (response.status !== 404) throw Error(`Cannot read sync file (${response.status}). Local edits retained.`);
-  else if (state.remoteSha) throw Error('Remote file was removed. Local edits retained; refusing to recreate it silently.');
-  if(readOnly)throw Error('No saved GitHub workbook exists at this path. Comparison did not upload anything.');
+  else if (!readOnly&&state.remoteSha) throw Error('Remote file was removed. Local edits retained; refusing to recreate it silently.');
+  if(readOnly)throw Error(`No saved GitHub workbook exists at ${readPath}${readPath!==cfg.path?` (saved destination: ${cfg.path})`:''}. Check the path in Recovery > Private GitHub sync. Comparison did not upload anything.`);
   if (!hasPendingContent(state) && sha) return {sha};
   validateOriginals(state.book,originals);
   const packed={format:'fnt-sync-v2',payload:compressArchive({format:'fnt-sync-v1',book:state.book,operations:state.pending.map(p=>p.id),originals})};

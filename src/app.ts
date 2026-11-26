@@ -867,7 +867,9 @@ function openComparison(conflict?:SyncConflict):void{
     readRemote:config&&credential?async()=>{
       const received=await syncGitHub(captured,credential,fetch,[],{readOnly:true});
       if(!received.remote)throw Error('The saved GitHub workbook was not returned. Neither copy was changed.');
-      return source(received.remote,'GitHub',config.path,received.sha);
+      const loaded=source(received.remote,'GitHub',received.readPath??config.path,received.sha);
+      if(received.readPath&&received.readPath!==config.path)loaded.freshness+=` Saved sync destination remains ${config.path}. Reconnect in Recovery to update it; this comparison did not change the connection.`;
+      return loaded;
     }:undefined,
     uploads:config&&credential?{
       list:async workbook=>{files=await listComparisonSnapshots(config,credential,workbook);return files;},

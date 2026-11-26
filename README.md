@@ -920,6 +920,12 @@ remain readable in the inspector. Scanning yields to the browser. Revision/activ
 ignored. There is no common-base three-way merge: differences do not prove both
 devices changed the same cell. The tool does not merge or replace either copy;
 whole-workbook resolution remains separate and explicit.
+If a standard legacy `workbook.json` or `personal-workbook.json` destination
+returns 404, comparison alone can read the renamed `fnt-data.json` in the same
+private repository and branch. It shows the path actually read and preserves
+the saved connection, acknowledgment and pending edits. Existing files, custom
+destinations and permission failures are not redirected. Ordinary sync still
+refuses to recreate a removed file; reconnect explicitly to change its destination.
 
 **Upload local data to GitHub**, directly below Private GitHub sync in Recovery
 and at the top of the conflict dialog, saves a separate, immutable `.json`

@@ -27,6 +27,45 @@ test('Recovery suggests the renamed legacy sync path without changing the saved 
   expect(requests).toEqual([]);
 });
 
+test('comparison reads the renamed default after an old saved path is removed, retaining the saved connection and edits',async({page})=>{
+  let remote='',writes=0;
+  const reads:string[]=[];
+  await page.route('https://api.github.com/**',async route=>{
+    const request=route.request(),path=decodeURIComponent(new URL(request.url()).pathname.split('/contents/')[1]??'');
+    if(request.method()==='PUT'){writes++;await route.abort();return;}
+    if(!path){await route.fulfill({json:{private:true,has_pages:false}});return;}
+    reads.push(path);
+    if(path==='fnt-data.json')await route.fulfill({json:{sha:'renamed-file',content:remote,encoding:'base64'}});
+    else await route.fulfill({status:404,json:{message:'Not found'}});
+  });
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  remote=await page.evaluate(async()=>{
+    const module='/src/storage.ts',{Store,encode64}=await import(/* @vite-ignore */module) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      let state=(await store.load())!;
+      const sync={owner:'wendyyuanlu',repo:'fnt-data',branch:'main',path:'personal-workbook.json'},book=structuredClone(state.book),sheet=book.sheets[0];
+      sheet.cells[`${sheet.rows[1].id}:${sheet.columns[2].id}`]={value:777};
+      state=await store.metadata(state.version,s=>({...s,sync,remoteSha:'old-file',pending:[...s.pending,{id:'retained-local-edit',label:'Edit',time:'2026-01-01T00:00:00Z'}]}));
+      await store.rememberSyncToken(sync,'invented-remembered-token');
+      return encode64(JSON.stringify({format:'fnt-sync-v1',book,operations:[]}));
+    }finally{store.close();}
+  });
+  await page.reload();await expect(page.locator('#save-state')).toContainText('Sync failed');
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
+  await page.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
+  const comparison=page.frameLocator('iframe.comparison-frame');
+  await expect(comparison.locator('#right-source')).toHaveText('fnt-data.json');
+  await expect(comparison.locator('#right-grid')).toContainText('777');
+  await expect(comparison.locator('#error')).toBeHidden();
+  await expect(comparison.locator('#right-source-freshness')).toContainText('Saved sync destination remains personal-workbook.json');
+  const retained=await page.evaluate(async()=>{
+    const module='/src/storage.ts',{Store}=await import(/* @vite-ignore */module) as typeof import('../../src/storage'),store=await Store.open();
+    try{const state=(await store.load())!;return{path:state.sync?.path,sha:state.remoteSha,localEdit:state.pending.some(p=>p.id==='retained-local-edit')};}finally{store.close();}
+  });
+  expect(retained).toEqual({path:'personal-workbook.json',sha:'old-file',localEdit:true});
+  expect(reads).toContain('personal-workbook.json');expect(reads).toContain('fnt-data.json');expect(writes).toBe(0);
+});
+
 test('independent browsers auto-sync saved edits, refresh on resume, retain failed/offline edits and detect concurrent changes',async({page,browser,isMobile})=>{
   let content:string|undefined,sha='revision-0',revision=0,failure=false;
   const other=await browser.newContext({viewport:page.viewportSize()!,isMobile,hasTouch:isMobile}),second=await other.newPage();
