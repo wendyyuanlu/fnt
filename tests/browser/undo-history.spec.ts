@@ -38,7 +38,7 @@ test('deep mixed undo and redo survive reloads and a new edit clears the redo br
   await page.getByRole('button',{name:'Notebook',exact:true}).click();
   await page.locator('td[data-r="0"][data-c="0"]').click();
   const original=await page.locator('#formula').inputValue();
-  const rename=async()=>{await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();};
+  const rename=async()=>{await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();};
   await rename();const title=await page.locator('#answer').inputValue();await page.getByRole('button',{name:'Close dialog',exact:true}).click();
   await page.locator('td[data-r="0"][data-c="0"]').click();
   for(let i=1;i<=45;i++){

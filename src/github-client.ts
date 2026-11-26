@@ -1,7 +1,9 @@
 import type {SyncConfig} from './storage';
 
 export function githubFormDefaults(config?:Partial<SyncConfig>):SyncConfig{
-  return {owner:config?.owner??'wendyyuanlu',repo:config?.repo??'fnt-data',branch:config?.branch??'main',path:config?.path??'fnt-data.json'};
+  const defaults={owner:config?.owner??'wendyyuanlu',repo:config?.repo??'fnt-data',branch:config?.branch??'main',path:config?.path??'fnt-data.json'};
+  if(defaults.owner.toLowerCase()==='wendyyuanlu'&&defaults.repo.toLowerCase()==='fnt-data'&&defaults.branch==='main'&&['workbook.json','personal-workbook.json'].includes(defaults.path))defaults.path='fnt-data.json';
+  return defaults;
 }
 
 export interface PrivateGitHubClient {

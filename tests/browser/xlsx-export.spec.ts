@@ -88,23 +88,23 @@ test('local Excel projection roundtrips the native workbook, detects external ed
 
 test('XLSX download control includes a native archive and restores through the real file UI',async({page})=>{
   await page.goto('/');await page.getByRole('button',{name:'Ingredients',exact:true}).click();
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await page.getByRole('button',{name:'Export Excel projection + embedded Fnt archive',exact:true}).click();
   await expect(page.getByRole('dialog')).toContainText('Native backups remain authoritative');
   const download=page.waitForEvent('download');await page.getByRole('button',{name:'Download private XLSX',exact:true}).click();
   const file=await download,path=await file.path();expect(path).toBeTruthy();
   const buffer=await (await import('node:fs/promises')).readFile(path!);
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await page.locator('#import').setInputFiles({name:'synthetic-export.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer});
   await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.locator('#save-state')).toContainText('Imported locally');
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();await expect(page.locator('td[data-r="1"][data-c="0"]')).toHaveText('Example oats');
   const {unzipSync,zipSync,strFromU8,strToU8}=await import('fflate'),parts=unzipSync(buffer);
   parts['xl/worksheets/sheet2.xml']=strToU8(strFromU8(parts['xl/worksheets/sheet2.xml']).replace('Example oats','Edited externally'));
   const edited={name:'externally-edited.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:Buffer.from(zipSync(parts))};
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.locator('#import').setInputFiles(edited);
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.locator('#import').setInputFiles(edited);
   await expect(page.getByRole('dialog')).toHaveCount(0);await page.getByRole('button',{name:'Ingredients',exact:true}).click();
   await expect(page.locator('td[data-r="1"][data-c="0"]')).toHaveText('Edited externally');
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.locator('#recover-xlsx').setInputFiles(edited);
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.locator('#recover-xlsx').setInputFiles(edited);
   await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.locator('#save-state')).toContainText('Restored locally - sync disconnected');
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();await expect(page.locator('td[data-r="1"][data-c="0"]')).toHaveText('Example oats');
 });

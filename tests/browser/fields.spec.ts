@@ -24,7 +24,7 @@ test('text, search, numeric, password, multiline and select-like fields share bo
   await page.getByRole('button',{name:'Hypo tag styling',exact:true}).click();
   await fieldAppearance(page.locator('#hyp-label'));await fieldAppearance(page.locator('#hyp-strokeWidth'));
   await page.getByRole('button',{name:'Cancel',exact:true}).click();
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.locator('#sync').click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.locator('#sync').click();
   for(const id of ['sync-owner','sync-repo','sync-branch','sync-path','sync-token'])await fieldAppearance(page.locator('#'+id));
   await page.getByRole('button',{name:'Close dialog',exact:true}).click();
   await page.locator('td[data-r="1"][data-c="1"]').dblclick();await fieldAppearance(page.locator('#cell-editor'));await page.locator('#cell-editor').press('Escape');

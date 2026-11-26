@@ -16,7 +16,7 @@ function syntheticXlsx():Buffer {
 }
 test('imports shared formulas and cached spills without stale results, retains scoped names and x14 validation',async({page})=>{
   await page.goto('/');
-  await page.getByRole('button',{name:'Workbook and backups'}).click();
+  await page.getByRole('button',{name:'Recovery'}).click();
   await page.getByText('Import or restore',{exact:true}).click();
   await page.locator('#import').setInputFiles({name:'Synthetic.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:syntheticXlsx()});
   await expect(page.getByRole('grid',{name:'Pantry',exact:true})).toBeVisible();
@@ -30,7 +30,7 @@ test('imports shared formulas and cached spills without stale results, retains s
   await expect(page.locator('.cell-dropdown')).toContainText('Sample apple');
   await expect(page.locator('.cell-dropdown')).toContainText('Sample pear');
   await page.keyboard.press('Escape');
-  await page.getByRole('button',{name:'Workbook and backups'}).click();
+  await page.getByRole('button',{name:'Recovery'}).click();
   await expect(page.locator('#report, #privacy')).toHaveCount(0);
   await expect(page.locator('#persist, #original')).toHaveCount(2);
   expect(await page.evaluate(async()=>{

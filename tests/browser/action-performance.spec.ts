@@ -167,7 +167,7 @@ test('workbook renaming remains available through File and persists with Undo wi
   await expect(page.locator('#title')).toHaveCount(0);
   await expect(page.locator('.workbook-heading #save-state')).toHaveCount(1);
   const rename=async()=>{
-    await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+    await page.getByRole('button',{name:'Recovery',exact:true}).click();
     await expect(page.locator('#file-page-settings, #compare-backup, #privacy, #report')).toHaveCount(0);
     const backup=await page.locator('#backup').boundingBox(),rename=await page.locator('#rename-workbook').boundingBox();
     expect(backup).not.toBeNull();expect(rename).not.toBeNull();
@@ -187,8 +187,8 @@ test('workbook renaming remains available through File and persists with Undo wi
 
 test('File requests persistent storage directly and reports grants, refusals and failures',async({page})=>{
   await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
-  const file=page.getByRole('dialog',{name:'Workbook & recovery',exact:true}),persist=file.locator('#persist');
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
+  const file=page.getByRole('dialog',{name:'Recovery',exact:true}),persist=file.locator('#persist');
   await expect(persist).toBeVisible();await expect(file.locator('#privacy, #report')).toHaveCount(0);
   for(const [mode,result]of [
     ['granted','Persistent storage granted. Still keep independent backups.'],

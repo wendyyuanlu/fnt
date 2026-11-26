@@ -33,7 +33,7 @@ async function stored(page:Page){
   });
 }
 async function review(page:Page){
-  await page.getByRole('button',{name:'Workbook and backups'}).click();
+  await page.getByRole('button',{name:'Recovery'}).click();
   await page.locator('#import-master').setInputFiles({name:'Synthetic Master.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:masterXlsx()});
   await expect(page.getByRole('dialog',{name:'Master import review',exact:true})).toBeVisible();
 }

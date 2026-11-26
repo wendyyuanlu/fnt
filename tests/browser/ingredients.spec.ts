@@ -22,7 +22,7 @@ function sourceFile():Buffer {
 test('targeted Excel import keeps existing data, identifies browser-local state, creates recovery and refuses duplicate reimport',async({page,browser})=>{
   const buffer=sourceFile();
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved in this browser');
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await expect(page.locator('#browser-workbook')).toContainText('Ingredients: 3 records');
   await expect(page.locator('#browser-workbook')).toContainText('No Excel source has been imported');
   await expect(page.locator('#browser-workbook')).toContainText(new URL(page.url()).origin);
@@ -31,7 +31,7 @@ test('targeted Excel import keeps existing data, identifies browser-local state,
   await page.getByRole('button',{name:'Notebook',exact:true}).click();
   await page.locator('td[data-r="1"][data-c="0"]').click();await page.locator('#formula').fill('Local note kept');
   await page.locator('#formula').press('Enter');await expect(page.locator('#save-state')).toContainText('Saved');
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await page.locator('#import-ingredients').setInputFiles({name:'invented-ingredients.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer});
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('.sheet-tab.current')).toHaveText('Ingredients');
@@ -41,17 +41,17 @@ test('targeted Excel import keeps existing data, identifies browser-local state,
   await page.reload();await expect(page.locator('.sheet-tab.current')).toHaveText('Ingredients');
   await expect(page.locator('td[data-r="1"][data-c="0"]')).toHaveText('Invented shelf item');
   await page.getByRole('button',{name:'Notebook',exact:true}).click();await expect(page.locator('td[data-r="1"][data-c="0"]')).toHaveText('Local note kept');
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await page.getByRole('button',{name:'Recovery checkpoints',exact:true}).click();
   await expect(page.getByRole('button',{name:'Download full recovery archive',exact:true}).first()).toBeVisible();
   await page.getByRole('dialog').getByRole('button',{name:'Close dialog',exact:true}).click();
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await expect(page.locator('#browser-workbook')).toContainText('Ingredients: 4 records');
   await expect(page.locator('#browser-workbook')).toContainText('An Excel source is attached locally');
   const separate=await browser.newContext();
   try{
     const other=await separate.newPage();await other.goto(new URL('/',page.url()).href);
-    await other.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+    await other.getByRole('button',{name:'Recovery',exact:true}).click();
     await expect(other.locator('#browser-workbook')).toContainText('Ingredients: 3 records');
     await expect(other.locator('#browser-workbook')).toContainText('No Excel source has been imported');
     await expect(other.getByRole('button',{name:'Export Excel projection + embedded Fnt archive',exact:true})).toBeVisible();
@@ -67,7 +67,7 @@ test('targeted Excel import keeps existing data, identifies browser-local state,
   await page.getByRole('dialog').getByRole('button',{name:'Confirm',exact:true}).click();
   await expect(page.locator('#save-state')).toContainText('Saved');
   await expect(page.getByRole('button',{name:'Ingredients',exact:true})).toHaveCount(0);
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await page.locator('#import-ingredients').setInputFiles({name:'invented-ingredients.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer});
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.locator('.sheet-tab.current')).toHaveText('Ingredients');

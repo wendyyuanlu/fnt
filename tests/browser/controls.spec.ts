@@ -88,7 +88,7 @@ test('dropdown dialogs grow only for their visible sources and keep scrolling at
   expect(bounds.height).toBeLessThanOrEqual(580);expect(bounds.y).toBeGreaterThanOrEqual(10);
   expect(bounds.y+bounds.height).toBeLessThanOrEqual(590);expect(apply.y+apply.height).toBeLessThanOrEqual(bounds.y+bounds.height);
   expect(await scrolls()).toBe(true);
-  await page.getByRole('button',{name:'Close dialog',exact:true}).click();await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();
+  await page.getByRole('button',{name:'Close dialog',exact:true}).click();await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();
   expect((await page.getByRole('dialog').boundingBox())!.height).toBeLessThan(400);
 });
 
@@ -417,16 +417,16 @@ test('multiple dropdown sources persist for cells and columns and grid previews 
 });
 test('dialog close controls never show tooltips on opening, focus or hover and retain Escape',async({page,isMobile})=>{
   await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
-  const fileButton=page.getByRole('button',{name:'Workbook and backups',exact:true});
+  const fileButton=page.getByRole('button',{name:'Recovery',exact:true});
   if(isMobile)await fileButton.tap();else await fileButton.click();
-  for(const title of ['Workbook & recovery','Optional private GitHub sync']){
+  for(const title of ['Recovery','Optional private GitHub sync']){
     const modal=page.getByRole('dialog',{name:title,exact:true}),close=modal.getByRole('button',{name:'Close dialog',exact:true});
     await expect(close).toBeFocused();await expect(close).toHaveAttribute('aria-keyshortcuts','Escape');
     await close.hover();await close.focus();await modal.evaluate(el=>{el.scrollTop=30;});
     await page.waitForTimeout(450);
     await expect(page.getByRole('tooltip')).toHaveCount(0);
     await expect(close).not.toHaveAttribute('aria-describedby',/shortcut-hint/);
-    if(title==='Workbook & recovery')await modal.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
+    if(title==='Recovery')await modal.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
     else{await page.keyboard.press('Escape');await expect(modal).toHaveCount(0);}
   }
 });

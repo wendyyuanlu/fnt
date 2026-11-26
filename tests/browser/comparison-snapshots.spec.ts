@@ -25,13 +25,21 @@ test('conflict snapshots upload separately and comparison lists dated device cop
     try{const state=(await store.load())!,book=structuredClone(state.book);book.title='Invented other-device workbook';return encode64(JSON.stringify({format:'fnt-sync-v1',book,operations:[]}));}
     finally{store.close();}
   });
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
-  const file=page.getByRole('dialog',{name:'Workbook & recovery',exact:true});
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
+  const file=page.getByRole('dialog',{name:'Recovery',exact:true});
   await expect(file.locator('.menu > button').nth(0)).toHaveText('Private GitHub sync');
   await expect(file.locator('.menu > button').nth(1)).toHaveText('Upload local data to GitHub');
-  await expect(file.getByRole('button',{name:'Upload local data to GitHub',exact:true})).toBeDisabled();
-  await expect(file.getByText('Import or restore',{exact:true})).toBeVisible();
-  await expect(file.locator('#import')).toBeHidden();
+  await expect(file.locator('.menu > button').nth(2)).toHaveText('Compare versions for merge conflict');
+  expect(await file.locator('#backup').evaluate(button=>button.classList.contains('primary'))).toBe(false);
+  await file.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
+  await expect(page.getByRole('dialog',{name:'Compare workbooks and backups',exact:true})).toBeVisible();
+  expect(uploads).toBe(0);
+  await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
+  const reopened=page.getByRole('dialog',{name:'Recovery',exact:true});
+  await expect(reopened.getByRole('button',{name:'Upload local data to GitHub',exact:true})).toBeDisabled();
+  await expect(reopened.getByText('Import or restore',{exact:true})).toBeVisible();
+  await expect(reopened.locator('#import')).toBeHidden();
   await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
   for(const [name,value]of [['owner','example'],['repo','private-test'],['branch','main'],['path','private/synthetic.json'],['token','invented-token']])await page.locator(`#sync-${name}`).fill(value);
   await page.getByRole('button',{name:'Connect & sync now',exact:true}).click();

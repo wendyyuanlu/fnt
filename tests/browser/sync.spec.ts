@@ -1,5 +1,32 @@
 import { expect,test } from '@playwright/test';
 
+test('Recovery suggests the renamed legacy sync path without changing the saved destination or custom paths',async({page})=>{
+  const requests:string[]=[];
+  await page.route('https://api.github.com/**',async route=>{requests.push(route.request().method());await route.abort();});
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  const savedPath=async(path?:string)=>page.evaluate(async value=>{
+    const module='/src/storage.ts',{Store}=await import(/* @vite-ignore */module) as typeof import('../../src/storage'),store=await Store.open();
+    try{
+      let state=(await store.load())!;
+      if(value)state=await store.metadata(state.version,s=>({...s,sync:{owner:'wendyyuanlu',repo:'fnt-data',branch:'main',path:value}}));
+      return state.sync?.path;
+    }finally{store.close();}
+  },path);
+  for(const path of ['workbook.json','personal-workbook.json']){
+    await savedPath(path);await page.reload();
+    await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.locator('#sync').click();
+    await expect(page.locator('#sync-path')).toHaveValue('fnt-data.json');
+    await expect(page.locator('#sync-path-note')).toContainText(`Saved destination: ${path}`);
+    expect(await savedPath()).toBe(path);
+  }
+  await savedPath('private/custom.json');await page.reload();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.locator('#sync').click();
+  await expect(page.locator('#sync-path')).toHaveValue('private/custom.json');
+  await expect(page.locator('#sync-path-note')).toHaveCount(0);
+  expect(await savedPath()).toBe('private/custom.json');
+  expect(requests).toEqual([]);
+});
+
 test('independent browsers auto-sync saved edits, refresh on resume, retain failed/offline edits and detect concurrent changes',async({page,browser,isMobile})=>{
   let content:string|undefined,sha='revision-0',revision=0,failure=false;
   const other=await browser.newContext({viewport:page.viewportSize()!,isMobile,hasTouch:isMobile}),second=await other.newPage();
@@ -15,8 +42,8 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
       {json:route.request().url().includes('/git/trees/')?{tree:[],truncated:false}:{private:true,has_pages:false}});
   });
   const connect=async(target:typeof page,remember=false)=>{
-    await target.getByRole('button',{name:'Workbook and backups',exact:true}).click();
-    await expect(target.getByRole('dialog',{name:'Workbook & recovery',exact:true}).locator('.menu > :first-child')).toHaveText('Private GitHub sync');
+    await target.getByRole('button',{name:'Recovery',exact:true}).click();
+    await expect(target.getByRole('dialog',{name:'Recovery',exact:true}).locator('.menu > :first-child')).toHaveText('Private GitHub sync');
     await target.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
     for(const [name,value]of [['owner','example'],['repo','private-test'],['branch','main'],['path','synthetic.json'],['token','synthetic-test-token']])await target.locator(`#sync-${name}`).fill(value);
     if(remember)await target.locator('#sync-remember').check();
@@ -73,7 +100,7 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
     expect(revision).toBe(before);
     await page.reload();await expect(page.locator('#save-state')).toContainText('sign in to resume private sync');
     expect((await local(page)).value).toBe(901);expect((await local(page)).pending).toBeGreaterThan(0);
-    await second.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+    await second.getByRole('button',{name:'Recovery',exact:true}).click();
     await second.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
     await expect(second.locator('#sync-remember')).toBeChecked();
     await second.getByRole('button',{name:'Disconnect',exact:true}).click();
@@ -96,13 +123,13 @@ test('backup comparison is local, searchable, paged and never restores or syncs 
       return{contents:stringifyArchive(backup),book:state.book.id,version:state.version};
     }finally{store.close();}
   });
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
   await page.getByRole('button',{name:'Compare copies',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'Compare workbooks and backups',exact:true});
   await expect(dialog.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeVisible();
   await expect(dialog.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeDisabled();
-  await expect(dialog).toContainText('Configure Private GitHub sync from File first');
+  await expect(dialog).toContainText('Configure Private GitHub sync from Recovery first');
   await expect(page.locator('#comparison-status')).toContainText('Choose a full Fnt backup');
   await page.locator('#comparison-right').setInputFiles({name:'invented.fnt.json',mimeType:'application/json',buffer:Buffer.from(fixture.contents)});
   await expect(page.locator('#comparison-status')).toContainText('Comparison complete.');
@@ -131,7 +158,7 @@ test('sync holds a source-edit lock until remote acknowledgment, then restores e
     await route.fulfill(route.request().url().includes('/contents/')?{status:404,json:{message:'Not found'}}:{json:{private:true,has_pages:false}});
   });
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
   for(const [name,value]of [['owner','example'],['repo','private-test'],['branch','main'],['path','synthetic.json'],['token','synthetic-test-token']]){
     await page.locator(`#sync-${name}`).fill(value);
   }
@@ -170,7 +197,7 @@ test('failed conflict recovery is explicit and never claims both versions were s
     expect(route.request().method()).not.toBe('PUT');
     await route.fulfill({json:route.request().url().includes('/contents/')?{sha:'divergent',content:remote}:{private:true,has_pages:false}});
   });
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
   for(const [name,value]of [['owner','example'],['repo','private-test'],['branch','main'],['path','synthetic.json'],['token','synthetic-test-token']])await page.locator(`#sync-${name}`).fill(value);
   await page.getByRole('button',{name:'Connect & sync now',exact:true}).click();
   await expect(page.locator('#save-state')).toHaveText('CONFLICT - recovery failed; local edits retained');

@@ -2,10 +2,18 @@ import {afterEach,describe,expect,it,vi} from 'vitest';
 import {createDemo} from '../src/model';
 import {decode64,encode64,type SyncConfig} from '../src/storage';
 import {uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,comparisonSnapshot} from '../src/github-snapshots';
+import {githubFormDefaults} from '../src/github-client';
 
 const config:SyncConfig={owner:'example',repo:'private-data',branch:'main',path:'personal/workbook.json'};
 const token='invented-restricted-token';
 afterEach(()=>vi.useRealTimers());
+it('suggests the renamed private data filename without mutating saved or custom destinations',()=>{
+  const saved={owner:'wendyyuanlu',repo:'fnt-data',branch:'main',path:'workbook.json'};
+  for(const path of ['workbook.json','personal-workbook.json']){
+    const legacy={...saved,path};expect(githubFormDefaults(legacy).path).toBe('fnt-data.json');expect(legacy.path).toBe(path);
+  }
+  for(const custom of [{...saved,path:'private/custom.json'},{...saved,repo:'another-private-repo'},{...saved,branch:'other'}])expect(githubFormDefaults(custom)).toEqual(custom);
+});
 function server(){
   const files=new Map<string,{sha:string;content:string}>(),writes:{path:string;body:Record<string,unknown>}[]=[];
   const fetcher:typeof fetch=vi.fn(async(input,init)=>{

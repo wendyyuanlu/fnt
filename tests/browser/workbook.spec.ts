@@ -330,12 +330,12 @@ test('backup restore preserves pre-restore recovery and copy outline survives se
   await page.goto('/');await expect(cell(page,1,3)).toHaveText('208.8');
   await cell(page,1,2).click();await page.getByRole('button',{name:'Copy',exact:true}).click();await cell(page,2,2).click();await expect(cell(page,1,2)).toHaveClass(/copying/);
   await page.getByRole('button',{name:'Paste',exact:true}).click();await expect(cell(page,2,2)).toHaveText('180');
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
   const event=page.waitForEvent('download');await page.getByRole('button',{name:'Download independent full backup'}).click();const download=await event;
   const path=await download.path();expect(path).toBeTruthy();await page.getByRole('button',{name:'Close dialog'}).click();
   await edit(page,1,2,'250');await expect(cell(page,1,3)).toHaveText('290');
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.locator('#restore').setInputFiles(path!);
-  await expect(cell(page,1,3)).toHaveText('208.8');await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Recovery checkpoints'}).click();await expect(page.locator('[data-checkpoint]')).toContainText(['Before backup restore']);
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.locator('#restore').setInputFiles(path!);
+  await expect(cell(page,1,3)).toHaveText('208.8');await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Recovery checkpoints'}).click();await expect(page.locator('[data-checkpoint]')).toContainText(['Before backup restore']);
 });
 test('switching cells commits formula-bar drafts rather than silently discarding them',async({page})=>{
   await page.goto('/');await cell(page,1,2).click();
@@ -358,7 +358,7 @@ test('checkpoint restore keeps full recovery and pending IDs, and disconnects th
     }finally{store.close();}
   });
   let uploads=0;await page.route('https://api.github.com/**',async route=>{uploads++;await route.abort();});
-  await page.reload();await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Recovery checkpoints',exact:true}).click();
+  await page.reload();await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Recovery checkpoints',exact:true}).click();
   const versionBeforeRestore=await page.evaluate(async()=>{
     const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();
     try{return(await store.load()).version;}finally{store.close();}

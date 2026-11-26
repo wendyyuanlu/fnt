@@ -31,14 +31,14 @@ These are **local-computer URLs**, not internet deployments. Each origin/browser
 has separate local storage; use backup/restore or explicit sync to move data.
 Browser profiles (including isolated app preview tabs) also have separate
 storage, even at the same address. Importing in the agent's shared preview does
-not import into an unshared user tab. **File** shows that profile's origin,
+not import into an unshared user tab. **Recovery** shows that profile's origin,
 Ingredients record count and whether an Excel source is attached; use
 **Import Ingredients into this workbook** in the browser you actually use.
 Save and wait for confirmation before refreshing to pick up a code update.
 Refreshing does not sync edits from another browser profile. Both development and production load
 `testing-workbook.json` into new profiles and upgrades untouched old starters,
 preserving a full recovery checkpoint first. Existing edited, synced or imported
-workbooks are never automatically replaced. **File > Load published testing
+workbooks are never automatically replaced. **Recovery > Load published testing
 workbook** explicitly loads that snapshot while preserving the previous archive.
 The explicitly authorized game-character snapshot contains the saved workbook
 sheets and their required dropdown/conversion dependencies. Publication retains
@@ -136,8 +136,8 @@ remain viewable only in history.
 
 ## Use
 
-- **File > Rename workbook** changes the workbook name; save status sits at the
-  left of the header, with Save and File at the right. Master logging is a
+- **Recovery > Rename workbook** changes the workbook name; save status sits at the
+  left of the header, with Save and Recovery at the right. Master logging is a
   sheet-specific sub-toolbar below the spreadsheet tools, within the same margins.
 - **One page / Date pages** in the bottom navigator opens Page settings.
   Master defaults to the most recent 90-calendar-day window, with entries in
@@ -152,7 +152,7 @@ remain viewable only in history.
   the current page. Click its date range to choose a page using a lightweight
   calendar picker. The final page can be shorter,
   and unlogged calendar gaps can produce empty windows.
-  **File > Page settings for this sheet** changes the day count, date table,
+  **Recovery > Page settings for this sheet** changes the day count, date table,
   date field and optional day-header marker. Following detail rows stay with
   their header's date; undated records and independent worksheet notes have
   an **Undated** view. Pagination changes only the display, not records,
@@ -575,7 +575,7 @@ remain viewable only in history.
   would split table records, fragment a referenced range, or intersect generated
   spill cells are refused without changing the workbook; use whole rows/columns
   or edit the array anchor instead. Structural changes remain undoable.
-- **File > Review Master import** stages the original Master table locally before
+- **Recovery > Review Master import** stages the original Master table locally before
   writing anything. Food is matched case-insensitively against actual active
   Ingredients and filtered Meals DD records together; only a unique record can
   become an automatic stable binding, and only when all six nutrient fields retain their
@@ -603,7 +603,7 @@ remain viewable only in history.
   migration and reload; it does not delete or duplicate the underlying records.
   Convert owns its From/To unit names directly, as in Excel. Supporting imports
   and conversion editing do not create an additional Units registry.
-- **File > Import Meals and link matching Ingredients** adds the Excel Meals
+- **Recovery > Import Meals and link matching Ingredients** adds the Excel Meals
   sheet without replacing other sheets. The previous Meals table keeps its
   identities under `Meals_PreImport`. Existing Ingredients and conversion tables
   supply the imported formulas; missing dependencies stop the import explicitly.
@@ -613,7 +613,7 @@ remain viewable only in history.
   notes, formatting and row/column layout are retained. The attached-original
   button uses the locally archived Excel package. Imports save a full recovery
   archive and disconnect sync.
-- **File > Import Ingredients** merges a source Ingredients table into
+- **Recovery > Import Ingredients** merges a source Ingredients table into
   the existing table instead of replacing the workbook. Source records are added
   first; existing records, custom columns and other sheets are retained. Matching
   columns keep their identities, including the starter's `Ingredient` /
@@ -841,7 +841,7 @@ Autosave is local; **Save** creates a local checkpoint or attempts connected
 sync. Undo/redo is session-local (up to 30 actions, at most three full structural
 snapshots; ordinary edits use cell deltas).
 
-**File > Download independent full backup** includes IDs, formulas/ASTs, layout,
+**Recovery > Download independent full backup** includes IDs, formulas/ASTs, layout,
 notes, links, validation sources, groups, pending operations, and preserved
 original XLSX packages. Formula dictionaries keep repeated expressions compact.
 Restore atomically saves a full pre-restore recovery archive first, disconnects
@@ -852,7 +852,7 @@ share device storage; they are not independent backups. Browser storage can be
 evicted/cleared, devices can fail, and persistence permission is not a guarantee.
 Keep downloaded backups privately on independent storage.
 
-Private GitHub sync is optional, configured only in **File > Private GitHub
+Private GitHub sync is optional, configured only in **Recovery > Private GitHub
 sync**. Supply an existing **separate private data repository and branch with no
 Pages publishing**, and a fine-grained token scoped to that repository with
 Contents read/write. The website source repository is explicitly rejected as a
@@ -892,16 +892,19 @@ visit counts, which are batched with the next actual content edit.
 Real content divergence pauses automatic sync until the user chooses a version.
 Exact remote conflict checkpoints are not substituted with the local journal.
 
-File keeps Download independent full backup and Rename workbook on separate
+Recovery keeps Download independent full backup and Rename workbook on separate
 full-width rows. Page settings remain in the spreadsheet controls rather than
-being repeated in File.
-Request persistent browser storage is available directly in File; its result
+being repeated in Recovery.
+Request persistent browser storage is available directly in Recovery; its result
 is shown there. It reduces eviction risk when granted, but is not a backup.
 Dialog close buttons keep their accessible label and Escape shortcut without
 opening a tooltip on automatic focus, touch, or hover.
 
-**File > Private GitHub sync > Compare copies** opens a read-only, browser-local
-comparison. Load a native full Fnt backup on either side; this does not restore,
+**Recovery > Compare versions for merge conflict** opens the same read-only,
+browser-local inspector as **Recovery > Private GitHub sync > Compare copies**.
+The polished visual comparison prototype remains separate from the deployed
+site; neither interface currently applies merged workbooks.
+Load a native full Fnt backup on either side; this does not restore,
 save or upload it. **Compare with remote version (GitHub)** is always visible;
 it requires configured, authenticated private sync and loads the right side with
 a read-only fetch, never a sync/upload, including when local edits
@@ -915,7 +918,7 @@ ignored. There is no common-base three-way merge: differences do not prove both
 devices changed the same cell. The tool does not merge or replace either copy;
 whole-workbook resolution remains separate and explicit.
 
-**Upload local data to GitHub**, directly below Private GitHub sync in File
+**Upload local data to GitHub**, directly below Private GitHub sync in Recovery
 and at the top of the conflict dialog, saves a separate, immutable `.json`
 comparison snapshot in `fnt-snapshots/<workbook-id>/` beside the configured
 sync file. It never replaces that file, acknowledges pending operations, or
@@ -1036,11 +1039,12 @@ surfaces; amber/purple grid highlights still identify value/structural differenc
 Identical displayed/saved values appear once without a label; differently
 formatted values keep both labels so the stored value remains clear.
 GitHub connection forms prefill `wendyyuanlu`, `fnt-data`, branch `main` and
-`fnt-data.json`. Existing saved destinations take precedence, and all fields remain
-editable. Opening a form does not rename a repository/file or redirect active sync;
-no token is prefilled.
-Devices with an existing `personal-workbook.json` destination must reconnect
-using `fnt-data.json`; changing form defaults does not rewrite saved connections.
+`fnt-data.json`. For the standard `wendyyuanlu/fnt-data`, `main` destination,
+saved `workbook.json` and `personal-workbook.json` paths now suggest
+`fnt-data.json` with an explanation. Custom destinations remain unchanged.
+All fields remain editable. Opening a form does not rename a repository/file
+or redirect active sync; no token is prefilled. Reconnect explicitly to apply
+the suggested path; saved connections are not rewritten automatically.
 
 For private local review, set `FNT_COMPARISON_DATA_DIR` to an absolute directory
 **outside this repository** containing `left.json`, `right.json` (native Fnt
@@ -1070,7 +1074,7 @@ for publication updates.
 ## Excel import and current limits
 
 All ZIP/XML processing happens locally. Imports preserve every original XLSX
-byte separately; **File > Download unchanged original XLSX** recovers it.
+byte separately; **Recovery > Download unchanged original XLSX** recovers it.
 Edits are saved in Fnt format; the original is never overwritten. Cached formula results
 are never passed off as calculated values. Shared formulas expand with proper
 copy translation; cached spill followers do not become manual overrides.
@@ -1083,7 +1087,7 @@ navigation, and some outline/validation/totals metadata remain only in the
 original package. Original-file preservation is lossless; the editable grid is
 **not** a full-fidelity Excel renderer.
 
-**File > Export Excel projection + embedded Fnt archive** downloads a new XLSX
+**Recovery > Export Excel projection + embedded Fnt archive** downloads a new XLSX
 locally. Its Excel view includes supported cells/formulas, tables, dropdowns,
 basic styles and raw number formats, row heights, row/column outlines, comments
 and hyperlinks. It omits cached formula results and requests recalculation.
@@ -1106,7 +1110,7 @@ opening/recalculation in Microsoft Excel is not certified. Other programs can
 discard the embedded archive. Recognizable package edits import the edited
 projection with new identities, never a stale snapshot; all non-native imports
 warn that exact app identities/bindings cannot be restored from Excel alone.
-**File > Recover embedded Fnt snapshot** deliberately ignores later external
+**Recovery > Recover embedded Fnt snapshot** deliberately ignores later external
 Excel edits when an intact snapshot remains. Imports/restores disconnect sync,
 retain pending journals and atomically store a downloadable full pre-restore
 archive. Same-origin recovery is not an independent backup until downloaded.

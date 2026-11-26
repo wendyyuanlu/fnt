@@ -10,7 +10,7 @@ async function openLongSheet(page:Page){
     const book={schema:1,id:uid(),title:'Invented continuous sheet',revision:0,sheets:[s],tables:[],names:[],pickerSources:{}};
     return JSON.stringify({format:'fnt-backup',version:1,state:{book,version:1,pending:[],updated:'now'},originals:[]});
   });
-  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await page.locator('#restore').setInputFiles({name:'invented.fnt.json',mimeType:'application/json',buffer:Buffer.from(backup)});
   await expect(page.getByRole('dialog')).toHaveCount(0);
 }

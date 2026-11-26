@@ -313,7 +313,7 @@ test('Find reuses the existing dialog field and button styles without overflowin
   const find={input:await style('#find-text'),button:await style('#find-next'),close:await style('.find-dialog .close')};
   const frame=await style('.find-scope'),results=await style('#find-results');
   expect(results.radius).toBe(frame.radius);expect(results.border).toBe(frame.border);
-  await page.getByRole('button',{name:'Close dialog'}).click();await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();
+  await page.getByRole('button',{name:'Close dialog'}).click();await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();
   await page.locator('#answer').evaluate(el=>(el as HTMLInputElement).blur());
   expect(await style('#answer')).toEqual(find.input);
   expect(await style('#ask-form button.primary')).toEqual(find.button);expect(await style('dialog .close')).toEqual(find.close);

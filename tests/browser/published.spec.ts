@@ -48,7 +48,7 @@ test('published site loads the complete testing grid, bypasses stale HTML and wo
 test('existing website edits are not overwritten; explicit testing restore preserves their recovery archive',async({page})=>{
   await page.goto(url);await expect(page.locator('#save-state')).toContainText('Saved');const own=await seed(page,true);
   await page.reload();await expect(page.locator('#save-state')).toContainText('Saved');expect((await state(page)).book.title).toBe(own.title);expect((await state(page)).book.id).toBe(own.id);
-  await page.getByRole('button',{name:'Workbook and backups'}).click();await page.getByRole('button',{name:'Load published testing workbook',exact:true}).click();await page.getByRole('button',{name:'Confirm',exact:true}).click();
+  await page.getByRole('button',{name:'Recovery'}).click();await page.getByRole('button',{name:'Load published testing workbook',exact:true}).click();await page.getByRole('button',{name:'Confirm',exact:true}).click();
   await expect(page.locator('#save-state')).toContainText('Published testing workbook saved');
   expect((await state(page)).book.id).not.toBe(own.id);
   const preserved=await page.evaluate(async id=>{
