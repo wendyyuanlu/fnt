@@ -11,7 +11,7 @@ try{
   assert.equal((await fetch(new URL('/',preview.url))).status,404);
   assert.equal((await fetch(new URL('main.ts',preview.url))).status,404);
   assert.equal((await fetch(preview.url,{method:'PUT',body:'invalid'})).status,404);
-  for(const width of [390,480,650,820,850,851,950,1099,1100,1184,1600]){
+  for(const width of [390,480,650,680,820,850,851,876,950,1099,1100,1184,1600]){
     const context=await browser.newContext({viewport:{width,height:1000},isMobile:width===390,hasTouch:width===390});
     const page=await context.newPage(),errors=[],writes=[];
     page.on('pageerror',error=>errors.push(error.message));
@@ -21,17 +21,53 @@ try{
     assert.match(await page.locator('#totals').textContent(),/^8 differences/);
     assert.equal(await page.locator('header.top').textContent(),'Compare versions');
     assert.ok(!(await page.locator('.bulk-disclosure').getAttribute('open')));
+    for(const selector of ['.source-details','.bulk-disclosure']){
+      const summary=page.locator(`${selector}>summary`),chevron=summary.locator('.navigation-icon');
+      assert.equal(await chevron.count(),1);
+      const closed=await chevron.evaluate(icon=>getComputedStyle(icon).transform);
+      await summary.press('Enter');
+      assert.notEqual(await chevron.evaluate(icon=>getComputedStyle(icon).transform),closed);
+      await summary.press('Space');
+      assert.equal(await chevron.evaluate(icon=>getComputedStyle(icon).transform),closed);
+    }
+    assert.ok(await page.locator('.source-details').evaluate(details=>{
+      details.open=true;
+      const last=[...details.querySelectorAll('.notice>span')].filter(span=>!span.hidden).at(-1);
+      const expanded=document.querySelector('.workspace').getBoundingClientRect().top-last.getBoundingClientRect().bottom;
+      details.open=false;
+      const collapsed=document.querySelector('.workspace').getBoundingClientRect().top-details.querySelector('summary').getBoundingClientRect().bottom;
+      return collapsed>=8&&Math.abs(collapsed-expanded)<1;
+    }));
+    assert.ok(await page.evaluate(()=>{
+      const root=getComputedStyle(document.documentElement),size=root.getPropertyValue('--scrollbar-size').trim(),native=root.getPropertyValue('--scrollbar-native-width').trim();
+      return [...document.querySelectorAll('.grid-scroll,#navigation,#change-list')].every(element=>{
+        const css=getComputedStyle(element);
+        if(!CSS.supports('selector(::-webkit-scrollbar)'))return css.scrollbarWidth===native;
+        const scrollbar=getComputedStyle(element,'::-webkit-scrollbar'),thumb=getComputedStyle(element,'::-webkit-scrollbar-thumb');
+        return css.scrollbarWidth===native&&scrollbar.width===size&&scrollbar.height===size&&thumb.backgroundColor==='rgba(0, 0, 0, 0.5)';
+      });
+    }));
     assert.equal(await page.locator('.source-side').count(),0);
     assert.equal(await page.locator('.source-dot.left-dot,#region').count(),0);
     assert.equal(await page.locator('#left-source').textContent(),'11/20/2026 @ 11:30:00 AM MST');
     assert.equal(await page.locator('#right-source').textContent(),'Committed 11/20/2026 @ 4:00:00 PM MST');
-    assert.equal(await page.locator('.source-details #source-commit').textContent(),'GitHub commit: abcdef0123456789abcdef0123456789abcdef01');
+    assert.equal(await page.locator('.source-details #right-source-commit').textContent(),'Main: abcdef0123456789abcdef0123456789abcdef01');
+    assert.doesNotMatch(await page.locator('.source-details [aria-label="Left source details"]').textContent(),/abcdef0123456789abcdef0123456789abcdef01|Committed:|Fetched:/);
+    assert.doesNotMatch(await page.locator('.source-details [aria-label="Right source details"]').textContent(),/Uploaded:/);
+    assert.doesNotMatch(await page.locator('.source-details').textContent(),/last.edit.time|divergent|automatically authoritative/);
+    assert.doesNotMatch(await page.locator('.source-details').textContent(),/fixed day dates|calculated day dates/);
     assert.ok(await page.evaluate(()=>document.querySelector('.linked').getBoundingClientRect().top>=document.querySelector('.grid-hint').getBoundingClientRect().bottom));
     assert.equal(await page.locator('#type-help,#keep-target-description').count(),0);
     assert.equal(await page.locator('[aria-describedby="keep-target-description"]').count(),0);
     assert.ok(await page.evaluate(()=>{
-      const context=document.querySelector('.view-options>.context').getBoundingClientRect(),linked=document.querySelector('.view-options>.linked').getBoundingClientRect(),row=document.querySelector('.view-options').getBoundingClientRect();
+      const context=document.querySelector('.view-options>.context').getBoundingClientRect(),linked=document.querySelector('.view-options>.linked:not(.first-cell-option)').getBoundingClientRect(),row=document.querySelector('.view-options').getBoundingClientRect();
       return context.left<linked.left&&Math.abs(context.top+context.height/2-linked.top-linked.height/2)<1&&Math.abs(linked.right-row.right)<1&&context.right<=linked.left;
+    }));
+    assert.ok(await page.locator('#first-cell').isChecked());
+    assert.deepEqual(await page.locator('#context option').allTextContents(),['Context: 1','Context: 2','Context: 3']);
+    assert.ok(await page.locator('.view-options').evaluate(row=>{
+      const controls=[...row.children].map(child=>child.getBoundingClientRect());
+      return controls.every((rect,index)=>!index||rect.left>=controls[index-1].right&&Math.abs(rect.top+rect.height/2-controls[0].top-controls[0].height/2)<1);
     }));
     assert.equal(await page.locator('.bulk-panel>.selection-progress').count(),1);
     assert.ok(await page.evaluate(()=>document.querySelector('.selection-progress').getBoundingClientRect().bottom<=document.querySelector('.bulk-summary-title').getBoundingClientRect().top));
@@ -56,6 +92,14 @@ try{
     assert.ok(pairedDetails.aligned);
     await page.locator('#detail-right').evaluate(element=>{element.textContent='61';});
     assert.equal(await page.locator('#keep-scope option[value="difference"]').textContent(),'Single cell');
+    assert.ok(await page.locator('.keep-scope').evaluate(label=>{
+      const range=document.createRange();range.selectNodeContents(label.firstChild);
+      const text=range.getBoundingClientRect(),picker=label.querySelector('.dropdown-field').getBoundingClientRect(),bounds=label.getBoundingClientRect();
+      const choice=label.closest('.individual-choice'),row=choice.getBoundingClientRect(),status=choice.querySelector('#individual-status').getBoundingClientRect(),css=getComputedStyle(choice);
+      const sameRow=text.right<=picker.left&&Math.abs(text.top+text.height/2-picker.top-picker.height/2)<2;
+      const leftAligned=bounds.top<status.bottom||Math.abs(bounds.left-row.left-parseFloat(css.paddingLeft)-parseFloat(css.borderLeftWidth))<1;
+      return sameRow&&leftAligned;
+    }));
     assert.doesNotMatch(await page.locator('#keep-scope').textContent(),/all conflicts|Selected conflict/);
     assert.equal(await page.locator('body').getAttribute('data-dropdown-style'),'dd');
     const categoryPaint=await page.locator('[data-category="all"]').evaluate(button=>{
@@ -70,10 +114,10 @@ try{
     await page.locator('#context-trigger').focus();
     await page.locator('#context-trigger').press('ArrowDown');
     assert.equal(await page.locator('#context-trigger').getAttribute('aria-expanded'),'true');
-    assert.equal(await page.locator('#context-options [aria-selected=true]').textContent(),'2 rows / columns');
+    assert.equal(await page.locator('#context-options [aria-selected=true]').textContent(),'Context: 2');
     assert.ok(await page.locator('#context-options .find-pagination').isHidden());
     await page.keyboard.press('ArrowDown');
-    assert.equal(await page.evaluate(()=>document.activeElement.textContent),'3 rows / columns');
+    assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Context: 3');
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#context-trigger').getAttribute('aria-expanded'),'false');
     assert.equal(await page.evaluate(()=>document.activeElement.id),'context-trigger');
@@ -87,13 +131,40 @@ try{
       return{width:innerWidth,scroll:document.documentElement.scrollWidth,bulk:box('.bulk-disclosure'),heading:box('#sheet-name'),main:box('.review-main'),rail:box('.decision-rail'),list:box('#change-list')};
     });
     assert.ok(geometry.scroll<=geometry.width);
+    assert.ok(await page.locator('#change-list').evaluate(list=>{
+      const original=list.style.maxHeight,scroll=list.scrollTop,button=list.querySelector('.change-item');
+      const copies=Array.from({length:8},()=>button.cloneNode(true));
+      list.append(...copies);list.style.maxHeight='60px';
+      const fits=[button,...copies].every(item=>{
+        const bounds=item.getBoundingClientRect(),css=getComputedStyle(item);
+        return [...item.children].every(child=>{
+          const rect=child.getBoundingClientRect();
+          return rect.top>=bounds.top+parseFloat(css.paddingTop)-.5&&rect.bottom<=bounds.bottom-parseFloat(css.paddingBottom)+.5;
+        });
+      });
+      const scrollable=list.scrollHeight>list.clientHeight;
+      copies.forEach(copy=>copy.remove());list.style.maxHeight=original;list.scrollTop=scroll;
+      return fits&&scrollable;
+    }));
     assert.deepEqual(await page.locator('#all-count').evaluate(pill=>{
       const style=getComputedStyle(pill);return{padding:style.padding,font:style.fontSize,weight:style.fontWeight,lineHeight:style.lineHeight};
     }),await page.locator('.scope-button .count').first().evaluate(pill=>{
       const style=getComputedStyle(pill);return{padding:style.padding,font:style.fontSize,weight:style.fontWeight,lineHeight:style.lineHeight};
     }));
-    assert.equal(await page.locator('.source-dot,.privacy-footer').count(),0);
-    if(width<=850)assert.equal(await page.locator('main').evaluate(main=>getComputedStyle(main).padding),'4px 6px 10px');
+    assert.equal(await page.locator('.source-dot,.privacy-footer,#dependency-note').count(),0);
+    if(width<=850){
+      assert.equal(await page.locator('main').evaluate(main=>getComputedStyle(main).padding),'4px 6px 0px');
+      assert.ok(await page.locator('.sources').evaluate(sources=>{
+        const bounds=sources.getBoundingClientRect();return bounds.left===6&&Math.abs(bounds.right-document.documentElement.clientWidth+6)<1;
+      }));
+      assert.ok(await page.locator('.workspace').evaluate(workspace=>{
+        const css=getComputedStyle(workspace),bounds=workspace.getBoundingClientRect();
+        return [css.borderLeftWidth,css.borderRightWidth,css.borderBottomWidth,css.borderRadius].every(value=>value==='0px')&&bounds.left===0&&Math.abs(bounds.right-document.documentElement.clientWidth)<1;
+      }));
+      assert.deepEqual(await page.locator('.comparison').evaluate(section=>{
+        const css=getComputedStyle(section);return[css.paddingLeft,css.paddingRight,css.paddingBottom];
+      }),width<=650?['11px','11px','15px']:['12px','12px','17px']);
+    }else assert.equal(await page.locator('.workspace').evaluate(workspace=>getComputedStyle(workspace).borderRadius),'12px');
     assert.ok(geometry.bulk.bottom<geometry.heading.y);
     if(width>850){
       assert.ok(geometry.rail.x>=geometry.main.right);
@@ -104,6 +175,16 @@ try{
       const rect=aside.getBoundingClientRect(),comparison=document.querySelector('.comparison').getBoundingClientRect();
       return width<=1099?rect.bottom<=comparison.top:rect.right<=comparison.left;
     },width));
+    const sheetDividers=await page.locator('#navigation>div').evaluateAll(groups=>groups.map(group=>{
+      const css=getComputedStyle(group,'::after');
+      return{visible:css.content==='""',width:css.width,height:css.height,color:css.backgroundColor,margin:css.margin};
+    }));
+    assert.ok(sheetDividers.length>1);
+    for(const [index,divider] of sheetDividers.entries()){
+      const visible=width<=1099&&index<sheetDividers.length-1;
+      assert.equal(divider.visible,visible);
+      if(visible)assert.deepEqual(divider,{visible:true,width:'1px',height:'12px',color:'rgb(218, 220, 224)',margin:'0px 4px'});
+    }
     assert.deepEqual(await page.evaluate(()=>({
       left:getComputedStyle(document.querySelector('.left-pane')).borderRightWidth,
       right:getComputedStyle(document.querySelector('.right-pane')).borderLeftWidth,
@@ -374,6 +455,58 @@ try{
     assert.ok(await page.locator('.keep-scope').isHidden());
     await page.close();
   }
+  for(const width of [320,1184]){
+    const sample=comparisonSample();
+    sample.left.sheets[0].cells['sample-master-r3:sample-master-c0']={value:'Invented row identity'};
+    sample.left.sheets[0].cells['sample-master-r3:sample-master-c6']={value:1};
+    sample.right=structuredClone(sample.left);
+    sample.right.sheets[0].cells['sample-master-r3:sample-master-c6'].value=2;
+    sample.right.sheets[0].columns.unshift(sample.right.sheets[0].columns.pop());
+    const identityColumns=[sample.left.sheets[0].columns[0].id,sample.right.sheets[0].columns[0].id];
+    const movedRows=sample.right.sheets[0].rows;
+    movedRows.unshift(movedRows.splice(movedRows.findIndex(row=>row.id==='sample-master-r3'),1)[0]);
+    const page=await browser.newPage({viewport:{width,height:1000}});
+    await page.route('**/left.json',route=>route.fulfill({json:sample.left}));
+    await page.route('**/right.json',route=>route.fulfill({json:sample.right}));
+    await page.goto(preview.url);await page.waitForFunction(()=>document.body.dataset.loading==='false');
+    await page.locator('.scope-button').filter({hasText:'Outside tables'}).first().click();
+    await page.locator('#change-kind').evaluate(select=>{
+      select.value='Value changed';select.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+    for(const context of ['1','3']){
+      await page.locator('#context').evaluate((select,value)=>{select.value=value;select.dispatchEvent(new Event('change',{bubbles:true}));},context);
+      for(const side of ['left','right']){
+        const grid=page.locator(`#${side}-grid`);
+        assert.equal(await grid.locator('td[data-row="sample-master-r3"][data-column="sample-master-c0"]').textContent(),'Invented row identity');
+        assert.ok(await grid.locator('thead .row-identity').count()>=2);
+        await grid.evaluate(grid=>grid.scrollLeft=grid.scrollWidth);
+        assert.ok(await grid.evaluate(grid=>{
+          const bounds=grid.getBoundingClientRect(),identities=[...grid.querySelectorAll('tr:nth-child(1) td.row-identity')].map(cell=>cell.getBoundingClientRect());
+          return identities.length===2&&identities.every(rect=>rect.left>=bounds.left&&rect.right<=bounds.left+grid.clientWidth*.7);
+        }));
+      }
+      const progress=await page.locator('#selection-progress').textContent(),location=await page.locator('#detail-location').textContent();
+      await page.locator('#first-cell').uncheck();
+      for(const side of ['left','right']){
+        const grid=page.locator(`#${side}-grid`);
+        assert.equal(await grid.locator('.row-identity').count(),0);
+        for(const column of identityColumns)assert.equal(await grid.locator(`td[data-column="${column}"]`).count(),0);
+        assert.equal(await grid.locator('td[data-row="sample-master-r3"][data-column="sample-master-c6"]').count(),identityColumns.includes('sample-master-c6')?0:1);
+      }
+      assert.equal(await page.locator('#selection-progress').textContent(),progress);
+      assert.equal(await page.locator('#detail-location').textContent(),location);
+      await page.locator('#first-cell').check();
+      assert.equal(await page.locator('#left-grid thead .row-identity').count(),2);
+    }
+    assert.ok(await page.locator('.region-toolbar').isHidden());
+    await page.locator('#change-kind').evaluate(select=>{select.value='';select.dispatchEvent(new Event('change',{bubbles:true}));});
+    await page.locator('.change-item').filter({hasText:'Row order'}).click();
+    assert.ok(await page.locator('.grid-scroll').evaluateAll(grids=>grids.every(grid=>{
+      const first=grid.querySelector('tbody tr td:not(.row-identity)'),lastPinned=[...grid.querySelectorAll('tbody tr:first-child td.row-identity')].at(-1);
+      return first&&lastPinned&&Math.abs(first.getBoundingClientRect().left-lastPinned.getBoundingClientRect().right)<2;
+    })));
+    await page.close();
+  }
   for(const width of [320,390,1184]){
     const context=await browser.newContext({viewport:{width,height:1000}});
     const page=await context.newPage(),errors=[],writes=[],loads=[];
@@ -403,40 +536,83 @@ try{
     const choices=await frame.locator('#selection-progress').textContent();
     const sourcesLoaded=loads.length;
     const selection=await frame.locator('#detail-location').textContent();
-    assert.ok(await page.evaluate(()=>document.querySelector('[data-control-style="before"]').compareDocumentPosition(document.getElementById('mobile-mode'))&Node.DOCUMENT_POSITION_FOLLOWING));
-    const afterPaint=await frame.locator('#reset-choices').evaluate(button=>({radius:getComputedStyle(button).borderRadius,font:getComputedStyle(button).fontFamily}));
+    assert.equal(await page.locator('[data-control-style],[data-dropdown-style]').count(),0);
+    assert.ok(await page.evaluate(()=>document.querySelector('[data-filter-design="tabs"]').compareDocumentPosition(document.getElementById('mobile-mode'))&Node.DOCUMENT_POSITION_FOLLOWING));
+    const paintBefore=await frame.locator('#reset-choices').evaluate(button=>({radius:getComputedStyle(button).borderRadius,font:getComputedStyle(button).fontFamily}));
+    const regionBefore=await frame.locator('#region-picker').inputValue();
     for(const mobile of [false,true]){
       if(mobile)await page.locator('#mobile-mode').click();
-      for(const style of ['before','after']){
-        await page.locator(`[data-control-style="${style}"]`).click();
-        assert.equal(await frame.locator('body').getAttribute('data-control-style'),style);
-        const paint=await frame.locator('#reset-choices').evaluate(button=>({radius:getComputedStyle(button).borderRadius,font:getComputedStyle(button).fontFamily}));
-        if(style==='before'){
-          assert.equal(paint.radius,'7px');
-          assert.notEqual(paint.font,afterPaint.font);
-        }else assert.deepEqual(paint,afterPaint);
-        await frame.locator('#context-trigger').click();
-        for(const menu of ['previous','dd']){
-          await page.locator(`[data-dropdown-style="${menu}"]`).click();
-          const paint=await frame.locator('#context-options [aria-selected=true]').evaluate(button=>{
-            const css=getComputedStyle(button);
-            return{border:css.borderTopWidth,padding:css.padding,font:css.fontSize,background:css.backgroundColor};
-          });
-          const cellFont=await frame.locator('#left-grid td:not(.row-number)').first().evaluate(cell=>getComputedStyle(cell).fontSize);
-          assert.deepEqual(paint,menu==='previous'?{border:'1px',padding:'7px 11px',font:'14px',background:'rgb(232, 241, 235)'}:{border:'0px',padding:'9px 8px',font:cellFont,background:'rgb(232, 239, 223)'});
-          if(menu==='dd')assert.equal(await frame.locator('.cell-dropdown').evaluate(popup=>getComputedStyle(popup).padding),'6px');
-          assert.equal(await frame.locator('#selection-progress').textContent(),choices);
-          assert.equal(await frame.locator('#detail-location').textContent(),selection);
-          assert.equal(loads.length,sourcesLoaded);
-          assert.ok(await frame.evaluate(()=>{
-            const left=document.querySelector('.left-pane').getBoundingClientRect(),right=document.querySelector('.right-pane').getBoundingClientRect();
-            return right.left>=left.right&&right.top===left.top&&document.documentElement.scrollWidth<=innerWidth;
-          }));
-        }
-        await frame.locator('#context-options [aria-selected=true]').press('Escape');
+      for(const design of ['dropdown','tabs']){
+        await page.locator(`[data-filter-design="${design}"]`).click();
+        assert.equal(await frame.locator('body').getAttribute('data-filter-design'),design);
+        assert.equal(await frame.locator('.categories').isVisible(),design==='tabs');
+        assert.equal(await frame.locator('#type-label').isVisible(),design==='tabs');
+        assert.equal(await frame.locator('#change-kind-trigger').getAttribute('aria-label'),'Specific change type');
+        assert.equal(await frame.locator('#type-label,#combined-type-label').evaluateAll(labels=>labels.some(label=>[...label.childNodes].some(node=>node.nodeType===Node.TEXT_NODE&&node.textContent.trim()))),false);
+        assert.equal(await frame.locator('.area-changes h3').count(),0);
+        if(await frame.locator('.region-toolbar').isVisible())assert.ok(await frame.evaluate(()=>{
+          const previous=document.getElementById('previous').getBoundingClientRect(),next=document.getElementById('next').getBoundingClientRect(),picker=document.getElementById('region-picker-trigger'),bounds=picker.getBoundingClientRect(),style=getComputedStyle(picker),arrow=picker.querySelector('svg').getBoundingClientRect();
+          const reference=document.getElementById(document.body.dataset.filterDesign==='tabs'?'change-kind-trigger':'change-filter-trigger').getBoundingClientRect().height;
+          return previous.right<=next.left&&next.right<=bounds.left&&Math.abs(previous.width-previous.height)<.1&&Math.abs(next.width-next.height)<.1&&[previous.height,next.height,bounds.height].every(height=>Math.abs(height-reference)<.1)&&style.textAlign==='left'&&Math.abs(arrow.right-(bounds.right-parseFloat(style.paddingRight)-parseFloat(style.borderRightWidth)))<2;
+        }));
+        if(design==='tabs')assert.ok(await frame.evaluate(()=>{
+          const tabs=document.querySelector('.categories').getBoundingClientRect(),picker=document.getElementById('type-label').getBoundingClientRect(),bar=document.querySelector('.filter-toolbar').getBoundingClientRect(),gap=parseFloat(getComputedStyle(document.querySelector('.filter-toolbar')).columnGap);
+          return picker.left>=tabs.right&&Math.abs(picker.top-tabs.top)<2&&Math.abs(picker.right-bar.right)<1||picker.top>=tabs.bottom&&tabs.width+picker.width+gap>bar.width&&Math.abs(picker.left-tabs.left)<1;
+        }));
+        const sizing=await frame.locator(design==='tabs'?'#change-kind-trigger':'#change-filter-trigger').evaluate(button=>{
+          const style=getComputedStyle(button),width=button.getBoundingClientRect().width;
+          const range=document.createRange(),textWidth=Math.max(...[...button.querySelectorAll('.dropdown-option-size')].map(span=>{range.selectNodeContents(span);return range.getBoundingClientRect().width;}));
+          const natural=textWidth+button.querySelector('svg').getBoundingClientRect().width+parseFloat(style.columnGap)+parseFloat(style.paddingLeft)+parseFloat(style.paddingRight)+parseFloat(style.borderLeftWidth)+parseFloat(style.borderRightWidth);
+          return {width,natural,display:style.display,limit:button.closest('.filter-toolbar').getBoundingClientRect().width};
+        });
+        assert.equal(sizing.display,'grid');assert.ok(sizing.width>0&&sizing.width<=280&&sizing.width<=sizing.limit+.5);
+        assert.ok(Math.abs(sizing.width-Math.min(sizing.natural,280,sizing.limit))<2);
+        if(design==='tabs')assert.ok(await frame.evaluate(()=>{
+          const height=document.getElementById('change-kind-trigger').getBoundingClientRect().height;
+          return [...document.querySelectorAll('.categories button')].every(button=>Math.abs(button.getBoundingClientRect().height-height)<.1);
+        }));
+        assert.equal(await frame.locator('#combined-type-label').isVisible(),design==='dropdown');
+        assert.deepEqual(await frame.locator('#reset-choices').evaluate(button=>({radius:getComputedStyle(button).borderRadius,font:getComputedStyle(button).fontFamily})),paintBefore);
+        assert.equal(await frame.locator('#selection-progress').textContent(),choices);
+        assert.equal(await frame.locator('#detail-location').textContent(),selection);
+        assert.equal(await frame.locator('#region-picker').inputValue(),regionBefore);
+        assert.equal(loads.length,sourcesLoaded);
+        assert.ok(await frame.evaluate(()=>{
+          const left=document.querySelector('.left-pane').getBoundingClientRect(),right=document.querySelector('.right-pane').getBoundingClientRect();
+          return right.left>=left.right&&right.top===left.top&&document.documentElement.scrollWidth<=innerWidth;
+        }));
       }
       if(mobile)await page.locator('#mobile-mode').click();
     }
+    await page.locator('[data-filter-design="dropdown"]').click();
+    await frame.locator('#change-filter-trigger').click();
+    assert.equal(await frame.getByRole('option',{name:'All changes (5)',exact:true}).count(),1);
+    assert.equal(await frame.getByRole('option',{name:'Values & formulas (3)',exact:true}).count(),1);
+    assert.equal(await frame.getByRole('option',{name:'Structure (2)',exact:true}).count(),1);
+    assert.equal(await frame.locator('#change-filter-options .filter-subtype').count(),3);
+    assert.equal(await frame.getByRole('option',{name:'Values & formulas (3)',exact:true}).locator('.amber').count(),1);
+    await frame.getByRole('option',{name:'Hypothetical tag (1)',exact:true}).click();
+    assert.equal(await frame.locator('#change-kind').inputValue(),'Hypothetical tag');
+    assert.ok(await frame.locator('.region-toolbar').isHidden());
+    const filteredRegion=await frame.locator('#region-picker').inputValue(),filteredSelection=await frame.locator('#detail-location').textContent();
+    await frame.locator('#change-filter-trigger').click();
+    await page.locator('[data-filter-design="tabs"]').click();
+    assert.equal(await frame.locator('#change-filter-options').count(),0);
+    assert.equal(await frame.locator('[data-category="structure"]').getAttribute('aria-pressed'),'true');
+    assert.equal(await frame.locator('#change-kind').inputValue(),'Hypothetical tag');
+    assert.equal(await frame.locator('#region-picker').inputValue(),filteredRegion);
+    assert.equal(await frame.locator('#detail-location').textContent(),filteredSelection);
+    await frame.locator('[data-category="all"]').click();
+    await page.locator('[data-filter-design="dropdown"]').click();
+    assert.equal(await frame.locator('#change-filter').inputValue(),JSON.stringify(['all','Hypothetical tag']));
+    await frame.locator('#change-filter-trigger').click();
+    await frame.getByRole('option',{name:'All changes (5)',exact:true}).click();
+    await page.locator('[data-filter-design="tabs"]').click();
+    assert.equal(await frame.locator('#change-kind').inputValue(),'');
+    assert.equal(await frame.locator('[data-category="all"]').getAttribute('aria-pressed'),'true');
+    assert.ok(await frame.locator('.region-toolbar').isVisible());
+    assert.equal(await frame.locator('#selection-progress').textContent(),choices);
+    assert.equal(loads.length,sourcesLoaded);
     assert.deepEqual(writes,[]);
     await page.locator('#mobile-mode').click();
     await frame.waitForFunction(expected=>innerWidth===expected,Math.min(width,390));
@@ -459,6 +635,6 @@ try{
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     assert.deepEqual(errors,[]);
     await context.close();
-    console.log(`${width}px: full-UI Before/After and Previous/DD menus preserve choices, selection, sources and side-by-side layout in both viewport modes.`);
+    console.log(`${width}px: Tabs/Dropdown previews preserve choices, filters, selected area and sources; grouped options and keyboard-safe popup closure work.`);
   }
 }finally{await browser?.close();await preview.close();}

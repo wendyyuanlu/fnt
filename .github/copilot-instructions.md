@@ -38,4 +38,4 @@ them into the result preview.
 
 # Scrollbars
 
-Reuse the shared slim-scrollbar rules in `src/style.css` for scrollable surfaces. Preserve explicit scrollbar-free cases, including both `scrollbar-width: none` and hidden WebKit scrollbars for in-cell editors and cell displays.
+Reuse `src/scrollbars.css`, imported by `src/ui-controls.css`, for all scrollable surfaces, including UI previews. Keep the shared 4px rounded, half-opacity black thumbs, transparent tracks and corners, and hidden arrow buttons. Use `var(--scrollbar-native-width)` rather than independent `thin` overrides so WebKit retains the exact shared size. Preserve explicit scrollbar-free cases, including both `scrollbar-width: none` and hidden WebKit scrollbars for in-cell editors and cell displays.

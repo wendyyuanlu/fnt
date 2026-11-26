@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fnt - Visual comparison prototype</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="before-controls.css"></head>
-<body class="compact-controls" data-control-style="after" data-dropdown-style="dd">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fnt - Visual comparison prototype</title><link rel="stylesheet" href="style.css"></head>
+<body class="compact-controls" data-control-style="after" data-dropdown-style="dd" data-filter-design="tabs">
 <header class="top"><h1>Compare versions</h1></header>
 <main>
   <section class="sources" aria-label="Comparison sources">
@@ -9,7 +9,10 @@
     <span class="versus">vs</span>
     <div class="source" id="right-source-card" role="group" aria-label="Right comparison source"><span class="source-description"><b id="right-kind">GitHub</b><small id="right-source">Reading comparison source...</small></span><div class="source-actions"><button id="right-github" aria-label="Browse uploaded snapshots for right side">Browse uploads</button><label class="file-action icon-button" title="Attach a local JSON copy"><input id="right-file" aria-label="Choose local JSON for right side" type="file" accept=".json"></label></div></div>
   </section>
-  <details class="source-details"><summary>Source details</summary><p id="source-freshness" class="notice"></p><p id="source-commit" class="notice" hidden></p><p id="date-summary" class="notice"></p></details>
+  <details class="source-details"><summary>Source details</summary>
+    <p class="notice" aria-label="Left source details"><span id="left-detail-kind">Left</span><span id="left-source-freshness"></span></p>
+    <p class="notice" aria-label="Right source details"><span id="right-detail-kind">Right</span><span id="right-source-freshness"></span><span id="right-source-fetched" hidden></span><span id="right-source-commit" hidden></span></p>
+  </details>
   <dialog id="snapshot-picker" class="dialog-surface" aria-label="Uploaded comparison copies">
     <div class="dialog-heading"><h2 id="snapshot-title">Left copy · GitHub</h2><button id="snapshot-close" type="button" aria-label="Close uploaded copies" aria-keyshortcuts="Escape">Close</button></div>
     <p id="snapshot-target-note">Changes only the left comparison source. Attach opens a JSON file from this device; it does not upload it.</p>
@@ -45,26 +48,27 @@
       </details>
       </section>
       <div class="scope-heading"><div><p class="eyebrow" id="sheet-name">COMPARING</p><h2 id="scope-name">Reading saved cells...</h2></div></div>
-      <div class="categories" role="group" aria-label="Difference category"><button data-category="all" aria-pressed="true">All <span id="all-count" class="count">0</span></button><button data-category="value" aria-pressed="false"><i class="swatch amber"></i>Values & formulas <span id="value-count">0</span></button><button data-category="structure" aria-pressed="false"><i class="swatch violet"></i>Structure <span id="structure-count">0</span></button></div>
-      <div class="type-filter"><label>Show <select id="change-kind" aria-label="Specific change type"><option value="">All change types</option></select></label></div>
+      <div class="filter-toolbar">
+        <div class="categories" role="group" aria-label="Difference category"><button data-category="all" aria-pressed="true">All <span id="all-count" class="count">0</span></button><button data-category="value" aria-pressed="false"><i class="swatch amber"></i>Values & formulas <span id="value-count">0</span></button><button data-category="structure" aria-pressed="false"><i class="swatch violet"></i>Structure <span id="structure-count">0</span></button></div>
+        <div class="type-filter"><label id="type-label"><select id="change-kind" aria-label="Specific change type"><option value="">All change types</option></select></label><label id="combined-type-label" hidden><select id="change-filter" aria-label="Change category and type" disabled><option data-filter-category="all" value="">All changes</option></select></label></div>
+      </div>
       <div class="review-layout">
         <div class="review-main">
-          <div class="region-toolbar"><div class="navigator"><button id="previous" class="icon-button" data-action="prev" aria-label="Previous changed area" disabled></button><label class="region-label"><select id="region-picker" aria-label="Jump to changed area"></select></label><button id="next" class="icon-button" data-action="next" aria-label="Next changed area" disabled></button></div></div>
+          <div class="region-toolbar"><div class="navigator"><button id="previous" class="icon-button" data-action="prev" aria-label="Previous changed area" disabled></button><button id="next" class="icon-button" data-action="next" aria-label="Next changed area" disabled></button><label class="region-label"><select id="region-picker" aria-label="Jump to changed area"></select></label></div></div>
           <section id="inspector" class="inspector" aria-label="Selected change details">
             <header><b id="detail-title">Select a highlighted cell</b><span id="detail-location"></span></header>
             <div class="individual-choice"><span id="individual-status">Undecided</span><label class="context keep-scope">Apply to<select id="keep-scope" aria-label="Inspector choice scope"><option value="difference">Single cell</option><option value="row">Selected row</option><option value="column">Selected column</option></select></label><div id="individual-buttons" class="pick-buttons" role="group" aria-label="Defer inspector choices"></div></div>
-            <p id="dependency-note" class="notice" hidden></p><p id="change-explanation" class="notice" hidden></p>
+            <p id="change-explanation" class="notice" hidden></p>
             <div class="previews detail-pair" id="previews">
               <section class="pane left-pane"><header><b>Your backup</b><div id="keep-left" class="pick-buttons" role="group" aria-label="Keep left source"></div></header><pre id="detail-left" class="source-detail"></pre><div class="pane-range" id="left-range"></div><div class="grid-scroll" id="left-grid" tabindex="0" aria-label="Backup spreadsheet preview"></div></section>
               <section class="pane right-pane"><header><b>GitHub</b><div id="keep-right" class="pick-buttons" role="group" aria-label="Keep right source"></div></header><pre id="detail-right" class="source-detail"></pre><div class="pane-range" id="right-range"></div><div class="grid-scroll" id="right-grid" tabindex="0" aria-label="GitHub spreadsheet preview"></div></section>
             </div>
           </section>
           <p class="grid-hint"><span class="swatch amber"></span> Value / formula <span class="swatch violet"></span> Structure <span class="ghost-key">///</span> Not in this copy / table <span class="muted">Same stable row and column identities are aligned, even after moves.</span></p>
-          <div class="view-options"><label class="context">Context<select id="context" aria-label="Surrounding context"><option value="1">1 row / column</option><option value="2" selected>2 rows / columns</option><option value="3">3 rows / columns</option></select></label><label class="linked"><input id="linked" type="checkbox" checked>Linked scrolling</label></div>
+          <div class="view-options"><label class="context"><select id="context" aria-label="Surrounding context"><option value="1">Context: 1</option><option value="2" selected>Context: 2</option><option value="3">Context: 3</option></select></label><label class="linked first-cell-option"><input id="first-cell" type="checkbox" checked>First cell</label><label class="linked"><input id="linked" type="checkbox" checked>Linked scrolling</label></div>
         </div>
         <section class="decision-rail" aria-label="Comparison choices and change list">
-          <div class="area-changes">
-            <div class="changes-heading"><h3>Changes in this area</h3></div>
+          <div class="area-changes" role="group" aria-label="Changes in this area">
             <div id="change-list" class="change-list"></div>
           </div>
         </section>

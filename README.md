@@ -939,21 +939,37 @@ The review page's **Mobile mode** toggle constrains the comparison to an actual
 the same responsive CSS without reloading or clearing your choices. Toggle it
 off to return to full width. This is a prototype-only review control, not a
 production feature or touch/virtual-keyboard emulator.
-Before Mobile mode, **Before / After** switches the full interface's control
-styling in place. Before uses the actual pre-refactor control CSS, while keeping
-the current layout, glyphs and functionality. **Previous / DD picker** separately
-previews original menu options versus the shared spreadsheet dropdown rows.
-Neither switch reloads sources or clears choices, and both work in Mobile mode.
-The default After view retains the approved original category-button styling
-and only the original value-count padding; all other controls use After styling,
-including DD-picker menu rows. The inspector scope picker sizes to its longest
+Before Mobile mode, **Tabs / Dropdown** compares two full-interface filter designs.
+Tabs is the default: category buttons and a specific-change-type dropdown share
+one toolbar. The dropdown sits to the right and wraps below, left-aligned, only when space is
+insufficient. Neither filter design has a visible Show label. Filter pickers
+fit their longest option, up to 280 px and within the available space.
+Dropdown combines categories and their detailed types in one menu, retaining
+colored markers and count pills. Switching designs preserves filters, the
+selected area/change and choices without reloading sources. The old button/menu
+style switches have been replaced; all other controls retain shared DD-picker
+styling and the approved category-button appearance.
+The inspector scope picker sizes to its longest
 option and contracts to the available space on narrower screens.
 DD dropdowns use 6 px outer padding and match the grid's cell font size.
 Source-detail boxes fit their text rather than reserving a 70 px row; long
 details retain their scrolling limit, and the paired grid panes stay aligned.
-The left navigation becomes a horizontal strip at 1099 px before the change
+Source metadata uses two stacked paragraphs, left then right, with each field
+on its own line: source, timestamps and available commit.
+Source details and Bulk choices use the spreadsheet's outlined collapse
+chevron, pointing right when closed and down when open.
+Collapsed Source details keeps the same 8 px bottom gap as its expanded contents.
+The app and previews share `src/scrollbars.css` through the common controls
+stylesheet, retaining the established scrollbar appearance and explicit hidden-scrollbar cases.
+The left navigation becomes a horizontal strip at 1099 px, using the sheet-tab
+category divider between sheets, with none after the last sheet. The change
 list moves below the grids at 850 px. Context and Linked scrolling share the
-bottom controls row, aligned left and right. Row locations use L:/R: labels;
+bottom controls row, aligned left and right. The area picker aligns its text
+left and chevron right, with Previous / Next together before it; the redundant
+change-list heading is omitted.
+Category buttons and area controls match the filter picker's height; the
+Previous / Next buttons remain square.
+Row locations use L:/R: labels;
 scope explanations remain in accessible descriptions/tooltips rather than
 an additional visible notice.
 The inspector's Apply to picker appears only when its current comparison area
@@ -961,10 +977,25 @@ contains distinct changed cells sharing the selected row or column. Multiple
 conflict aspects in one cell do not qualify; hiding the picker restores its
 single-conflict scope. Attachment icons are 14 px, inside buttons matching
 Browse uploads, and the bulk panel clips its content to its rounded border.
-All uses the shared navigation count pill. At 850 px and narrower, page padding
-is reduced by 8 px on each side; the redundant privacy footer is omitted.
+All uses the shared navigation count pill. At 850 px and narrower, the fully
+stacked workspace fills the page width without side/bottom borders or corner
+rounding. The title and source area keep their page padding, and the comparison
+section retains its inner padding. Trailing page padding is omitted; the top
+spacing and separator remain. The redundant privacy footer is omitted.
 On narrow screens, inspector status and Decide later share the first row;
-the optional Apply to label and picker share the next row.
+the optional Apply to label and picker share the next row, left-aligned.
+The label stays beside the picker and vertically centered at every width.
+Change-list buttons grow to fit both text lines instead of shrinking in the scrollable list.
+The redundant inspector dependency notice is omitted; structural merge limitations
+remain explained in the selection review and documentation.
+Area navigation is shown only when the current filters produce multiple areas.
+The checked-by-default **First cell** control includes and pins each copy's first
+physical column beside the row numbers, independent of Context. Unchecking it
+hides those identity columns in both previews without changing choices or data.
+Context options are **Context: 1**, **Context: 2** and **Context: 3**.
+Stable identities stay aligned if the
+first columns differ after a move. Pinned widths contract on narrow screens to
+leave room for changed cells; full cell text remains available in tooltips.
 
 Each source card offers **Browse uploads** (read an existing uploaded snapshot)
 and an **Attach** icon (open a local JSON file without uploading it). GitHub access

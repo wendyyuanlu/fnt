@@ -34,7 +34,7 @@ export function mountSourcePicker(dialog:HTMLDialogElement,options:{
   refresh();return{refresh};
 }
 
-export function mountSelectDropdown(select:HTMLSelectElement,options?:{renderOption?:(button:HTMLButtonElement,option:HTMLOptionElement)=>void;fitOptions?:boolean}):{refresh:()=>void}{
+export function mountSelectDropdown(select:HTMLSelectElement,options?:{renderOption?:(button:HTMLButtonElement,option:HTMLOptionElement)=>void;fitOptions?:boolean}):{refresh:()=>void;close:()=>void}{
   const dialog=select.closest('dialog')??document.body,label=select.labels?.[0],trigger=document.createElement('button');
   const name=select.getAttribute('aria-label')??[...label?.childNodes??[]].filter(node=>node.nodeType===Node.TEXT_NODE).map(node=>node.textContent).join('').trim();
   trigger.type='button';trigger.id=select.id+'-trigger';trigger.className='dropdown-field';
@@ -75,7 +75,7 @@ export function mountSelectDropdown(select:HTMLSelectElement,options?:{renderOpt
     dialog.addEventListener('scroll',position,{capture:true,signal:controller.signal});
   };
   trigger.onkeydown=e=>{if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();e.stopPropagation();if(!closePopup)trigger.click();}};
-  select.addEventListener('change',refresh);dialog.addEventListener('close',()=>closePopup?.());refresh();return{refresh};
+  select.addEventListener('change',refresh);dialog.addEventListener('close',()=>closePopup?.());refresh();return{refresh,close:()=>closePopup?.()};
 }
 
 export function mountDropdownOptions<T>(panel:HTMLElement,options:{

@@ -8,10 +8,10 @@ import {dateFormatContext} from '../../src/display-values';
 import {hypotheticalProjection} from '../../src/grouping';
 import {comparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,snapshotDate,type ComparisonSnapshot} from '../../src/github-snapshots';
 import {mountSelectDropdown} from '../../src/dropdown-ui';
-import {toolbarIcon} from '../../src/icons';
+import {navigationIcon,toolbarIcon} from '../../src/icons';
 import {githubFormDefaults} from '../../src/github-client';
 import type {SyncConfig} from '../../src/storage';
-import {compare,scopes,chunks,axisChoices,hasAxisCellPeers,anchorLabel,anchorMismatchLabel,anchorErrorLabel,isDateAnchorLabel,dayDateCells,type Scope,type Difference,type Category,type Chunk,type ChoiceAxis} from './comparison-model';
+import {compare,scopes,chunks,axisChoices,hasAxisCellPeers,anchorLabel,anchorMismatchLabel,anchorErrorLabel,isDateAnchorLabel,type Scope,type Difference,type Category,type Chunk,type ChoiceAxis} from './comparison-model';
 
 const el=<T extends HTMLElement=HTMLElement>(id:string)=>document.getElementById(id) as T;
 let left:Workbook,right:Workbook,engines:Engine[],areas:Scope[]=[],differences:Difference[]=[],scope:Scope;
@@ -126,8 +126,6 @@ function updateChoices(){
   pickButtons(el('individual-buttons'),keepTargets,[undefined]);
   pickButtons(el('keep-left'),keepTargets,['left']);
   pickButtons(el('keep-right'),keepTargets,['right']);
-  el('dependency-note').hidden=!keepTargets.some(d=>d.category==='structure');
-  el('dependency-note').textContent='Structure choice: membership, groups and formula references may depend on other changes. This draft records your preference; dependency-safe merge validation is not implemented.';
   document.querySelectorAll<HTMLElement>('.change-item[data-id]').forEach(button=>{
     const pick=choices.get(Number(button.dataset.id));button.dataset.choice=pick??'';
     const badge=button.querySelector('.choice-badge');
@@ -257,13 +255,20 @@ function revealSelectedCells(){
   for(const grid of grids){
     const cells=[...grid.querySelectorAll<HTMLElement>('.selected-cell')];if(!cells.length)continue;
     const bounds=grid.getBoundingClientRect(),header=grid.querySelector('thead')?.getBoundingClientRect(),rowHeader=grid.querySelector('.row-number')?.getBoundingClientRect();
-    const visible={left:bounds.left+(rowHeader?.width??0),right:bounds.left+grid.clientWidth,top:bounds.top+(header?.height??0),bottom:bounds.top+grid.clientHeight};
+    const identityWidth=[...grid.querySelectorAll<HTMLElement>('thead .row-identity')].reduce((sum,cell)=>sum+cell.getBoundingClientRect().width,0);
+    const visible={left:bounds.left+(rowHeader?.width??0)+identityWidth,right:bounds.left+grid.clientWidth,top:bounds.top+(header?.height??0),bottom:bounds.top+grid.clientHeight};
     const rectangles=cells.map(cell=>cell.getBoundingClientRect()),first=rectangles[0];
     const union={left:Math.min(...rectangles.map(r=>r.left)),right:Math.max(...rectangles.map(r=>r.right)),top:Math.min(...rectangles.map(r=>r.top)),bottom:Math.max(...rectangles.map(r=>r.bottom))};
-    const focused=cells.find(cell=>cell.dataset.row===focus?.row&&cell.dataset.column===focus?.column)?.getBoundingClientRect();
+    const focusedCell=cells.find(cell=>cell.dataset.row===focus?.row&&cell.dataset.column===focus?.column);
+    const focused=focusedCell?.getBoundingClientRect();
     const target=focused??(union.right-union.left<=visible.right-visible.left&&union.bottom-union.top<=visible.bottom-visible.top?union:first);
-    if(target.left<visible.left||target.right-target.left>visible.right-visible.left)grid.scrollLeft+=target.left-visible.left;
-    else if(target.right>visible.right)grid.scrollLeft+=target.right-visible.right;
+    const scrolling=rectangles.filter((_,index)=>!cells[index].classList.contains('row-identity'));
+    if(!focusedCell?.classList.contains('row-identity')&&scrolling.length){
+      const span={left:Math.min(...scrolling.map(r=>r.left)),right:Math.max(...scrolling.map(r=>r.right))};
+      const horizontal=focused??(span.right-span.left<=visible.right-visible.left?span:scrolling[0]);
+      if(horizontal.left<visible.left||horizontal.right-horizontal.left>visible.right-visible.left)grid.scrollLeft+=horizontal.left-visible.left;
+      else if(horizontal.right>visible.right)grid.scrollLeft+=horizontal.right-visible.right;
+    }
     if(target.top<visible.top)grid.scrollTop+=target.top-visible.top;
     else if(target.bottom>visible.bottom)grid.scrollTop+=target.bottom-visible.bottom;
   }
@@ -305,24 +310,26 @@ function cellDifferences(diffs:Difference[],row:string,column:string):Difference
 }
 function drawGrid(side:number,chunk:Chunk){
   const sheet=side?scope.right:scope.left,table=side?scope.rightTable:scope.leftTable,book=side?right:left,engine=engines[side];
-  const rowIds=scope.rows.slice(chunk.r1,chunk.r2+1),colIds=scope.columns.slice(chunk.c1,chunk.c2+1),grid=grids[side];
+  const firstColumns=new Set([scope.left?.columns[0]?.id,scope.right?.columns[0]?.id].filter((id):id is string=>!!id)),showFirst=el<HTMLInputElement>('first-cell').checked;
+  const identities=showFirst?firstColumns:new Set<string>();
+  const rowIds=scope.rows.slice(chunk.r1,chunk.r2+1),colIds=[...new Set([...identities,...scope.columns.slice(chunk.c1,chunk.c2+1).filter(id=>showFirst||!firstColumns.has(id))])],grid=grids[side];
   const numbers=sheet?positions(sheet):undefined;
   const hypoRow=sheet?hypotheticalProjection(book,sheet,'row'):()=>false,hypoColumn=sheet?hypotheticalProjection(book,sheet,'column'):()=>false;
   const rows=new Map(sheet?.rows.map(r=>[r.id,r])),columns=new Map(sheet?.columns.map(c=>[c.id,c]));
   const memberRows=table?new Set([table.header,...table.rows]):undefined,memberColumns=table?new Set(table.columns.map(c=>c.column)):undefined;
   const header=colIds.map(id=>{
     const index=numbers?.columns.get(id),field=table?.columns.find(c=>c.column===id);
-    return `<th scope="col">${escape(field?.name??columns.get(id)?.label??'Not present')}<small>${index===undefined?'--':letters(index)}</small></th>`;
+    return `<th scope="col"${identities.has(id)?' class="row-identity"':''}>${escape(field?.name??columns.get(id)?.label??'Not present')}<small>${index===undefined?'--':letters(index)}</small></th>`;
   }).join('');
   engine.beginPass();
   const body=rowIds.map(row=>{
     const index=numbers?.rows.get(row),rowDiffs=chunk.differences.filter(d=>d.rows.includes(row)&&!d.columns.length),present=rows.has(row);
     let flags=rowDiffs.length?'<span class="row-marker">S</span>':'';
     const cells=colIds.map(column=>{
-      const exists=present&&columns.has(column)&&(!memberRows||memberRows.has(row))&&(!memberColumns||memberColumns.has(column)),changed=cellDifferences(chunk.differences,row,column),hasValue=changed.some(d=>d.category==='value'),hasStructure=changed.some(d=>d.category==='structure');
+      const identity=identities.has(column),exists=present&&columns.has(column)&&(identity||(!memberRows||memberRows.has(row))&&(!memberColumns||memberColumns.has(column))),changed=cellDifferences(chunk.differences,row,column),hasValue=changed.some(d=>d.category==='value'),hasStructure=changed.some(d=>d.category==='structure');
       const cell=sheet?.cells[`${row}:${column}`],hypo=exists&&(hypoRow(row,column)||hypoColumn(row,column));
       if(hypo&&!flags)flags='<span class="row-marker">H</span>';
-      const classes=[exists?'':'missing',hasValue?'changed-value':'',hasStructure?'changed-structure':'',changed.length?'':'context-cell',hypo?'hypo':'',row===table?.header?'table-header':''].filter(Boolean).join(' ');
+      const classes=[identity?'row-identity':'',exists?'':'missing',hasValue?'changed-value':'',hasStructure?'changed-structure':'',changed.length?'':'context-cell',hypo?'hypo':'',row===table?.header?'table-header':''].filter(Boolean).join(' ');
       const text=exists&&sheet?visibleText(book,sheet,row,column,engine):'';
       const styles:string[]=[];
       if(cell?.format?.bold)styles.push('font-weight:600');if(cell?.format?.italic)styles.push('font-style:italic');
@@ -345,22 +352,35 @@ function drawGrid(side:number,chunk:Chunk){
 }
 function fitPreviewColumns(){
   const tables=grids.map(grid=>grid.querySelector('table'));if(!tables[0]||!tables[1])return;
-  const widths:number[]=[];
+  const widths:number[]=[],identities=[...tables[0].querySelectorAll<HTMLTableCellElement>('thead .row-identity')];
+  for(const table of tables){
+    const rowHeader=table!.querySelector<HTMLElement>('thead .row-number')!;
+    rowHeader.style.width=rowHeader.style.minWidth=rowHeader.style.maxWidth='';
+    widths[0]=Math.max(widths[0]??0,parseFloat(getComputedStyle(rowHeader).minWidth));
+  }
+  const identityLimit=Math.max(1,Math.floor((Math.min(...grids.map(grid=>grid.clientWidth))-widths[0])*.45/Math.max(1,identities.length)));
   for(const table of tables){
     for(const row of table!.rows)for(const [index,cell]of [...row.cells].entries()){
-      if(!index){widths[0]=Math.max(widths[0]??0,cell.getBoundingClientRect().width);continue;}
+      if(!index)continue;
       const range=document.createRange(),text=document.createTreeWalker(cell,NodeFilter.SHOW_TEXT);
       let content=0;while(text.nextNode()){range.selectNodeContents(text.currentNode);content=Math.max(content,range.getBoundingClientRect().width);}
       const style=getComputedStyle(cell),padding=parseFloat(style.paddingLeft)+parseFloat(style.paddingRight)+parseFloat(style.borderLeftWidth)+parseFloat(style.borderRightWidth);
-      widths[index]=Math.max(widths[index]??0,Math.min(160,Math.ceil(content+padding)));
+      widths[index]=Math.max(widths[index]??0,Math.min(cell.classList.contains('row-identity')?identityLimit:160,Math.ceil(content+padding)));
     }
   }
   for(const table of tables){
     table!.style.width=widths.reduce((sum,width)=>sum+width,0)+'px';
-    for(const row of table!.rows)for(const [index,cell]of [...row.cells].entries())cell.style.width=cell.style.minWidth=cell.style.maxWidth=widths[index]+'px';
+    table!.style.minWidth='0';
+    for(const row of table!.rows)for(const [index,cell]of [...row.cells].entries()){
+      cell.style.width=cell.style.minWidth=cell.style.maxWidth=widths[index]+'px';
+      if(cell.classList.contains('row-identity'))cell.style.left=widths.slice(0,index).reduce((sum,width)=>sum+width,0)+'px';
+    }
   }
 }
+window.addEventListener('resize',fitPreviewColumns);
 function drawRegion(){
+  document.querySelector<HTMLElement>('.region-toolbar')!.hidden=regions.length<=1;
+  if(regions.length<=1)sharedDropdowns.get('region-picker')?.close();
   const chunk=regions[region],list=el('change-list');list.replaceChildren();
   el<HTMLSelectElement>('region-picker').value=String(region);
   el<HTMLButtonElement>('previous').disabled=region<=0;el<HTMLButtonElement>('next').disabled=region>=regions.length-1;
@@ -380,6 +400,50 @@ function drawRegion(){
   }
   choose(chunk!.differences.find(d=>d.id===selected)??chunk!.differences.find(d=>d.category==='value')??chunk!.differences[0],true);
 }
+function updateMergedFilter(ds:Difference[]){
+  const select=el<HTMLSelectElement>('change-filter');
+  const option=(label:string,count:number,group:Category|'all',kind='')=>{
+    const entry=new Option(`${label} (${count})`,JSON.stringify([group,kind]));
+    Object.assign(entry.dataset,{label,count:String(count),filterCategory:group,kind});
+    return entry;
+  };
+  select.replaceChildren(option('All changes',ds.length,'all'));
+  if(category==='all'&&specific)select.append(option(`All categories · ${specific}`,ds.filter(d=>d.label===specific).length,'all',specific));
+  for(const group of ['value','structure'] as const){
+    const label=group==='value'?'Values & formulas':'Structure',items=ds.filter(d=>d.category===group),kinds=new Map<string,number>();
+    const section=document.createElement('optgroup');section.label=label;
+    section.append(option(label,items.length,group));
+    for(const d of items)kinds.set(d.label,(kinds.get(d.label)??0)+1);
+    for(const [kind,count]of kinds)section.append(option(kind,count,group,kind));
+    select.append(section);
+  }
+  select.value=JSON.stringify([category,specific]);
+  select.disabled=false;
+  for(const button of document.querySelectorAll<HTMLButtonElement>('[data-category]'))button.setAttribute('aria-pressed',String(button.dataset.category===category));
+}
+function renderFilterOption(button:HTMLButtonElement,option:HTMLOptionElement){
+  if(button.getAttribute('role')==='option')button.setAttribute('aria-label',option.text);
+  else button.setAttribute('aria-description',option.text);
+  button.classList.add('change-filter-option');
+  button.classList.toggle('filter-subtype',!!option.dataset.kind);
+  button.replaceChildren();
+  if(option.dataset.filterCategory!=='all'){
+    const marker=document.createElement('i');marker.className=`swatch ${option.dataset.filterCategory==='value'?'amber':'violet'}`;marker.setAttribute('aria-hidden','true');button.append(marker);
+  }
+  const label=document.createElement('span');label.className='filter-option-label';label.textContent=option.dataset.label??option.text;
+  const count=document.createElement('span');count.className='count';count.textContent=option.dataset.count??'0';
+  button.append(label,count);
+  if(button.getAttribute('role')!=='option'){
+    const content=document.createElement('span');content.className='filter-option-content';content.append(...button.childNodes);button.append(content);
+  }
+}
+function updateFilterDesign(){
+  const merged=document.body.dataset.filterDesign==='dropdown';
+  document.querySelector<HTMLElement>('.categories')!.hidden=merged;
+  el('type-label').hidden=merged;el('combined-type-label').hidden=!merged;
+  sharedDropdowns.get(merged?'change-kind':'change-filter')?.close();
+}
+window.addEventListener('comparison-filter-design',updateFilterDesign);
 function drawScope(){
   el('sheet-name').textContent=scope.sheetName;el('scope-name').textContent=scope.name;
   const ds=scope.differences;el('all-count').textContent=String(ds.length);el('value-count').textContent=String(ds.filter(d=>d.category==='value').length);el('structure-count').textContent=String(ds.filter(d=>d.category==='structure').length);
@@ -390,6 +454,7 @@ function drawScope(){
   for(const [label,count]of kinds)type.append(new Option(`${label} (${count})`,label));
   if(category!=='value'&&!kinds.has('Hypothetical tag')){const option=new Option('Hypothetical tags (0)','Hypothetical tag');option.disabled=true;type.append(option);}
   type.value=specific;
+  updateMergedFilter(ds);
   const included=available.filter(d=>!specific||d.label===specific);
   regions=scope.sheetId==='@workbook'?(included.length?[{r1:0,r2:0,c1:0,c2:0,differences:included}]:[]):chunks(scope,included,Number(el<HTMLSelectElement>('context').value));
   const picker=el<HTMLSelectElement>('region-picker');picker.replaceChildren();
@@ -409,14 +474,15 @@ async function loadComparison(candidateLeft=left,candidateRight=right,onCommit:(
     scope=areas.find(s=>s.id===scope?.id)??areas.find(s=>s.leftTable&&s.differences.some(d=>d.category==='value'))??areas[0];
     const anchors=differences.filter(d=>isDateAnchorLabel(d.label)).length,mismatches=differences.filter(d=>d.label===anchorMismatchLabel).length,errors=differences.filter(d=>d.label===anchorErrorLabel).length;
     el('totals').textContent=`${differences.length.toLocaleString()} differences \u00b7 ${differences.filter(d=>d.category==='value').length.toLocaleString()} value / formula \u00b7 ${differences.filter(d=>d.category==='structure'&&!isDateAnchorLabel(d.label)).length.toLocaleString()} structural${anchors?` \u00b7 ${anchors.toLocaleString()} date anchors (${mismatches} differing dates${errors?`, ${errors} calculation errors`:''})`:''}`;
-    const summary=(book:Workbook)=>{let fixed=0,formula=0;for(const sheet of allSheets(book))for(const address of dayDateCells(book,sheet)){const cell=sheet.cells[address];if(cell?.formula)formula++;else if(typeof cell?.value==='number'&&cell.calculation)fixed++;}return `${fixed} fixed day dates with retained formulas; ${formula} calculated day dates`;};
-    el('date-summary').textContent=`Left: ${summary(left)}. Right: ${summary(right)}. Revision numbers count independent local edits, not global recency.`;
     if(!scope){
       regions=[];region=0;selected=undefined;specific='';
+      document.querySelector<HTMLElement>('.region-toolbar')!.hidden=true;
       el('navigation').replaceChildren();el('sheet-name').textContent='';el('scope-name').textContent='These copies match';
       grids.forEach(grid=>grid.innerHTML='<div class="empty">No stored differences.</div>');
       el('region-picker').replaceChildren();
       el('change-kind').replaceChildren(new Option('All change types (0)',''));
+      for(const id of ['all-count','value-count','structure-count'])el(id).textContent='0';
+      specific='';updateMergedFilter([]);
       for(const id of ['previous','next'])el<HTMLButtonElement>(id).disabled=true;
       el('change-list').replaceChildren();el('detail-title').textContent='No differences';
       for(const id of ['detail-left','detail-right','detail-location','left-range','right-range'])el(id).textContent='';
@@ -448,11 +514,13 @@ function setSource(side:'left'|'right',label:string,kind:string,commit?:string){
   document.querySelector<HTMLElement>(`.${side}-pane > header b`)!.textContent=kind;
   el(`${side}-grid`).setAttribute('aria-label',kind+' spreadsheet preview');
   el(`${side}-kind`).textContent=kind;
+  el(`${side}-detail-kind`).textContent=`${side==='left'?'Left':'Right'}: ${kind.replace(/ upload$/,'')}`;
   if(side==='right'){
-    el('source-commit').textContent=commit?`GitHub commit: ${commit}`:'';
-    el('source-commit').hidden=!commit;
+    el('right-source-commit').textContent=commit?`Main: ${commit}`:'';
+    el('right-source-commit').hidden=!commit;
+    el('right-source-fetched').textContent='';el('right-source-fetched').hidden=true;
   }
-  el('source-freshness').textContent='A comparison source was changed. Only the selected snapshot\'s upload time is known; it is not necessarily the workbook\'s last-edit time.';
+  el(`${side}-source-freshness`).textContent=kind.endsWith(' upload')?`Uploaded: ${label}.`:label;
 }
 for(const side of ['left','right'] as const)el<HTMLInputElement>(`${side}-file`).onchange=async()=>{
   if(sourcesBusy)return;
@@ -536,7 +604,7 @@ el<HTMLFormElement>('snapshot-connect').onsubmit=async event=>{
       for(const file of files){const option=new Option(`${snapshotDate(file.time)} [${file.device}]`,file.path);option.dataset.date=snapshotDate(file.time);option.dataset.device=file.device;select.append(option);}
       control.refresh();
     }
-    el('snapshot-status').textContent=`${files.length} uploaded copies, newest first. Dates use this device's time zone. Upload time is not last-edit time.`;
+    el('snapshot-status').textContent=`${files.length} uploaded copies, newest first. Dates use this device's time zone.`;
   }catch(error){el('snapshot-status').textContent=`Uploaded copies could not be listed. Previous comparison retained. ${error instanceof Error?error.message:String(error)}`;}
   finally{setSourcesBusy(false);}
 };
@@ -547,7 +615,13 @@ document.querySelectorAll<HTMLButtonElement>('[data-category]').forEach(button=>
 el('previous').onclick=()=>{if(region>0){region--;drawRegion();}};
 el('next').onclick=()=>{if(region+1<regions.length){region++;drawRegion();}};
 el('context').onchange=()=>{region=0;if(scope)drawScope();};
+el('first-cell').onchange=()=>{if(scope)drawRegion();};
 el('change-kind').onchange=()=>{specific=el<HTMLSelectElement>('change-kind').value;region=0;if(scope)drawScope();};
+el('change-filter').onchange=()=>{
+  const option=el<HTMLSelectElement>('change-filter').selectedOptions[0];
+  category=option.dataset.filterCategory as Category|'all';specific=option.dataset.kind??'';region=0;selected=undefined;
+  if(scope)drawScope();
+};
 el('region-picker').onchange=()=>{region=Number(el<HTMLSelectElement>('region-picker').value);drawRegion();};
 el('choice-scope').onchange=updateChoices;
 el('keep-scope').onchange=updateChoices;
@@ -567,7 +641,10 @@ el('next-unresolved').onclick=()=>{
   const difference=differences.find(d=>!choices.has(d.id));if(!difference)return;
   el<HTMLDialogElement>('choice-review').close();jumpToDifference(difference);
 };
-for(const id of ['context','change-kind','region-picker','choice-scope','keep-scope'])sharedDropdowns.set(id,mountSelectDropdown(el<HTMLSelectElement>(id),id==='keep-scope'?{fitOptions:true}:undefined));
+for(const id of ['context','change-kind','region-picker','choice-scope','keep-scope'])sharedDropdowns.set(id,mountSelectDropdown(el<HTMLSelectElement>(id),id==='keep-scope'||id==='change-kind'?{fitOptions:true}:undefined));
+sharedDropdowns.set('change-filter',mountSelectDropdown(el<HTMLSelectElement>('change-filter'),{renderOption:renderFilterOption,fitOptions:true}));
+updateFilterDesign();
+document.querySelectorAll('.source-details>summary,.bulk-disclosure>summary').forEach(summary=>summary.insertAdjacentHTML('afterbegin',navigationIcon('next')));
 el('previous').innerHTML=toolbarIcon('previous');el('next').innerHTML=toolbarIcon('next');
 document.querySelectorAll('.file-action').forEach(label=>label.insertAdjacentHTML('afterbegin',toolbarIcon('attach')));
 let expected:[number,number][]=[[-1,-1],[-1,-1]];
@@ -586,8 +663,10 @@ async function start(){
     const localTime=(time:string)=>sourceTime(time,meta.displayTimeZone);
     setSource('left',meta.leftUploadedAt?localTime(meta.leftUploadedAt):meta.left,meta.leftDevice?`${meta.leftDevice} upload`:'Your backup',meta.leftCommit);
     setSource('right',meta.rightCommittedAt?`Committed ${localTime(meta.rightCommittedAt)}`:meta.right,meta.rightCommit||meta.rightCommittedAt?'GitHub':'Right copy',meta.rightCommit);
-    el('source-freshness').textContent=meta.leftUploadedAt&&meta.rightCommittedAt?`${meta.leftDevice} snapshot uploaded: ${localTime(meta.leftUploadedAt)}. Main GitHub workbook committed: ${localTime(meta.rightCommittedAt)}; fetched: ${localTime(meta.retrievedAt)}. Upload time is not the workbook's last-edit time. Neither divergent copy is automatically authoritative.`:
-      meta.leftSavedAt&&meta.rightCommittedAt?`Backup saved: ${localTime(meta.leftSavedAt)}. GitHub committed: ${localTime(meta.rightCommittedAt)}; fetched: ${localTime(meta.retrievedAt)}. GitHub was saved later but may contain older date behavior. Neither divergent copy is automatically authoritative.`:'Save/commit times are unavailable for these sources; retrieval time alone cannot establish which workbook is newer.';
+    el('left-source-freshness').textContent=meta.leftUploadedAt?`Uploaded: ${localTime(meta.leftUploadedAt)}.`:meta.leftSavedAt?`Saved: ${localTime(meta.leftSavedAt)}.`:meta.left;
+    el('right-source-freshness').textContent=meta.rightCommittedAt?`Committed ${localTime(meta.rightCommittedAt)}.`:meta.right;
+    el('right-source-fetched').textContent=meta.retrievedAt?`Fetched: ${localTime(meta.retrievedAt)}.`:'';
+    el('right-source-fetched').hidden=!meta.retrievedAt;
     await loadComparison();
   }catch(error){showError(error);el('totals').textContent='Comparison unavailable';document.body.dataset.loading='false';el('workspace').setAttribute('aria-busy','false');}
   finally{setSourcesBusy(false);}
