@@ -189,10 +189,16 @@ remain viewable only in history.
   Switching sheets preserves its open state and scroll. Calculated fields use
   the grid's lighter text; icon-only controls remain square on desktop and touch.
   Food opens the shared picker from anywhere in the field unless manual input
-  is selected; large option sets scroll continuously without a pager.
+  is selected; + Food opens it automatically for the new row. Picker search
+  focuses immediately on touch as well as desktop, retaining the keyboard-aware
+  footer; remembered manual mode focuses Food directly instead. Sheet tabs stay
+  hidden while the keyboard is open, including overlay-keyboard layouts.
+  Large option sets scroll continuously without a pager.
   **Weight**, above the foods, maps to the selected day-summary row's `Weight`.
   **Grams** maps to Master `Amount (g)`; choosing a linked Meals entry collapses
   Grams/Amount/Unit behind a shared chevron.
+  An inherited Grams formula's zero is shown as blank while Amount/Unit are
+  empty, without removing its calculation. Explicitly entered zero stays zero.
   Collapsed **Notes**, directly below Grams/Amount/Unit, maps to `Exercise` and
   preserves literal multiline content. Nutrition summaries round upward to
   whole numbers; field values themselves retain precision. Today and the

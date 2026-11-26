@@ -1,5 +1,7 @@
 import {allTables,type Workbook} from './model';
 
+export const virtualKeyboard=typeof navigator==='undefined'?undefined:(navigator as Navigator&{virtualKeyboard?:EventTarget&{readonly boundingRect:DOMRectReadOnly}}).virtualKeyboard;
+
 const numericFields=new Map<string,ReadonlySet<string>>([
   ['master',new Set(['weight','amount (g)','amount'])],
   ['meals',new Set(['amount (g)','amount'])],

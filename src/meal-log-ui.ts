@@ -2,6 +2,7 @@ import './meal-log.css';
 import {dropdownArrowHtml} from './dropdown-ui';
 import {navigationIcon,toolbarIcon} from './icons';
 import {mealFields,type MealField} from './meal-log';
+import {virtualKeyboard} from './touch-keyboard';
 
 export interface MealLogView{
   header:string;date:string;totals:string;undo:boolean;redo:boolean;busy:boolean;
@@ -39,7 +40,8 @@ export function mountMealLog(host:MealLogHost){
     if(!element.isConnected||!touch()){element.style.removeProperty('top');element.style.removeProperty('height');return;}
     const viewport=window.visualViewport,top=Math.max(viewport?.offsetTop??0,document.querySelector('.app-header')?.getBoundingClientRect().bottom??0);
     const height=viewport?.height??innerHeight;if(!focusMode)fullHeight=height;
-    const bottom=(viewport?.offsetTop??0)+height,keyboard=innerHeight-height>80||focusMode&&fullHeight-height>80;
+    const viewportBottom=(viewport?.offsetTop??0)+height,bounds=virtualKeyboard?.boundingRect,overlay=!!bounds&&bounds.height>0&&bounds.top<viewportBottom&&bounds.bottom>top;
+    const bottom=overlay?Math.max(top,bounds.top):viewportBottom,keyboard=overlay||innerHeight-height>80||focusMode&&fullHeight-height>80;
     document.body.classList.toggle('meal-log-keyboard',keyboard);
     const tabs=keyboard?0:document.querySelector('.sheet-bar')?.getBoundingClientRect().height??0;
     element.style.top=top+'px';element.style.height=Math.max(0,bottom-top-tabs)+'px';
@@ -60,6 +62,14 @@ export function mountMealLog(host:MealLogHost){
       input?.scrollIntoView({block:'nearest'});
       if(focus)input?.focus({preventScroll:true});
     }
+  };
+  const openPicker=(row:string,field:MealField,anchor:HTMLElement)=>{
+    active={row,field};host.dropdown(row,field,anchor);
+  };
+  const startFood=(row:string)=>{
+    reveal(row,'food',true);
+    const input=fieldInput(row,'food');
+    if(input&&!input.disabled&&input.dataset.logManual!=='true')openPicker(row,'food',input.closest<HTMLElement>('.meal-log-input')!);
   };
   const update=()=>{
     const view=host.view(),before=active&&fieldInput(active.row,active.field),focused=before===document.activeElement,caret=before?[before.selectionStart,before.selectionEnd]:undefined;
@@ -123,15 +133,20 @@ export function mountMealLog(host:MealLogHost){
     dirty.add(input);if(event instanceof InputEvent&&event.isComposing)return;
     write(input);
   });
-  element.addEventListener('focusout',()=>queueMicrotask(()=>{
+  const syncFocus=()=>{
     const target=document.activeElement;
-    if(!(target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement)||!target.dataset.logField||!element.contains(target)){focusMode=false;button('Next field').hidden=true;}
-  }));
+    focusMode=(target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement)&&element.isConnected&&(element.contains(target)||!!target.closest('[data-meal-log-picker]'));
+    button('Next field').hidden=!touch()||!focusMode;position();
+  };
+  document.addEventListener('focusin',syncFocus,{signal:controller.signal});
+  document.addEventListener('focusout',()=>queueMicrotask(syncFocus),{signal:controller.signal});
   element.addEventListener('compositionend',event=>{const input=event.target;if((input instanceof HTMLInputElement||input instanceof HTMLTextAreaElement)&&input.dataset.logField)write(input);});
   element.addEventListener('pointerdown',event=>{
-    const target=event.target;if(!(target instanceof Element)||target.closest('button'))return;
+    const target=event.target;if(!(target instanceof Element))return;
+    if(touch()&&target.closest('[data-log-add],[data-log-insert],[data-log-dropdown]'))event.preventDefault();
+    if(target.closest('button'))return;
     const input=target.closest('.meal-log-field')?.querySelector<HTMLInputElement>('input[data-log-field="food"]');
-    if(input&&!input.disabled&&input.dataset.logManual!=='true'){event.preventDefault();host.dropdown(input.dataset.logRow!,'food',input.closest<HTMLElement>('.meal-log-input')!);}
+    if(input&&!input.disabled&&input.dataset.logManual!=='true'){event.preventDefault();openPicker(input.dataset.logRow!,'food',input.closest<HTMLElement>('.meal-log-input')!);}
   });
   element.addEventListener('keydown',event=>{
     if(event.isComposing)return;
@@ -144,7 +159,7 @@ export function mountMealLog(host:MealLogHost){
   element.addEventListener('click',event=>{
     const target=event.target instanceof Element?event.target.closest<HTMLButtonElement>('button'):null;if(!target)return;
     const row=target.closest<HTMLElement>('[data-log-card]')?.dataset.logCard;
-    if(target.dataset.logDropdown&&row){host.dropdown(row,target.dataset.logDropdown as MealField,target.closest<HTMLElement>('.meal-log-input')!);return;}
+    if(target.dataset.logDropdown&&row){openPicker(row,target.dataset.logDropdown as MealField,target.closest<HTMLElement>('.meal-log-input')!);return;}
     if(target.hasAttribute('data-log-insert')&&row){host.add(row);return;}
     if(target.hasAttribute('data-log-add')){host.add();return;}
     if(target.hasAttribute('data-log-today')){host.today();return;}
@@ -166,13 +181,14 @@ export function mountMealLog(host:MealLogHost){
   window.addEventListener('resize',position,{signal:controller.signal});
   window.visualViewport?.addEventListener('resize',()=>{position();if(active)reveal(active.row,active.field);},{signal:controller.signal});
   window.visualViewport?.addEventListener('scroll',position,{signal:controller.signal});
+  virtualKeyboard?.addEventListener('geometrychange',position,{signal:controller.signal});
   const foodMode=(row:string,manual:boolean)=>{
     if(manual)expanded.delete(row);
     for(const key of quantitiesExpanded)if(key.startsWith(row+':'))quantitiesExpanded.delete(key);
     const card=element.querySelector<HTMLElement>(`[data-log-card="${row}"]`);
     for(const details of card?.querySelectorAll<HTMLDetailsElement>(manual?'.meal-log-macros,.meal-log-quantities':'.meal-log-quantities')??[])details.open=false;
   };
-  return{element,refresh:()=>{try{update();}catch(error){host.error(error);}},reveal,foodMode,bottom:()=>{pendingBottom=true;restoreScroll();},rememberScroll:()=>{if(element.isConnected)savedScroll=scroll.scrollTop;},restoreScroll,dispose:()=>{controller.abort();cancelAnimationFrame(scrollFrame);element.remove();document.body.classList.remove('meal-log-keyboard');},restoreFocus:()=>{
+  return{element,refresh:()=>{try{update();}catch(error){host.error(error);}},reveal,startFood,foodMode,bottom:()=>{pendingBottom=true;restoreScroll();},rememberScroll:()=>{if(element.isConnected)savedScroll=scroll.scrollTop;},restoreScroll,dispose:()=>{controller.abort();cancelAnimationFrame(scrollFrame);element.remove();document.body.classList.remove('meal-log-keyboard');},restoreFocus:()=>{
     if(active&&focusMode)fieldInput(active.row,active.field)?.focus({preventScroll:true});
   }};
 }

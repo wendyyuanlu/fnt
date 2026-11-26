@@ -111,6 +111,96 @@ test('public-sized food reordering finishes promptly and keeps stable row identi
   const duration=Date.now()-started;console.info('Meal log 84,000-cell reorder',test.info().project.name,duration);
   test.info().annotations.push({type:'meal-reorder-ms',description:String(duration)});expect(duration).toBeLessThan(2000);
   await panel.getByRole('button',{name:'Undo',exact:true}).click();await expect(panel.locator('[data-log-card]').last()).toHaveAttribute('data-log-card',fixture.latest);
+  const adding=Date.now();await panel.locator('.meal-log-footer [data-log-add]').click();
+  await expect(page.getByRole('searchbox',{name:'Search dropdown options',exact:true})).toBeFocused();
+  const addDuration=Date.now()-adding;console.info('Meal log 84,000-cell add and picker',test.info().project.name,addDuration);
+  expect(addDuration).toBeLessThan(2000);await expect(panel.locator('[data-log-card]')).toHaveCount(before.length+1);
+});
+
+test('+ Food and picker taps focus the keyboard target immediately, retain keyboard layout, and honor remembered manual mode',async({page,isMobile})=>{
+  const fixture=await setup(page);await page.locator('#meal-log').click();
+  const panel=page.locator('.meal-log-panel'),search=page.getByRole('searchbox',{name:'Search dropdown options',exact:true});
+  await panel.locator('[data-log-card]').last().getByRole('textbox',{name:'Food',exact:true}).click();await expect(search).toBeFocused();
+  await page.locator('.cell-dropdown [role="option"]').first().click();
+  const grams=panel.locator('[data-log-card]').last().getByRole('textbox',{name:'Grams',exact:true});
+  await grams.click();await grams.fill('321');
+  if(isMobile)await page.evaluate(()=>{
+    const viewport=window.visualViewport!,original=Object.getOwnPropertyDescriptor(window,'innerHeight')!;
+    Object.defineProperty(viewport,'height',{configurable:true,value:innerHeight-300});
+    Object.defineProperty(window,'innerHeight',{configurable:true,get:()=>viewport.height});
+    document.addEventListener('restore-entry-viewport',()=>{Object.defineProperty(window,'innerHeight',original);Reflect.deleteProperty(viewport,'height');viewport.dispatchEvent(new Event('resize'));},{once:true});
+    viewport.dispatchEvent(new Event('resize'));
+  });
+  await panel.locator('.meal-log-footer [data-log-add]').click();await expect(search).toBeFocused();
+  await expect(panel.locator('[data-log-card]').last().getByRole('textbox',{name:'Grams',exact:true})).toHaveValue('');
+  if(isMobile){
+    await expect(page.locator('.sheet-bar')).toBeHidden();
+    const bottom=await page.evaluate(()=>window.visualViewport!.offsetTop+window.visualViewport!.height),footer=(await panel.locator('.meal-log-footer').boundingBox())!;
+    expect(footer.y+footer.height).toBeLessThanOrEqual(bottom+1);
+  }
+  await search.fill('oat');await page.getByRole('button',{name:'Custom',exact:true}).click();
+  await expect(panel.locator('[data-log-card]').last().getByRole('textbox',{name:'Food',exact:true})).toBeFocused();
+  await panel.locator('[data-log-card]').first().locator('[data-log-insert]').click();
+  await expect(page.locator('.cell-dropdown')).toHaveCount(0);
+  await expect(panel.locator('[data-log-card]').nth(1).getByRole('textbox',{name:'Food',exact:true})).toBeFocused();
+  await read(page,fixture.sheet);
+  if(isMobile)await page.evaluate(()=>document.dispatchEvent(new Event('restore-entry-viewport')));
+  await page.reload();await page.locator('#meal-log').click();await panel.locator('.meal-log-footer [data-log-add]').click();
+  await expect(page.locator('.cell-dropdown')).toHaveCount(0);await expect(panel.locator('[data-log-card]').last().getByRole('textbox',{name:'Food',exact:true})).toBeFocused();
+});
+
+test('empty inherited Grams stays blank without losing its formula; explicit zero and entered conversion quantities remain visible',async({page})=>{
+  const fixture=await setup(page);
+  await page.evaluate(async id=>{
+    const module='/src/storage.ts',{Store}=await import(/* @vite-ignore */module) as typeof import('../../src/storage'),store=await Store.open();
+    try{const state=(await store.load())!,table=state.book.tables.find(table=>table.id===id)!;table.columns.find(column=>column.name==='Amount (g)')!.formulaDefault='=IF([@Amount]="",0,[@Amount]*100)';await store.save(state.book,state.version,'Invented Grams conversion');}finally{store.close();}
+  },fixture.table);
+  await page.reload();await page.locator('#meal-log').click();
+  const panel=page.locator('.meal-log-panel');await expect(panel.locator('[data-log-card]').last().getByRole('textbox',{name:'Grams',exact:true})).toHaveValue('300');
+  await panel.locator('.meal-log-footer [data-log-add]').click();await page.locator('.cell-dropdown [role="option"]').first().click();
+  const card=panel.locator('[data-log-card]').last(),grams=card.getByRole('textbox',{name:'Grams',exact:true});
+  await expect(grams).toHaveValue('');
+  const cell=async()=>{const state=await read(page,fixture.sheet),table=state.book.tables.find((table:{id:string})=>table.id===fixture.table)!;return state.sheet.cells[`${await card.getAttribute('data-log-card')}:${table.columns.find((column:{name:string})=>column.name==='Amount (g)')!.column}`];};
+  expect((await cell()).formula).toBeTruthy();await grams.fill('0');expect((await cell()).value).toBe(0);await expect(grams).toHaveValue('0');
+  await panel.getByRole('button',{name:'Undo',exact:true}).click();await expect(grams).toHaveValue('');expect((await cell()).formula).toBeTruthy();
+  await grams.press('Enter');await expect(card.getByRole('textbox',{name:'Amount',exact:true})).toBeFocused();expect((await cell()).formula).toBeTruthy();
+  await card.getByRole('textbox',{name:'Amount',exact:true}).fill('2');await expect(grams).toHaveValue('200');
+  await card.getByRole('textbox',{name:'Amount',exact:true}).fill('0');await expect(grams).toHaveValue('0');
+});
+
+test('Meal log hides sheet tabs for an overlay keyboard and keeps only its action footer above the keyboard',async({page,isMobile})=>{
+  test.skip(!isMobile,'Touch overlay keyboard geometry.');
+  await page.addInitScript(()=>{
+    const keyboard=Object.assign(new EventTarget(),{boundingRect:new DOMRect(0,0,0,0)});
+    Object.defineProperty(navigator,'virtualKeyboard',{configurable:true,value:keyboard});
+  });
+  await setup(page);await page.locator('#meal-log').click();
+  const panel=page.locator('.meal-log-panel'),footer=panel.locator('.meal-log-footer'),search=page.getByRole('searchbox',{name:'Search dropdown options',exact:true});
+  await panel.locator('[data-log-card]').last().getByRole('textbox',{name:'Food',exact:true}).tap();await expect(search).toBeFocused();
+  await page.evaluate(()=>{
+    const keyboard=(navigator as Navigator&{virtualKeyboard:EventTarget&{boundingRect:DOMRect}}).virtualKeyboard;
+    keyboard.boundingRect=new DOMRect(0,460,innerWidth,innerHeight-460);keyboard.dispatchEvent(new Event('geometrychange'));
+  });
+  await expect(page.locator('.sheet-bar')).toBeHidden();await expect.poll(async()=>Math.round((await footer.boundingBox())!.y+(await footer.boundingBox())!.height)).toBe(460);
+  const popup=(await page.locator('.cell-dropdown').boundingBox())!;expect(popup.y+popup.height).toBeLessThanOrEqual((await footer.boundingBox())!.y);
+  await footer.locator('[data-log-add]').tap();await expect(search).toBeFocused();await expect(page.locator('.sheet-bar')).toBeHidden();
+  await page.evaluate(()=>{
+    const keyboard=(navigator as Navigator&{virtualKeyboard:EventTarget&{boundingRect:DOMRect}}).virtualKeyboard;
+    keyboard.boundingRect=new DOMRect(0,0,0,0);keyboard.dispatchEvent(new Event('geometrychange'));
+  });
+  await expect(page.locator('.sheet-bar')).toBeVisible();await expect(page.locator('#error')).toBeHidden();
+});
+
+test('Meal log keeps sheet tabs hidden while picker search uses a resized Chrome keyboard viewport',async({page,isMobile})=>{
+  test.skip(!isMobile,'Chrome resizes both viewports for its keyboard.');
+  await setup(page);await page.locator('#meal-log').click();
+  const panel=page.locator('.meal-log-panel'),original=page.viewportSize()!,footer=panel.locator('.meal-log-footer'),search=page.getByRole('searchbox',{name:'Search dropdown options',exact:true});
+  await panel.locator('.meal-log-footer [data-log-add]').tap();await expect(search).toBeFocused();
+  await page.setViewportSize({width:original.width,height:460});
+  await expect(page.locator('.sheet-bar')).toBeHidden();await expect.poll(async()=>Math.round((await footer.boundingBox())!.y+(await footer.boundingBox())!.height)).toBe(460);
+  const popup=(await page.locator('.cell-dropdown').boundingBox())!;expect(popup.y+popup.height).toBeLessThanOrEqual((await footer.boundingBox())!.y);
+  await footer.locator('[data-log-add]').tap();await expect(search).toBeFocused();await expect(page.locator('.sheet-bar')).toBeHidden();
+  await page.setViewportSize(original);await expect(page.locator('.sheet-bar')).toBeVisible();
 });
 
 test('Weight writes the summary row, not food Grams, and linked Meals quantities start collapsed with stable source identities',async({page})=>{
@@ -159,7 +249,7 @@ test('Meal log matches the sketch layout and live fields, uses the shared picker
   await panel.locator('.meal-log-footer [data-log-add]').click();
   await expect(panel.locator('[data-log-card]')).toHaveCount(2);
   const card=panel.locator('[data-log-card]').last();
-  await expect(card.getByRole('textbox',{name:'Food',exact:true})).toBeFocused();
+  await expect(page.getByRole('searchbox',{name:'Search dropdown options',exact:true})).toBeFocused();
   await card.getByRole('button',{name:'Choose Food',exact:true}).click();
   await expect(page.locator('.cell-dropdown [role="listbox"]')).toBeVisible();
   await page.getByRole('button',{name:'Custom',exact:true}).click();
