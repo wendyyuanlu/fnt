@@ -83,6 +83,7 @@ function updateChoices(){
   el('selection-progress').title=`${sourceName('left')}: ${leftCount}; ${sourceName('right')}: ${rightCount}. ${lastChoiceMessage}`;
   el<HTMLButtonElement>('undo-choice').disabled=!choiceHistory.length;
   el<HTMLButtonElement>('reset-choices').disabled=!choices.size;
+  for(const id of ['submit-decision','review-submit'])el<HTMLButtonElement>(id).disabled=!host?.apply||!choices.size||sourcesBusy;
   const targets=choiceTargets(),count=targets.filter(d=>choices.has(d.id)).length;
   el('choice-target-count').textContent=`${targets.length} changes · ${count} chosen`;
   const place=scope?.leftTable||scope?.rightTable?`${scope.name} table`:scope?.sheetId==='@workbook'?'workbook settings':`${scope?.sheetName??'current sheet'} outside tables`;
@@ -155,6 +156,11 @@ function showChoiceReview(){
   const dialog=el<HTMLDialogElement>('choice-review'),groups=el('review-groups');groups.replaceChildren();
   const structural=differences.filter(d=>d.category==='structure'&&choices.has(d.id)).length;
   el('review-summary').textContent=`${choices.size} chosen · ${differences.length-choices.size} undecided · ${structural} structural choices need dependency review.`;
+  el<HTMLButtonElement>('apply-selection').disabled=!host?.apply||!choices.size||sourcesBusy;
+  el('apply-error').hidden=true;
+  const destination=host?.syncDestination?.();
+  el('apply-sync-label').hidden=!destination;el('apply-sync-destination').textContent=destination??'';
+  el('apply-note').textContent=host?.apply?'Unchosen differences keep the left copy. Submit decision opens confirmation; nothing changes until you confirm. Both sources and a full pre-apply recovery archive are saved before replacement.':'This standalone preview cannot replace a workbook. Open comparison from Recovery in the website to apply selections.';
   for(const area of areas){
     const section=document.createElement('details'),summary=document.createElement('summary');
     const decided=area.differences.filter(d=>choices.has(d.id));
@@ -170,6 +176,15 @@ function showChoiceReview(){
   }
   el<HTMLButtonElement>('next-unresolved').disabled=choices.size===differences.length;
   dialog.showModal();
+}
+function confirmSelection(){
+  if(sourcesBusy||!host?.apply||!choices.size)return;
+  el<HTMLDialogElement>('choice-review').close();
+  const destination=host.syncDestination?.();
+  el('apply-sync-label').hidden=!destination;el('apply-sync-destination').textContent=destination??'';
+  el('submit-summary').textContent=`${choices.size} decisions will be applied. ${differences.length-choices.size} unchosen differences keep the left copy. Structural or formula dependency conflicts will stop submission without replacing either workbook.`;
+  el('apply-error').hidden=true;el<HTMLButtonElement>('apply-selection').disabled=false;
+  el<HTMLDialogElement>('submit-confirmation').showModal();
 }
 const grids=[el('left-grid'),el('right-grid')];
 const escape=(value:unknown)=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
@@ -617,6 +632,7 @@ function setSourcesBusy(busy:boolean){
   for(const {side,select,control}of snapshotControls){
     select.disabled=unavailable||side!==snapshotSide||!uploadedFiles.length;control.refresh();
   }
+  for(const id of ['submit-decision','review-submit'])el<HTMLButtonElement>(id).disabled=busy||!host?.apply||!choices.size;
 }
 el<HTMLFormElement>('snapshot-connect').onsubmit=async event=>{
   event.preventDefault();
@@ -664,6 +680,27 @@ el('reset-choices').onclick=()=>{
   if(!choices.size)return;choiceHistory.push(new Map(choices));choices.clear();lastChoiceMessage='All choices reset. Undo can restore them.';updateChoices();
 };
 el('review-choices').onclick=showChoiceReview;
+el('submit-decision').onclick=confirmSelection;
+el('review-submit').onclick=confirmSelection;
+el('submit-back').onclick=()=>el<HTMLDialogElement>('submit-confirmation').close();
+el('submit-review').onclick=()=>{el<HTMLDialogElement>('submit-confirmation').close();showChoiceReview();};
+el('apply-selection').onclick=async()=>{
+  if(!host?.apply||sourcesBusy)return;
+  setSourcesBusy(true);
+  for(const id of ['submit-back','submit-review','apply-sync'])el<HTMLButtonElement|HTMLInputElement>(id).disabled=true;
+  const button=el<HTMLButtonElement>('apply-selection');button.disabled=true;button.textContent='Applying and saving recovery...';
+  el('apply-error').hidden=true;
+  try{
+    await host.apply({left:structuredClone(left),right:structuredClone(right),choices:[...choices].map(([id,side])=>({id,side})),sync:!el('apply-sync-label').hidden&&el<HTMLInputElement>('apply-sync').checked});
+    host.close();
+  }catch(error){
+    el('apply-error').hidden=false;el('apply-error').textContent=error instanceof Error?error.message:String(error);
+  }finally{
+    setSourcesBusy(false);button.textContent='Submit decision';button.disabled=!choices.size;
+    for(const id of ['submit-back','submit-review','apply-sync'])el<HTMLButtonElement|HTMLInputElement>(id).disabled=false;
+  }
+};
+el<HTMLDialogElement>('submit-confirmation').oncancel=event=>{if(sourcesBusy)event.preventDefault();};
 el('review-close').onclick=()=>el<HTMLDialogElement>('choice-review').close();
 el('next-unresolved').onclick=()=>{
   const difference=differences.find(d=>!choices.has(d.id));if(!difference)return;

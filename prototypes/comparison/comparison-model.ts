@@ -2,9 +2,19 @@ import {allSheets,allTables,isFault,type Workbook,type Sheet,type Table,type Cel
 import {Engine,scalar} from '../../src/formula';
 
 export type Category='value'|'structure';
+export type MergeTarget=
+  |{kind:'cell';sheet:string;address:string;part:'content'|'metadata'|'date'|'whole'|'format'}
+  |{kind:'sheet';id:string;property?:string}
+  |{kind:'axis';sheet:string;axis:'row'|'column';id:string;property?:string;table?:string}
+  |{kind:'order';sheet:string;axis:'row'|'column';id:string}
+  |{kind:'group'|'validation';sheet:string;id:string}
+  |{kind:'table';id:string;property?:string}
+  |{kind:'workbook';property:string}
+  |{kind:'workbook-order';property:'sheets'|'dd-sheets'|'tables'};
 export interface Difference{
   id:number;category:Category;label:string;sheet:string;table?:string;
   rows:string[];columns:string[];address?:string;left:unknown;right:unknown;
+  target?:MergeTarget;
 }
 export interface Scope{
   id:string;sheetId:string;sheetName:string;name:string;left?:Sheet;right?:Sheet;
@@ -104,17 +114,17 @@ export async function compare(left:Workbook,right:Workbook,progress:(checked:num
   }));
   let checked=0,last=performance.now();
   const breathe=async()=>{if(performance.now()-last>12){progress(checked);await new Promise(resolve=>setTimeout(resolve,0));last=performance.now();}};
-  const add=(category:Category,label:string,sheet:string,rows:string[],columns:string[],a:unknown,b:unknown,table?:string,address?:string)=>{
-    differences.push({id:differences.length,category,label,sheet,table,rows,columns,left:a,right:b,address});
+  const add=(category:Category,label:string,sheet:string,rows:string[],columns:string[],a:unknown,b:unknown,table?:string,address?:string,target?:MergeTarget)=>{
+    differences.push({id:differences.length,category,label,sheet,table,rows,columns,left:a,right:b,address,target});
   };
   for(const sheetId of new Set([...ls.keys(),...rs.keys()])){
     const a=ls.get(sheetId),b=rs.get(sheetId),rowsA=new Map(a?.rows.map(r=>[r.id,r])),rowsB=new Map(b?.rows.map(r=>[r.id,r]));
     const colsA=new Map(a?.columns.map(c=>[c.id,c])),colsB=new Map(b?.columns.map(c=>[c.id,c]));
     const dates=new Set([...(a?dayDateCells(left,a):[]),...(b?dayDateCells(right,b):[])]);
-    if(!a||!b)add('structure',a?'Sheet only in left copy':'Sheet only in right copy',sheetId,[],[],a?.name,b?.name);
-    if(a&&b&&a.name!==b.name)add('structure','Sheet renamed',sheetId,[],[],a.name,b.name);
-    for(const property of ['dayLogging','pagination'] as const)if(!equal(a?.[property],b?.[property]))add('structure',property==='dayLogging'?'Day logging settings':'Date navigation settings',sheetId,[],[],a?.[property],b?.[property]);
-    for(const [property,before,after]of changedProperties(a,b,['id','name','cells','rows','columns','groups','validations','dayLogging','pagination']))add('structure',`Sheet ${property} changed`,sheetId,[],[],before,after);
+    if(!a||!b)add('structure',a?'Sheet only in left copy':'Sheet only in right copy',sheetId,[],[],a?.name,b?.name,undefined,undefined,{kind:'sheet',id:sheetId});
+    if(a&&b&&a.name!==b.name)add('structure','Sheet renamed',sheetId,[],[],a.name,b.name,undefined,undefined,{kind:'sheet',id:sheetId,property:'name'});
+    for(const property of ['dayLogging','pagination'] as const)if(!equal(a?.[property],b?.[property]))add('structure',property==='dayLogging'?'Day logging settings':'Date navigation settings',sheetId,[],[],a?.[property],b?.[property],undefined,undefined,{kind:'sheet',id:sheetId,property});
+    for(const [property,before,after]of changedProperties(a,b,['id','name','cells','rows','columns','groups','validations','dayLogging','pagination']))add('structure',`Sheet ${property} changed`,sheetId,[],[],before,after,undefined,undefined,{kind:'sheet',id:sheetId,property});
     for(const address of new Set([...Object.keys(a?.cells??{}),...Object.keys(b?.cells??{})])){
       const ca=a?.cells[address],cb=b?.cells[address];checked++;
       if(!equal(ca,cb)){
@@ -131,10 +141,10 @@ export async function compare(left:Workbook,right:Workbook,progress:(checked:num
           const formulaLabel=onlyFormula&&plain?.calculation&&equal(plain.calculation,active)?'Retained formula activated / deactivated':
             onlyFormula&&(plain?.value===undefined||plain.value===null||plain.value==='')?'Formula added / removed':'Formula changed';
           const label=dateAnchor?dateLabel:!present?'Added or removed cell':!equal(ca?.formula,cb?.formula)?formulaLabel:!equal(ca?.binding,cb?.binding)?'Linked source changed':!equal(ca?.note,cb?.note)&&equal(ca?.value,cb?.value)?'Note changed':'Value changed';
-          add(present&&!dateAnchor?'value':'structure',label,sheetId,[row],[column],ca,cb,owner?.id,address);
+          add(present&&!dateAnchor?'value':'structure',label,sheetId,[row],[column],ca,cb,owner?.id,address,{kind:'cell',sheet:sheetId,address,part:dateAnchor?'date':!present?'whole':'content'});
         }
         const ma=dateAnchor?anchorMetadata(ca):metadata(ca),mb=dateAnchor?anchorMetadata(cb):metadata(cb);
-        if(present&&!equal(ma,mb))add('structure','Cell formatting or retained calculation',sheetId,[row],[column],ma,mb,owner?.id,address);
+        if(present&&!equal(ma,mb))add('structure','Cell formatting or retained calculation',sheetId,[row],[column],ma,mb,owner?.id,address,{kind:'cell',sheet:sheetId,address,part:dateAnchor?'format':'metadata'});
       }
       if(checked%200===0)await breathe();
     }
@@ -142,7 +152,7 @@ export async function compare(left:Workbook,right:Workbook,progress:(checked:num
       const ma=new Map<string,typeof aa[number]>(aa.map(x=>[x.id,x])),mb=new Map<string,typeof bb[number]>(bb.map(x=>[x.id,x]));
       for(const id of new Set([...ma.keys(),...mb.keys()])){
         const x=ma.get(id),y=mb.get(id),rows=axis==='row'?[id]:[],columns=axis==='column'?[id]:[];
-        if(!x||!y){add('structure',`${axis==='row'?'Row':'Column'} ${x?'only in left copy':'only in right copy'}`,sheetId,rows,columns,x,y);continue;}
+        if(!x||!y){add('structure',`${axis==='row'?'Row':'Column'} ${x?'only in left copy':'only in right copy'}`,sheetId,rows,columns,x,y,undefined,undefined,{kind:'axis',sheet:sheetId,axis,id});continue;}
         for(const property of new Set([...Object.keys(x),...Object.keys(y)])){
           if(property==='id')continue;
           const before=(x as unknown as Record<string,unknown>)[property],after=(y as unknown as Record<string,unknown>)[property];
@@ -150,23 +160,23 @@ export async function compare(left:Workbook,right:Workbook,progress:(checked:num
           const label=/hypothetical/.test(property)?'Hypothetical tag':property==='status'?'Row status':`${axis==='row'?'Row':'Column'} ${property}`;
           if(property==='hypotheticalTables'){
             const p=before as Record<string,boolean>|undefined,q=after as Record<string,boolean>|undefined;
-            for(const table of new Set([...Object.keys(p??{}),...Object.keys(q??{})]))if(p?.[table]!==q?.[table])add('structure',label,sheetId,rows,columns,p?.[table],q?.[table],table);
-          }else add('structure',label,sheetId,rows,columns,before,after);
+            for(const table of new Set([...Object.keys(p??{}),...Object.keys(q??{})]))if(p?.[table]!==q?.[table])add('structure',label,sheetId,rows,columns,p?.[table],q?.[table],table,undefined,{kind:'axis',sheet:sheetId,axis,id,property,table});
+          }else add('structure',label,sheetId,rows,columns,before,after,undefined,undefined,{kind:'axis',sheet:sheetId,axis,id,property});
         }
       }
-      for(const id of moved(aa.map(x=>x.id),bb.map(x=>x.id)))add('structure',`${axis==='row'?'Row':'Column'} order changed`,sheetId,axis==='row'?[id]:[],axis==='column'?[id]:[],aa.findIndex(x=>x.id===id)+1,bb.findIndex(x=>x.id===id)+1);
+      for(const id of moved(aa.map(x=>x.id),bb.map(x=>x.id)))add('structure',`${axis==='row'?'Row':'Column'} order changed`,sheetId,axis==='row'?[id]:[],axis==='column'?[id]:[],aa.findIndex(x=>x.id===id)+1,bb.findIndex(x=>x.id===id)+1,undefined,undefined,{kind:'order',sheet:sheetId,axis,id});
     }
     const ga=new Map(a?.groups.map(g=>[g.id,g])),gb=new Map(b?.groups.map(g=>[g.id,g]));
     for(const id of new Set([...ga.keys(),...gb.keys()])){
       const x=ga.get(id),y=gb.get(id);if(equal(x,y))continue;
       const members=[...new Set([...(x?.members??[]),...(y?.members??[])])],group=x??y!;
-      add('structure',!x||!y?'Group added or removed':'Grouping changed',sheetId,group.axis==='row'?members:[],group.axis==='column'?members:[],x,y,group.table);
+      add('structure',!x||!y?'Group added or removed':'Grouping changed',sheetId,group.axis==='row'?members:[],group.axis==='column'?members:[],x,y,group.table,undefined,{kind:'group',sheet:sheetId,id});
     }
     if(!equal(a?.validations,b?.validations)){
       const va=new Map(a?.validations.map(v=>[v.id,v])),vb=new Map(b?.validations.map(v=>[v.id,v]));
       for(const id of new Set([...va.keys(),...vb.keys()])){
         const x=va.get(id),y=vb.get(id);if(equal(x,y))continue;
-        add('structure','Dropdown rule changed',sheetId,[...new Set([...(x?.rows??[]),...(y?.rows??[])])],[...new Set([...(x?.columns??[]),...(y?.columns??[])])],x,y);
+        add('structure','Dropdown rule changed',sheetId,[...new Set([...(x?.rows??[]),...(y?.rows??[])])],[...new Set([...(x?.columns??[]),...(y?.columns??[])])],x,y,undefined,undefined,{kind:'validation',sheet:sheetId,id});
       }
     }
     await breathe();
@@ -174,24 +184,24 @@ export async function compare(left:Workbook,right:Workbook,progress:(checked:num
   const ta=new Map(allTables(left).map(t=>[t.id,t])),tb=new Map(allTables(right).map(t=>[t.id,t]));
   for(const id of new Set([...ta.keys(),...tb.keys()])){
     const a=ta.get(id),b=tb.get(id),t=a??b!;
-    if(!a||!b)add('structure','Table added or removed',t.sheet,[t.header,...t.rows],t.columns.map(c=>c.column),a,b,id);
+    if(!a||!b)add('structure','Table added or removed',t.sheet,[t.header,...t.rows],t.columns.map(c=>c.column),a,b,id,undefined,{kind:'table',id});
     else{
-      if(a.name!==b.name)add('structure','Table renamed',t.sheet,[t.header],t.columns.map(c=>c.column),a.name,b.name,id);
-      if(a.sheet!==b.sheet)add('structure','Table sheet changed',t.sheet,[t.header],t.columns.map(c=>c.column),a.sheet,b.sheet,id);
+      if(a.name!==b.name)add('structure','Table renamed',t.sheet,[t.header],t.columns.map(c=>c.column),a.name,b.name,id,undefined,{kind:'table',id,property:'name'});
+      if(a.sheet!==b.sheet)add('structure','Table sheet changed',t.sheet,[t.header],t.columns.map(c=>c.column),a.sheet,b.sheet,id,undefined,{kind:'table',id,property:'sheet'});
       for(const axis of ['rows','columns','header'] as const)if(!equal(a[axis],b[axis])){
         const rows=axis==='rows'?[...new Set([...a.rows.filter(r=>!b.rows.includes(r)),...b.rows.filter(r=>!a.rows.includes(r))])]:[t.header];
-        add('structure',`Table ${axis==='rows'?'row membership / order':axis==='columns'?'columns / calculations':'header'} changed`,t.sheet,rows.length?rows:[t.header],axis==='columns'?t.columns.map(c=>c.column):[],a[axis],b[axis],id);
+        add('structure',`Table ${axis==='rows'?'row membership / order':axis==='columns'?'columns / calculations':'header'} changed`,t.sheet,rows.length?rows:[t.header],axis==='columns'?t.columns.map(c=>c.column):[],a[axis],b[axis],id,undefined,{kind:'table',id,property:axis});
       }
     }
   }
-  for(const [property,before,after]of changedProperties(left,right,['sheets','tables','dropdownData','revision','tableActivity']))add('structure',`Workbook ${property} changed`,'@workbook',[],[],before,after);
+  for(const [property,before,after]of changedProperties(left,right,['sheets','tables','dropdownData','revision','tableActivity']))add('structure',`Workbook ${property} changed`,'@workbook',[],[],before,after,undefined,undefined,{kind:'workbook',property});
   for(const [label,before,after]of [
     ['sheet order',left.sheets,right.sheets],
     ['DD sheet order',left.dropdownData?.sheets??[],right.dropdownData?.sheets??[]],
     ['table order',allTables(left),allTables(right)],
   ] as const){
     const a=before.map(item=>item.id),b=after.map(item=>item.id);
-    if(!equal(a,b))add('structure',`Workbook ${label} changed`,'@workbook',[],[],a,b);
+    if(!equal(a,b))add('structure',`Workbook ${label} changed`,'@workbook',[],[],a,b,undefined,undefined,{kind:'workbook-order',property:label==='sheet order'?'sheets':label==='DD sheet order'?'dd-sheets':'tables'});
   }
   progress(checked);return differences;
 }

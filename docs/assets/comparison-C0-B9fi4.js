@@ -1,4 +1,4 @@
-const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/main-B_geR3Jg.js","assets/icons-LqVHy9u7.js"])))=>i.map(i=>d[i]);
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/main-FPWPoGQA.js","assets/icons-dlxqu1YX.js"])))=>i.map(i=>d[i]);
 import{_ as s}from"./preload-helper-DO0sjJph.js";const t=`<!doctype html>\r
 <html lang="en">\r
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fnt - Visual comparison prototype</title><link rel="stylesheet" href="style.css"></head>\r
@@ -28,23 +28,32 @@ import{_ as s}from"./preload-helper-DO0sjJph.js";const t=`<!doctype html>\r
   <dialog id="choice-review" class="dialog-surface" aria-label="Review selection draft">\r
     <div class="dialog-heading"><div><p class="eyebrow">SELECTION DRAFT</p><h2>Review your choices</h2></div><button id="review-close" aria-label="Close selection review">Close</button></div>\r
     <p id="review-summary"></p>\r
-    <p class="notice">Selection UI only, not a merged workbook. Structural dependencies have not been validated. Nothing here can save, upload, or replace a workbook.</p>\r
+    <p id="apply-note" class="notice">Unchosen differences keep the left copy. Applying validates structural and formula dependencies and saves both sources plus a full pre-apply recovery archive before replacing this device’s workbook.</p>\r
     <div id="review-groups"></div>\r
-    <button id="next-unresolved">Go to next undecided change</button>\r
+    <div class="button-row review-submit-row"><button id="next-unresolved">Go to next undecided change</button><button id="review-submit" class="primary submit-decision" disabled>Submit decision</button></div>\r
+  </dialog>\r
+  <dialog id="submit-confirmation" class="dialog-surface" aria-label="Confirm comparison decision">\r
+    <div class="dialog-heading"><h1>Submit decision?</h1><button id="submit-back" type="button">Back to comparison</button></div>\r
+    <p id="submit-summary"></p>\r
+    <p>Unchosen differences keep the left copy. Your selections replace this device’s workbook only after validation and recovery backups succeed.</p>\r
+    <label id="apply-sync-label" class="inline" hidden><input id="apply-sync" type="checkbox">Also replace the private GitHub sync workbook: <span id="apply-sync-destination"></span></label>\r
+    <p>Unchecked: GitHub is left unchanged and automatic sync is paused until you explicitly Save or reconnect.</p>\r
+    <p id="apply-error" role="alert" hidden></p>\r
+    <div class="button-row"><button id="submit-review" type="button">Review choices</button><button id="apply-selection" class="primary submit-decision" disabled>Submit decision</button></div>\r
   </dialog>\r
   <p id="error" role="alert" hidden></p>\r
   <div class="workspace" id="workspace" aria-busy="true">\r
     <aside><div class="aside-heading">AFFECTED SHEETS</div><nav id="navigation" aria-label="Sheets and tables with differences"></nav></aside>\r
     <section class="comparison">\r
       <section class="bulk-panel" aria-label="Selection review and bulk choices">\r
-        <span class="selection-progress" role="group" aria-label="Selection progress"><span class="selection-counts"><b id="selection-progress" role="status">No choices yet</b><span class="totals" id="totals" role="status">Reading saved cells...</span></span><span class="selection-actions"><button id="undo-choice" disabled>Undo choice</button><button id="reset-choices" disabled>Reset</button><button id="review-choices" class="primary">Review choices</button></span></span>\r
+        <span class="selection-progress" role="group" aria-label="Selection progress"><span class="selection-counts"><b id="selection-progress" role="status">No choices yet</b><span class="totals" id="totals" role="status">Reading saved cells...</span></span><span class="selection-actions"><button id="undo-choice" disabled>Undo choice</button><button id="reset-choices" disabled>Reset</button><span class="submit-actions"><button id="review-choices">Review choices</button><button id="submit-decision" class="primary submit-decision" disabled>Submit decision</button></span></span></span>\r
         <details class="bulk-disclosure">\r
         <summary><span class="bulk-summary-title">Bulk choices <span id="bulk-summary-target"></span></span></summary>\r
         <section class="bulk-choice" aria-label="Choose multiple changes">\r
           <div class="bulk-target"><label>Apply to<select id="choice-scope" aria-label="Selection scope" aria-describedby="choice-target-description"><option value="filtered">Matching change types in this table</option><option value="area">Changes listed in the current preview</option><option value="row">Selected row</option><option value="column">Selected column</option><option value="scope">Every difference in this table</option><option value="sheet">Every difference on this sheet</option><option value="settings">Toolbar and other workbook-wide settings</option><option value="workbook">Every difference in both copies</option></select></label><span id="choice-target-count"></span></div>\r
           <p id="choice-target-description"></p>\r
           <div id="bulk-buttons" class="pick-buttons" role="group" aria-label="Bulk source choice"></div>\r
-          <details class="bulk-help"><summary>How bulk choices work</summary><p id="bulk-choice-note">Individual choices can override a bulk choice. Undo reverses the batch.</p><p>No workbook is changed. Reloading or changing sources clears this selection draft.</p></details>\r
+          <details class="bulk-help"><summary>How bulk choices work</summary><p id="bulk-choice-note">Individual choices can override a bulk choice. Undo reverses the batch.</p><p>Choices remain a draft until you use Apply selected data in Review choices. Unchosen changes keep the left copy. Reloading or changing sources clears unapplied choices.</p></details>\r
         </section>\r
       </details>\r
       </section>\r
@@ -79,4 +88,4 @@ import{_ as s}from"./preload-helper-DO0sjJph.js";const t=`<!doctype html>\r
 </main>\r
 <script type="module" src="./main.ts"><\/script>\r
 </body></html>\r
-`,i=new DOMParser().parseFromString(t,"text/html").body;i.querySelectorAll("script").forEach(e=>e.remove());for(const e of i.attributes)document.body.setAttribute(e.name,e.value);document.body.dataset.production="true";document.body.replaceChildren(...i.childNodes);s(()=>import("./main-B_geR3Jg.js"),__vite__mapDeps([0,1])).then(()=>{var e,a;(a=(e=navigator.serviceWorker)==null?void 0:e.controller)==null||a.postMessage({type:"fnt-shell-loaded",file:import.meta.url})}).catch(e=>{const a=document.querySelector("#error");a.hidden=!1,a.textContent=`Comparison could not be opened. Your workbook is unchanged. ${String(e)}`,document.body.dataset.loading="false"});
+`,a=new DOMParser().parseFromString(t,"text/html").body;a.querySelectorAll("script").forEach(e=>e.remove());for(const e of a.attributes)document.body.setAttribute(e.name,e.value);document.body.dataset.production="true";document.body.replaceChildren(...a.childNodes);s(()=>import("./main-FPWPoGQA.js"),__vite__mapDeps([0,1])).then(()=>{var e,i;(i=(e=navigator.serviceWorker)==null?void 0:e.controller)==null||i.postMessage({type:"fnt-shell-loaded",file:import.meta.url})}).catch(e=>{const i=document.querySelector("#error");i.hidden=!1,i.textContent=`Comparison could not be opened. Your workbook is unchanged. ${String(e)}`,document.body.dataset.loading="false"});

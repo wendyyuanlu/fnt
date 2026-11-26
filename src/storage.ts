@@ -8,7 +8,7 @@ export interface Pending { id: string; label: string; time: string }
 export interface SyncConfig { owner: string; repo: string; branch: string; path: string }
 export interface LocalState {
   book: Workbook; version: number; pending: Pending[]; updated: string;
-  sync?: SyncConfig; remoteSha?: string;
+  sync?: SyncConfig; remoteSha?: string;syncPaused?:boolean;
   publishedSnapshot?:string;
 }
 export const hasPendingContent=(state:LocalState):boolean=>state.pending.some(operation=>operation.label!=='Visit table');
@@ -356,7 +356,7 @@ export class Store {
     if(!saved.history||!Array.isArray(saved.history.undo)||!Array.isArray(saved.history.redo))throw Error('Saved undo history is damaged. Export a backup before continuing.');
     return saved.history;
   }
-  async save(book: Workbook, expected: number, label: string, checkpoint = false, original?: {id:string;name:string;data:string}, options?:{localOnly?:boolean;recoveryArchive?:string;publishedSnapshot?:string;undoHistory?:UndoHistory}): Promise<LocalState> {
+  async save(book: Workbook, expected: number, label: string, checkpoint = false, original?: {id:string;name:string;data:string}, options?:{localOnly?:boolean;recoveryArchive?:string;publishedSnapshot?:string;undoHistory?:UndoHistory;comparisonSync?:{config:SyncConfig;sha:string};pauseSync?:boolean}): Promise<LocalState> {
     const snapshot=clone(book);
     const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx);
     const store = tx.objectStore('state');
@@ -374,6 +374,12 @@ export class Store {
       }
       if(navigation.result)store.put({...navigation.result,pending:[]},navigationKey(snapshot.id));
       if(options?.localOnly){delete result.sync;delete result.remoteSha;store.delete(syncCredentialKey);}
+      if(options?.comparisonSync){
+        result.sync=clone(options.comparisonSync.config);result.remoteSha=options.comparisonSync.sha;
+        result.syncPaused=false;
+        if(JSON.stringify(previous?.sync)!==JSON.stringify(result.sync))store.delete(syncCredentialKey);
+      }
+      if(options?.pauseSync)result.syncPaused=true;
       if(options?.publishedSnapshot)result.publishedSnapshot=options.publishedSnapshot;
       if (checkpoint && previous) tx.objectStore('history').put({id:uid(),label:`Before ${label}`,time:new Date().toISOString(),book:previous.book,...(options?.recoveryArchive?{backup:options.recoveryArchive}:{})} satisfies Checkpoint);
       if (original) tx.objectStore('originals').put(original);

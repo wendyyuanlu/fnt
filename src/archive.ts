@@ -17,6 +17,10 @@ export function stringifyArchive(value:unknown):string {
 }
 export function parseArchive(source:string):unknown {
   const parsed=JSON.parse(source);
+  if(parsed?.format==='fnt-compressed-v1'){
+    if(typeof parsed.payload!=='string')throw Error('Invalid compressed archive.');
+    return decompressArchive(parsed.payload);
+  }
   if(parsed?.format!=='fnt-packed-v1')return parsed;
   if(!Array.isArray(parsed.asts)||!('data'in parsed))throw Error('Invalid formula archive.');
   const restore=(value:unknown):unknown=>{

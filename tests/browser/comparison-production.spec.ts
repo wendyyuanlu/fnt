@@ -1,7 +1,8 @@
 import {expect,test} from '@playwright/test';
 import {createDemo,key} from '../../src/model';
 
-test('published Recovery uses the visual comparison, supports choice drafts and works offline',async({page,context})=>{
+test('published Recovery confirms real replacement, preserves review navigation and works offline',async({page,context})=>{
+  const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
   let githubRequests=0;
   await page.route('https://api.github.com/**',async route=>{githubRequests++;await route.abort();});
   const left=createDemo(),right=structuredClone(left),sheet=right.sheets[0];
@@ -26,11 +27,29 @@ test('published Recovery uses the visual comparison, supports choice drafts and 
   await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
   await comparison.locator('#first-cell').check();
   await comparison.locator('#review-choices').click();
-  await expect(comparison.locator('#choice-review')).toContainText('Selection UI only, not a merged workbook');
+  await expect(comparison.locator('#choice-review')).toContainText('nothing changes until you confirm');
+  await expect(comparison.locator('#review-submit')).toBeEnabled();
+  await comparison.locator('#review-submit').click();
+  await expect(comparison.locator('#submit-confirmation')).toBeVisible();
+  await comparison.locator('#submit-review').click();
+  await expect(comparison.locator('#choice-review')).toBeVisible();
   await comparison.getByRole('button',{name:'Close selection review',exact:true}).click();
-  await comparison.getByRole('button',{name:'Back to workbook',exact:true}).click();
-  await expect(page.locator('.comparison-view')).toHaveCount(0);
+  const review=await comparison.locator('#review-choices').boundingBox(),submit=await comparison.locator('#submit-decision').boundingBox();
+  expect(submit!.x).toBeGreaterThan(review!.x);expect(submit!.y).toBe(review!.y);
+  expect(await comparison.locator('#submit-decision').evaluate(button=>getComputedStyle(button).fontWeight)).toBe('700');
+  await comparison.locator('#submit-decision').click();
+  await comparison.locator('#submit-back').click();
+  await expect(comparison.locator('#submit-confirmation')).toBeHidden();
+  await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
+  await comparison.locator('#submit-decision').click();
+  await comparison.locator('#apply-selection').click();
+  expect(errors).toEqual([]);
+  await expect(page.locator('.comparison-view')).toHaveCount(0,{timeout:45000});
   await expect(page.locator('#app')).toHaveJSProperty('inert',false);
+  await expect(page.locator('#save-state')).toContainText('Selected data saved locally');
+  await expect(page.locator('#grid-scroll')).toContainText('Invented deployed comparison');
+  await page.reload();
+  await expect(page.locator('#grid-scroll')).toContainText('Invented deployed comparison',{timeout:15000});
   await context.setOffline(true);
   try{
     await page.getByRole('button',{name:'Recovery',exact:true}).click();

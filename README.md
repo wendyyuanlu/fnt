@@ -904,9 +904,16 @@ opening a tooltip on automatic focus, touch, or hover.
 Compare copies**, and the conflict dialog all open the polished visual comparison.
 It replaces the old text-list inspector with aligned spreadsheet previews,
 affected sheets/tables, change-type filters, individual and bulk choices,
-Undo and selection review. Choices are browser-memory drafts, not merged
-workbooks: closing or changing sources clears them. They cannot save, upload,
-or replace either workbook.
+Undo and selection review. **Submit decision**, beside **Review choices** and
+at the bottom right of its dialog, opens confirmation with Review choices and
+Back to comparison options. Confirming replaces this device's workbook with
+the selected data; unchosen differences retain the left copy. Dependency
+validation, stale-edit checks and recovery backups must succeed first.
+Both source workbooks and the complete pre-apply backup remain in Recovery;
+Undo restores the previous workbook. GitHub replacement requires the separate
+unchecked confirmation option and a fresh remote SHA check. Local-only submission
+pauses automatic sync persistently until an explicit Save or reconnect.
+Closing without submitting or successfully changing sources clears the choices.
 Load a native full Fnt backup on either side; this does not restore,
 save or upload it. **Compare with remote version (GitHub)** is always visible;
 it requires configured, authenticated private sync and loads the right side with

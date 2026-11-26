@@ -27,23 +27,32 @@
   <dialog id="choice-review" class="dialog-surface" aria-label="Review selection draft">
     <div class="dialog-heading"><div><p class="eyebrow">SELECTION DRAFT</p><h2>Review your choices</h2></div><button id="review-close" aria-label="Close selection review">Close</button></div>
     <p id="review-summary"></p>
-    <p class="notice">Selection UI only, not a merged workbook. Structural dependencies have not been validated. Nothing here can save, upload, or replace a workbook.</p>
+    <p id="apply-note" class="notice">Unchosen differences keep the left copy. Applying validates structural and formula dependencies and saves both sources plus a full pre-apply recovery archive before replacing this device’s workbook.</p>
     <div id="review-groups"></div>
-    <button id="next-unresolved">Go to next undecided change</button>
+    <div class="button-row review-submit-row"><button id="next-unresolved">Go to next undecided change</button><button id="review-submit" class="primary submit-decision" disabled>Submit decision</button></div>
+  </dialog>
+  <dialog id="submit-confirmation" class="dialog-surface" aria-label="Confirm comparison decision">
+    <div class="dialog-heading"><h1>Submit decision?</h1><button id="submit-back" type="button">Back to comparison</button></div>
+    <p id="submit-summary"></p>
+    <p>Unchosen differences keep the left copy. Your selections replace this device’s workbook only after validation and recovery backups succeed.</p>
+    <label id="apply-sync-label" class="inline" hidden><input id="apply-sync" type="checkbox">Also replace the private GitHub sync workbook: <span id="apply-sync-destination"></span></label>
+    <p>Unchecked: GitHub is left unchanged and automatic sync is paused until you explicitly Save or reconnect.</p>
+    <p id="apply-error" role="alert" hidden></p>
+    <div class="button-row"><button id="submit-review" type="button">Review choices</button><button id="apply-selection" class="primary submit-decision" disabled>Submit decision</button></div>
   </dialog>
   <p id="error" role="alert" hidden></p>
   <div class="workspace" id="workspace" aria-busy="true">
     <aside><div class="aside-heading">AFFECTED SHEETS</div><nav id="navigation" aria-label="Sheets and tables with differences"></nav></aside>
     <section class="comparison">
       <section class="bulk-panel" aria-label="Selection review and bulk choices">
-        <span class="selection-progress" role="group" aria-label="Selection progress"><span class="selection-counts"><b id="selection-progress" role="status">No choices yet</b><span class="totals" id="totals" role="status">Reading saved cells...</span></span><span class="selection-actions"><button id="undo-choice" disabled>Undo choice</button><button id="reset-choices" disabled>Reset</button><button id="review-choices" class="primary">Review choices</button></span></span>
+        <span class="selection-progress" role="group" aria-label="Selection progress"><span class="selection-counts"><b id="selection-progress" role="status">No choices yet</b><span class="totals" id="totals" role="status">Reading saved cells...</span></span><span class="selection-actions"><button id="undo-choice" disabled>Undo choice</button><button id="reset-choices" disabled>Reset</button><span class="submit-actions"><button id="review-choices">Review choices</button><button id="submit-decision" class="primary submit-decision" disabled>Submit decision</button></span></span></span>
         <details class="bulk-disclosure">
         <summary><span class="bulk-summary-title">Bulk choices <span id="bulk-summary-target"></span></span></summary>
         <section class="bulk-choice" aria-label="Choose multiple changes">
           <div class="bulk-target"><label>Apply to<select id="choice-scope" aria-label="Selection scope" aria-describedby="choice-target-description"><option value="filtered">Matching change types in this table</option><option value="area">Changes listed in the current preview</option><option value="row">Selected row</option><option value="column">Selected column</option><option value="scope">Every difference in this table</option><option value="sheet">Every difference on this sheet</option><option value="settings">Toolbar and other workbook-wide settings</option><option value="workbook">Every difference in both copies</option></select></label><span id="choice-target-count"></span></div>
           <p id="choice-target-description"></p>
           <div id="bulk-buttons" class="pick-buttons" role="group" aria-label="Bulk source choice"></div>
-          <details class="bulk-help"><summary>How bulk choices work</summary><p id="bulk-choice-note">Individual choices can override a bulk choice. Undo reverses the batch.</p><p>No workbook is changed. Reloading or changing sources clears this selection draft.</p></details>
+          <details class="bulk-help"><summary>How bulk choices work</summary><p id="bulk-choice-note">Individual choices can override a bulk choice. Undo reverses the batch.</p><p>Choices remain a draft until you use Apply selected data in Review choices. Unchosen changes keep the left copy. Reloading or changing sources clears unapplied choices.</p></details>
         </section>
       </details>
       </section>

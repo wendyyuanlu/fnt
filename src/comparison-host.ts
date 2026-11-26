@@ -1,5 +1,6 @@
 import type {Workbook} from './model';
 import type {ComparisonSnapshot} from './github-snapshots';
+import type {ComparisonChoice} from './comparison-merge';
 
 export interface ComparisonSource {
   book:Workbook;
@@ -16,6 +17,8 @@ export interface ComparisonHost {
     list:(workbook:string)=>Promise<ComparisonSnapshot[]>;
     read:(entry:ComparisonSnapshot)=>Promise<ComparisonSource>;
   };
+  syncDestination?:()=>string|undefined;
+  apply?:(request:{left:Workbook;right:Workbook;choices:ComparisonChoice[];sync:boolean})=>Promise<void>;
   close:()=>void;
 }
 export interface ComparisonFrame extends HTMLIFrameElement {

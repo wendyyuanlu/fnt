@@ -1,14 +1,15 @@
 import './style.css';
 import {mountWorkbookComparison} from './sync-comparison';
+import {mergeComparison} from './comparison-merge';
 import type {ComparisonSource} from './comparison-host';
 import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,snapshotDate,type ComparisonSnapshot} from './github-snapshots';
 import {githubFormDefaults} from './github-client';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
-import { Store, SyncConflict, syncGitHub, hasPendingContent,validateBook,validateBookMetadata,validateCellChanges, type Backup, type LocalState } from './storage';
+import { Store, SyncConflict, syncGitHub, hasPendingContent,validateBook,validateBackup,validateBookMetadata,validateCellChanges, type Backup, type LocalState } from './storage';
 import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch} from './undo-history';
 import {cachedCellText,dateFormatContext} from './display-values';
-import { parseArchive, stringifyArchive } from './archive';
+import { parseArchive, stringifyArchive,compressArchive } from './archive';
 import { parseTsv,serializeTsv } from './clipboard';
 import { cutCells, shiftCells } from './cell-operations';
 import { displayExcelDate,excelDate,excelDateText,parseDateInput } from './dates';
@@ -741,14 +742,14 @@ let comparisonActive=false;
 let rememberPrivateSync=false;
 function schedulePrivateSync(delay=15000):void{
   clearTimeout(privateSyncTimer);
-  if(!state?.sync||!token||privateSyncConflict||!navigator.onLine)return;
+  if(!state?.sync||state.syncPaused||!token||privateSyncConflict||!navigator.onLine)return;
   privateSyncTimer=setTimeout(()=>{
     if(document.visibilityState!=='visible'||busy||comparisonActive||draft!==undefined||touchCell||appendDraft||colorPicker?.pending||document.querySelector('dialog[open]')){schedulePrivateSync();return;}
     void manualSave(true);
   },delay);
 }
 async function manualSave(automatic=false): Promise<void> {
-  if(automatic&&(!state?.sync||!token||!navigator.onLine||privateSyncConflict||comparisonActive)){schedulePrivateSync();return;}
+  if(automatic&&(!state?.sync||state.syncPaused||!token||!navigator.onLine||privateSyncConflict||comparisonActive)){schedulePrivateSync();return;}
   if(busy){flash('Wait for the current save or sync to finish.');return;}
   if(!commitDraft())return;
   busy=true;renderStatus();
@@ -766,6 +767,7 @@ async function manualSave(automatic=false): Promise<void> {
     if(navigationDirty){state=await store.metadata(state.version,s=>s);navigationDirty=false;}
     if(!state.sync){status='Saved locally + recovery checkpoint';return;}
     if(!token){openSync();return;}
+    if(!automatic&&state.syncPaused)state=await store.metadata(state.version,s=>({...s,syncPaused:false}));
     status='Syncing private repository...';renderStatus();
     const originals=hasPendingContent(state)?await store.originals():[];
     const result = await syncGitHub(state,token,fetch,originals),received=result.remote?migrateDropdownData(result.remote):undefined;
@@ -852,7 +854,9 @@ function openSnapshotUpload(back:()=>void):void{
 function openComparison(conflict?:SyncConflict):void{
   if(comparisonActive)return;
   if(busy){flash('Wait for the current save or sync to finish before comparing.');return;}
-  const captured={...state,book:clone(book),pending:clone(state.pending)},config=state.sync,credential=token;
+  if(!commitDraft())return;
+  const captured={...state,book:clone(book),pending:clone(state.pending)},config=state.sync,credential=token,capturedGeneration=generation;
+  let applied=false,remoteHead=conflict&&config?{path:config.path,sha:conflict.sha}:undefined;
   const source=(copy:Workbook,kind:string,label:string,revision?:string):ComparisonSource=>({
     book:clone(copy),kind,label,revision,freshness:`Comparison copy captured: ${new Date().toLocaleString()}.`,
   });
@@ -867,6 +871,7 @@ function openComparison(conflict?:SyncConflict):void{
     readRemote:config&&credential?async()=>{
       const received=await syncGitHub(captured,credential,fetch,[],{readOnly:true});
       if(!received.remote)throw Error('The saved GitHub workbook was not returned. Neither copy was changed.');
+      remoteHead={path:received.readPath??config.path,sha:received.sha};
       const loaded=source(received.remote,'GitHub',received.readPath??config.path,received.sha);
       if(received.readPath&&received.readPath!==config.path)loaded.freshness+=` Saved sync destination remains ${config.path}. Reconnect in Recovery to update it; this comparison did not change the connection.`;
       return loaded;
@@ -879,10 +884,53 @@ function openComparison(conflict?:SyncConflict):void{
         return source(await readComparisonSnapshot(config,credential,listed),`${listed.device} upload`,snapshotDate(listed.time),listed.sha);
       },
     }:undefined,
+    syncDestination:config&&credential?()=>remoteHead?`${config.owner}/${config.repo} · ${remoteHead.path}${remoteHead.path!==config.path?' (also updates your saved sync path)':''}`:undefined:undefined,
+    apply:async request=>{
+      if(applied||busy)throw Error('This comparison has already been applied or another operation is running.');
+      if(capturedGeneration!==generation||JSON.stringify(book)!==JSON.stringify(captured.book))throw Error('The local workbook changed after comparison opened. Close and compare again; your newer edits were not replaced.');
+      const merged=await mergeComparison(request.left,request.right,request.choices);
+      if(request.sync&&(!config||!credential||!remoteHead))throw Error('Read the current GitHub copy before applying and syncing.');
+      busy=true;status='Validating selection and saving recovery copies...';renderStatus();
+      clearTimeout(compactionTimer);compactionTimer=undefined;
+      let saved=false;
+      try{
+        await flush();
+        if(savedGeneration!==generation||capturedGeneration!==generation)throw Error('Local changes could not be saved or changed during comparison. Nothing was replaced.');
+        const current=await store.load();
+        if(!current||current.version!==state.version)throw Error('Another tab changed this workbook. Close and compare again; nothing was replaced.');
+        const target=request.sync?{config:{...config!,path:remoteHead!.path},sha:remoteHead!.sha}:undefined;
+        if(target){
+          const latest=await syncGitHub({...current,sync:target.config},credential,fetch,[],{readOnly:true});
+          if(latest.sha!==target.sha)throw Error('GitHub changed after comparison opened. Read the latest copy and compare again; neither workbook was replaced.');
+        }
+        status='Saving complete pre-apply backup...';renderStatus();
+        const before=await store.backup({...state,book:clone(book)});
+        validateBackup({...before,state:{...before.state,book:merged}});
+        status='Saving both comparison sources...';renderStatus();
+        await store.checkpoint('Comparison left source - before apply',request.left,[],true);
+        await store.checkpoint('Comparison right source - before apply',request.right,[],true);
+        merged.revision=Math.max(book.revision,merged.revision)+1;
+        const inverse:History=merged.id===book.id?structuralUndo(book,merged):{book:clone(book)},history={undo:[...clone(undo),inverse].slice(-undoLimit),redo:[]};
+        if(capturedGeneration!==generation||JSON.stringify(book)!==JSON.stringify(captured.book))throw Error('The local workbook changed while recovery was being saved. Nothing was replaced.');
+        status='Saving selected workbook and undo history...';renderStatus();
+        const recoveryArchive=JSON.stringify({format:'fnt-compressed-v1',payload:compressArchive(before)});
+        state=await store.save(merged,state.version,'Apply comparison selections',true,undefined,{recoveryArchive,undoHistory:history,comparisonSync:target,pauseSync:!request.sync});
+        saved=true;applied=true;
+        compactionWrites=0;fullSaveRequired=false;scopedChanges.length=0;
+        privateSyncConflict=false;adoptSavedWorkbook();undo.push(...history.undo);
+        if(target&&rememberPrivateSync)await store.rememberSyncToken(target.config,credential);
+        error='';status='Selected data saved locally; both sources and the previous workbook are in Recovery.'+(request.sync?'':' Automatic sync paused until Save or reconnect.');
+        channel?.postMessage({version:state.version});render();
+      }catch(error){
+        if(saved){status='Selection saved locally; a follow-up step failed. Inspect Recovery before retrying.';flash(error);}
+        else{status='Comparison not applied - original workbook retained';throw error;}
+      }finally{busy=false;renderStatus();}
+      if(request.sync&&saved)await manualSave(false);
+    },
     close:()=>{
       dispose();view.remove();root.inert=wasInert;comparisonActive=false;document.body.classList.remove('comparison-open');
-      if(conflict)openConflict(conflict);else root.querySelector<HTMLButtonElement>('[data-action="file"]')?.focus();
-      schedulePrivateSync();
+      if(conflict&&!applied)openConflict(conflict);else root.querySelector<HTMLButtonElement>('[data-action="file"]')?.focus();
+      if(!applied)schedulePrivateSync();
     },
   });
 }
@@ -898,7 +946,8 @@ function renderStatus(): void {
   if(expandedEditor)expandedEditor.input.disabled=busy||!editableReference()||!!gridReference()?.error;
   const el = document.querySelector('#save-state');
   if (el) { el.textContent = draft!==undefined?'Editing cell - not saved yet':appendDraft?'Editing new option - not saved yet':colorPicker?.pending?'Previewing color - release to apply':busy&&status.startsWith('Saved')?'Finishing complete save...':status; el.className = `save-state ${error ? 'bad' : ''}`; }
-  if(el&&state?.sync&&!token&&status.startsWith('Saved')&&!busy&&draft===undefined)el.textContent+=' — sign in to resume private sync';
+  if(el&&state?.syncPaused&&!busy&&draft===undefined&&!el.textContent?.includes('sync paused'))el.textContent+=' — automatic sync paused until Save or reconnect';
+  else if(el&&state?.sync&&!token&&status.startsWith('Saved')&&!busy&&draft===undefined)el.textContent+=' — sign in to resume private sync';
   const alert = document.querySelector<HTMLElement>('#error');
   if (alert) {
     alert.querySelector<HTMLElement>('.error-message')!.textContent=error;alert.hidden=!error;
