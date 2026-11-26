@@ -114,6 +114,22 @@ test('focused field undo is live and choosing a linked Food restores only untouc
   await expect(page.locator('#error')).toBeHidden();
 });
 
+test('Next field never rewrites untouched multiline cell content from its single-line display',async({page})=>{
+  const fixture=await setup(page);
+  await page.evaluate(async({sheet,latest})=>{
+    const load=(name:string)=>import(/* @vite-ignore */'/src/'+name+'.ts'),{Store}=await load('storage') as typeof import('../../src/storage'),{setInput}=await load('model') as typeof import('../../src/model'),store=await Store.open();
+    try{
+      const state=(await store.load())!,s=state.book.sheets.find(s=>s.id===sheet)!,table=state.book.tables.find(table=>table.sheet===sheet)!;
+      setInput(state.book,s,latest,table.columns.find(column=>column.name==='Food')!.column,"'Invented\nmultiline food");
+      await store.save(state.book,state.version,'Synthetic multiline food');
+    }finally{store.close();}
+  },fixture);
+  await page.reload();await page.getByRole('button',{name:'Meal log',exact:true}).click();
+  const food=page.locator('[data-log-card]').last().getByRole('textbox',{name:'Food',exact:true});await food.focus();await food.press('Enter');
+  const saved=await read(page,fixture.sheet),table=saved.book.tables.find((table:{id:string})=>table.id===fixture.table)!;
+  expect(saved.sheet.cells[`${fixture.latest}:${table.columns.find((column:{name:string})=>column.name==='Food')!.column}`].value).toBe('Invented\nmultiline food');
+});
+
 test('selection opens its day and matching field; insertion, ordering, delete, undo and Today share the spreadsheet history',async({page})=>{
   const fixture=await setup(page);
   await page.locator('td[data-r="2"][data-c="5"]').click();

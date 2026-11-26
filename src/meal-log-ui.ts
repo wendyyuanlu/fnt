@@ -19,7 +19,7 @@ const esc=(value:unknown)=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;'
 const captions:Record<MealField,string>={food:'Food',calories:'Calories',protein:'Protein (g)',fat:'Fat (g)',carbs:'Carbs (g)',sugar:'Sugar (g)',sodium:'Sodium (mg)',weight:'Weight (g)',amount:'Amount',unit:'Unit'};
 const icon=(label:string,svg:string,disabled=false)=>`<button type="button" class="icon-button group-control summary-chevron" aria-label="${label}" title="${label}" ${disabled?'disabled data-log-boundary':''}>${svg}</button>`;
 export function mountMealLog(host:MealLogHost){
-  const element=document.createElement('aside'),controller=new AbortController(),expanded=new Set<string>();
+  const element=document.createElement('aside'),controller=new AbortController(),expanded=new Set<string>(),dirty=new WeakSet<HTMLInputElement>();
   element.className='meal-log-panel';element.setAttribute('aria-label','Meal log');
   element.innerHTML=`<header class="meal-log-header">${icon('Close Meal log',toolbarIcon('close'))}<button type="button" data-log-today>Today</button>${icon('Previous day',toolbarIcon('previous'))}${icon('Next day',toolbarIcon('next'))}<button type="button" data-log-date aria-label="Choose log date"></button><span class="meal-log-day-totals"></span></header><div class="meal-log-scroll"></div><footer class="meal-log-footer"><button type="button" data-log-add>+ Food</button>${icon('Undo',toolbarIcon('undo'))}${icon('Redo',toolbarIcon('redo'))}${icon('Next field',toolbarIcon('next-field'))}</footer>`;
   const scroll=element.querySelector<HTMLElement>('.meal-log-scroll')!,footer=element.querySelector<HTMLElement>('.meal-log-footer')!;
@@ -86,13 +86,13 @@ export function mountMealLog(host:MealLogHost){
   };
   const write=(input:HTMLInputElement)=>{
     writing=true;
-    try{return host.write(input.dataset.logRow!,input.dataset.logField as MealField,input.value);}
+    try{const saved=host.write(input.dataset.logRow!,input.dataset.logField as MealField,input.value);if(saved)dirty.delete(input);return saved;}
     finally{writing=false;}
   };
   const next=()=>{
     if(!active)return;
     const inputs=[...scroll.querySelectorAll<HTMLInputElement>('input[data-log-field]')].filter(input=>!input.disabled&&!!input.getClientRects().length),current=fieldInput(active.row,active.field),at=current?inputs.indexOf(current):-1;
-    if(current&&!write(current))return;
+    if(current&&dirty.has(current)&&!write(current))return;
     const target=inputs[at+1];if(target){target.focus({preventScroll:true});target.scrollIntoView({block:'nearest'});}else current?.blur();
   };
   element.addEventListener('focusin',event=>{
@@ -102,7 +102,8 @@ export function mountMealLog(host:MealLogHost){
     input.scrollIntoView({block:'nearest'});position();
   });
   element.addEventListener('input',event=>{
-    const input=event.target;if(!(input instanceof HTMLInputElement)||!input.dataset.logField||event instanceof InputEvent&&event.isComposing)return;
+    const input=event.target;if(!(input instanceof HTMLInputElement)||!input.dataset.logField)return;
+    dirty.add(input);if(event instanceof InputEvent&&event.isComposing)return;
     write(input);
   });
   element.addEventListener('focusout',()=>queueMicrotask(()=>{
