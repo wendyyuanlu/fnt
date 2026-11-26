@@ -878,8 +878,10 @@ is provisioned automatically.
 
 Save batches pending edits; there is no per-keystroke network upload. Uploads
 check repository privacy, require GitHub Pages to be disabled, and use the remote
-file SHA for compare-and-swap. Editing pauses while Save commits/acknowledges its
-source revision, preventing incoming sync data from retargeting an active draft.
+file SHA for compare-and-swap. Routine Save/sync never locks editing, rebuilds the
+grid, closes a dropdown, or changes Meal log scroll. Acknowledgements clear only
+the captured operation IDs; edits made during transfer remain locally saved and
+pending. Sync compression runs in a worker rather than on the UI thread.
 Compressed archives include original imported packages; larger files use the
 Git blob read endpoint. Operation IDs recognize lost-ack retries. Divergence
 preserves local and remote checkpoints and requires an explicit choice; **there
@@ -897,15 +899,18 @@ trusted device; offline local editing remains available without authentication.
 GitHub history is not an independent backup.
 
 While a private connection is authenticated, local commits trigger an automatic
-sync after a one-second pause. Visible tabs check remote revisions every 15 seconds,
-and immediately on resume or reconnection; offline edits remain durably pending.
+sync after a 15-second pause. Idle visible tabs check remote revisions at most once
+per minute; offline edits remain durably pending. Resume/reconnection schedules
+the same batched check rather than interrupting an active input.
 Unchanged remote revisions do not download/decompress the workbook blob or create
 another full local checkpoint. Response headers time out after 30 seconds; a
 90-second overall deadline also covers stalled response bodies and aborts transfers
-rather than leaving editing locked indefinitely. Navigation-only visit journals do not create
-remote commits or content conflicts; incoming content retains the larger saved
-visit counts, which are batched with the next actual content edit.
-Real content divergence pauses automatic sync until the user chooses a version.
+rather than leaving a transfer hanging. Navigation-only visit journals do not
+create remote commits. Changed remote content is saved in Recovery for explicit
+comparison, never automatically installed over this device's workbook, even
+when there are no pending content edits. Opening comparison or finding a
+conflict persistently pauses uploads across reloads until a decision is submitted.
+Save alone cannot bypass an unresolved review.
 Exact remote conflict checkpoints are not substituted with the local journal.
 
 Recovery keeps Download independent full backup and Rename workbook on separate
@@ -924,7 +929,9 @@ Undo and selection review. **Submit decision**, beside **Review choices** and
 at the bottom right of its dialog, opens confirmation with Review choices and
 Back to comparison options. Confirming replaces this device's workbook with
 the selected data; unchosen differences retain the left copy. Dependency
-validation, stale-edit checks and recovery backups must succeed first.
+validation, stale-edit checks and recovery backups must succeed first. Submission
+shows its current stage and completed-step progress; only this deliberate
+whole-workbook replacement asks you to wait.
 Both source workbooks and the complete pre-apply backup remain in Recovery;
 Undo restores the previous workbook. GitHub replacement requires the separate
 unchecked confirmation option and a fresh remote SHA check. Local-only submission

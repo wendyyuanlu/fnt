@@ -18,7 +18,7 @@ export interface ComparisonHost {
     read:(entry:ComparisonSnapshot)=>Promise<ComparisonSource>;
   };
   syncDestination?:()=>string|undefined;
-  apply?:(request:{left:Workbook;right:Workbook;choices:ComparisonChoice[];sync:boolean})=>Promise<void>;
+  apply?:(request:{left:Workbook;right:Workbook;choices:ComparisonChoice[];sync:boolean;progress?:(message:string,completed:number,total:number)=>void})=>Promise<void>;
   close:()=>void;
 }
 export interface ComparisonFrame extends HTMLIFrameElement {

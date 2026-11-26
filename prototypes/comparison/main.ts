@@ -689,13 +689,18 @@ el('apply-selection').onclick=async()=>{
   setSourcesBusy(true);
   for(const id of ['submit-back','submit-review','apply-sync'])el<HTMLButtonElement|HTMLInputElement>(id).disabled=true;
   const button=el<HTMLButtonElement>('apply-selection');button.disabled=true;button.textContent='Applying and saving recovery...';
+  const notice=document.createElement('p'),progress=document.createElement('progress');
+  notice.setAttribute('role','status');progress.setAttribute('aria-label','Submit decision progress');
+  button.before(notice,progress);progress.max=6;progress.value=0;
   el('apply-error').hidden=true;
   try{
-    await host.apply({left:structuredClone(left),right:structuredClone(right),choices:[...choices].map(([id,side])=>({id,side})),sync:!el('apply-sync-label').hidden&&el<HTMLInputElement>('apply-sync').checked});
+    await host.apply({left:structuredClone(left),right:structuredClone(right),choices:[...choices].map(([id,side])=>({id,side})),sync:!el('apply-sync-label').hidden&&el<HTMLInputElement>('apply-sync').checked,
+      progress:(message,completed,total)=>{notice.textContent=`${completed} / ${total} steps — ${message}`;progress.max=total;progress.value=completed;}});
     host.close();
   }catch(error){
     el('apply-error').hidden=false;el('apply-error').textContent=error instanceof Error?error.message:String(error);
   }finally{
+    notice.remove();progress.remove();
     setSourcesBusy(false);button.textContent='Submit decision';button.disabled=!choices.size;
     for(const id of ['submit-back','submit-review','apply-sync'])el<HTMLButtonElement|HTMLInputElement>(id).disabled=false;
   }

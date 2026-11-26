@@ -11,9 +11,13 @@ async function saved(page:Page){
   });
 }
 async function open(page:Page){
+  await page.bringToFront();
   await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await page.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
-  return page.frameLocator('iframe.comparison-frame');
+  const comparison=page.frameLocator('iframe.comparison-frame');
+  await expect(comparison.locator('#left-source')).toHaveText('Current local workbook');
+  await expect(comparison.locator('#left-file')).toBeEnabled();
+  return comparison;
 }
 test('submission rejects newer edits in another tab without losing decisions',async({page,context,isMobile})=>{
   await page.goto('/',{waitUntil:'domcontentloaded'});await expect(page.locator('#save-state')).toContainText('Saved');
@@ -21,7 +25,10 @@ test('submission rejects newer edits in another tab without losing decisions',as
   const left=createDemo(),right=clone(left);right.title='Selected donor title';
   const comparison=await open(page);
   await comparison.locator('#left-file').setInputFiles({name:'invented-left.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(left))});
+  await expect(comparison.locator('#left-source')).toHaveText('invented-left.json');
+  await expect(comparison.locator('#right-file')).toBeEnabled();
   await comparison.locator('#right-file').setInputFiles({name:'invented.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(right))});
+  await expect(comparison.locator('#selection-progress')).toContainText('0 of 1 chosen');
   await comparison.locator('#keep-right button').click();
   await comparison.locator('#submit-decision').click();
   await other.bringToFront();

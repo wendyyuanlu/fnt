@@ -6,6 +6,29 @@ import { parseArchive,stringifyArchive } from '../src/archive';
 import {getHypotheticalStyle} from '../src/hypothetical';
 
 describe('recoverable local storage',()=>{
+  it('acknowledges only the captured sync operation IDs without materializing or losing newer journal edits and Undo',async()=>{
+    const store=await Store.open(uid());
+    try{
+      let state=await store.save(createDemo(),0,'Initial');
+      const captured=state.pending.map(operation=>operation.id);
+      const history={undo:[{patch:[{path:['title'],exists:true,value:state.book.title}]}],redo:[]};
+      const receipt=await store.saveChanges(state.book.id,1,state.version,'Newer edit',[{patch:[{path:['title'],exists:true,value:'Newer while syncing'}]}],history);
+      const metadata=await store.syncMetadata(receipt.version,{sha:'confirmed',acknowledged:captured,paused:true,review:true});
+      state=(await store.load())!;
+      expect(state.book.title).toBe('Newer while syncing');expect(state.pending.map(operation=>operation.label)).toEqual(['Newer edit']);
+      expect(state.remoteSha).toBe('confirmed');expect(state.syncReview).toBe(true);expect(state.syncPaused).toBe(true);
+      expect(await store.undoHistory(metadata.version,state.book.id)).toEqual(history);
+      await expect(store.syncMetadata(receipt.version,{acknowledged:state.pending.map(operation=>operation.id)})).rejects.toThrow('Another tab');
+    }finally{store.close();}
+  });
+  it('never uploads an unresolved review or a transfer cancelled by opening comparison',async()=>{
+    const book=createDemo(),state:LocalState={book,version:1,pending:[{id:'edit',label:'Edit',time:''}],updated:'',sync:{owner:'example',repo:'private',branch:'main',path:'book.json'}};
+    let uploads=0;
+    const fetcher=vi.fn(async(_url:unknown,init?:RequestInit)=>{if(init?.method==='PUT')uploads++;return new Response(JSON.stringify(String(_url).includes('/contents/')?{message:'Not found'}:{private:true,has_pages:false}),{status:String(_url).includes('/contents/')?404:200});}) as unknown as typeof fetch;
+    await expect(syncGitHub({...state,syncReview:true},'invented',fetcher)).rejects.toThrow('paused');
+    await expect(syncGitHub(state,'invented',fetcher,[],{canUpload:()=>false})).rejects.toThrow('paused');
+    expect(uploads).toBe(0);
+  });
   it('rejects stale automatic sync sources after complete or journaled saves',async()=>{
     const store=await Store.open(uid());
     try{

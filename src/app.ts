@@ -865,7 +865,7 @@ async function flush(label = 'Edit workbook',preservedStatus?:string): Promise<v
       savedGeneration = g;
       status = g!==generation?'Unsaved changes - saving locally...':state.sync ? `Saved locally - ${state.pending.length} pending changes` : preservedStatus??'Saved in this browser — local only (not synced)';
       channel?.postMessage({version:state.version});
-      schedulePrivateSync(1000);
+      schedulePrivateSync();
     } catch(e) { scopedChanges.unshift(...records);fullSaveRequired||=full;status = 'NOT SAVED - download a backup'; flash(e); throw e; }
     finally { renderStatus(); }
   }).catch(e => { flash(e); });
@@ -881,70 +881,72 @@ async function compactSavedChanges():Promise<void>{
 }
 let privateSyncTimer:ReturnType<typeof setTimeout>|undefined;
 let privateSyncConflict=false;
+let privateSyncFlight:Promise<void>|undefined;
+let preservedSyncConflict:SyncConflict|undefined;
 let comparisonActive=false;
 let rememberPrivateSync=false;
 function schedulePrivateSync(delay=15000):void{
   clearTimeout(privateSyncTimer);
-  if(!state?.sync||state.syncPaused||!token||privateSyncConflict||!navigator.onLine)return;
+  if(!state?.sync||state.syncPaused||state.syncReview||!token||privateSyncConflict||comparisonActive||privateSyncFlight||!navigator.onLine)return;
   privateSyncTimer=setTimeout(()=>{
     if(document.visibilityState!=='visible'||busy||comparisonActive||draft!==undefined||touchCell||appendDraft||colorPicker?.pending||document.querySelector('dialog[open]')){schedulePrivateSync();return;}
     void manualSave(true);
-  },delay);
+  },hasPendingContent(state)?delay:Math.max(delay,60000));
 }
-async function manualSave(automatic=false): Promise<void> {
-  if(automatic&&(!state?.sync||state.syncPaused||!token||!navigator.onLine||privateSyncConflict||comparisonActive)){schedulePrivateSync();return;}
+async function updateSyncMetadata(change:Parameters<Store['syncMetadata']>[1]):Promise<void>{
+  const operation=saving.then(async()=>{const metadata=await store.syncMetadata(state.version,change);state={...state,...metadata};});
+  saving=operation.catch(()=>{});await operation;
+}
+async function manualSave(automatic=false,progress?:(message:string,completed:number,total:number)=>void): Promise<void> {
+  if(automatic&&(!state?.sync||state.syncPaused||state.syncReview||!token||!navigator.onLine||privateSyncConflict||comparisonActive)){schedulePrivateSync();return;}
   if(busy){flash('Wait for the current save or sync to finish.');return;}
-  if(!commitDraft())return;
-  busy=true;renderStatus();
+  if(!automatic&&!commitDraft())return;
+  if(privateSyncFlight){await privateSyncFlight;return;}
+  if(state.syncReview||privateSyncConflict||comparisonActive&&!progress){
+    if(!automatic){await flush();status='Saved locally — comparison review required before syncing';renderStatus();}
+    return;
+  }
+  const run=async()=>{
   try {
     await navigationSaving;
     if(navigationError)generation++;
-    await flush('Manual save');
+    await flush(automatic?'Autosave':'Manual save');
     if(savedGeneration!==generation)return;
-    if(automatic)await store.assertVersion(state.version);
-    const captured=automatic?state:await store.compact(state.version,state.sync?undefined:'Manual save');
-    if(!automatic)compactionWrites=0;
-    if(!captured)throw Error('Saved workbook is missing. Restore from recovery before continuing.');
-    state=captured;if(!automatic)navigationDirty=false;
-    await navigationSaving;
-    if(navigationDirty){state=await store.metadata(state.version,s=>s);navigationDirty=false;}
-    if(!state.sync){status='Saved locally + recovery checkpoint';return;}
-    if(!token){openSync();return;}
-    if(!automatic&&state.syncPaused)state=await store.metadata(state.version,s=>({...s,syncPaused:false}));
-    status='Syncing private repository...';renderStatus();
-    const originals=hasPendingContent(state)?await store.originals():[];
-    const result = await syncGitHub(state,token,fetch,originals),received=result.remote?migrateDropdownData(result.remote):undefined;
-    if(!result.remote&&!hasPendingContent(state)&&result.sha===state.remoteSha){status=state.pending.length?'Synced workbook — navigation saved locally':'Synced with private repository';return;}
-    if (result.remote) await store.checkpoint('Before remote download',book,result.originals??[]);
-    if(result.remote&&received?.changed)await store.checkpoint('Remote before DD storage migration',result.remote,result.originals??[],true);
-    const pending=received?.changed?[{id:uid(),label:'Move dropdown records into DD storage',time:new Date().toISOString()}]:[];
-    if(received&&received.book.id===state.book.id){
-      let merged=false;
-      for(const [id,activity]of Object.entries(state.book.tableActivity??{})){
-        const remote=received.book.tableActivity?.[id];
-        if((activity.visits??0)>(remote?.visits??0)){
-          received.book.tableActivity={...received.book.tableActivity,[id]:{...remote,visits:activity.visits}};merged=true;
-        }
-      }
-      if(merged)pending.push({id:uid(),label:'Visit table',time:new Date().toISOString()});
+    if(!state.sync){
+      if(!automatic){await store.checkpoint('Manual save',book);status='Saved locally + recovery checkpoint';}
+      return;
     }
-    state = await store.metadata(state.version,s => ({...s,book:clone(received?.book??book),remoteSha:result.sha,pending}));
-    const previousSheet=sheetId;
-    if(result.remote)adoptSavedWorkbook(automatic?previousSheet:undefined);
-    status = received?.changed?'Remote downloaded; DD storage update saved locally - use Save to sync':'Synced with private repository';
-    if(result.remote&&automatic)renderRestoredView(restoreView(previousSheet));else render();
+    if(!token){if(!automatic)openSync();return;}
+    if(!automatic&&state.syncPaused)await updateSyncMetadata({paused:false});
+    const captured={...state,pending:[...state.pending]},config=state.sync,credential=token;
+    await store.assertVersion(captured.version);
+    progress?.('Checking private GitHub revision...',0,2);
+    const originals=hasPendingContent(captured)?await store.originals():[];
+    const result=await syncGitHub(captured,credential,fetch,originals,{canUpload:()=>!state.syncReview&&!privateSyncConflict&&(!comparisonActive||!!progress)&&token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)});
+    if(result.remote){
+      throw new SyncConflict(result.remote,result.sha,result.originals??[]);
+    }
+    if(token!==credential||JSON.stringify(state.sync)!==JSON.stringify(config))throw Error('Sync connection changed during transfer. Local edits retained; acknowledgement not applied.');
+    if(!captured.pending.length&&result.sha===state.remoteSha){status='Synced with private repository';return;}
+    progress?.('Recording confirmed GitHub revision...',1,2);
+    await updateSyncMetadata({sha:result.sha,acknowledged:captured.pending.map(operation=>operation.id)});
+    status=generation!==savedGeneration?'Unsaved changes - saving locally...':hasPendingContent(state)?'Saved locally — newer edits pending sync':'Synced with private repository';
+    progress?.('Selected data synced with private GitHub.',2,2);
   } catch(e) {
     if (e instanceof SyncConflict) {
-      privateSyncConflict=true;
+      privateSyncConflict=true;preservedSyncConflict=e;
       try{
+        await updateSyncMetadata({paused:true,review:true});
         await store.checkpoint('Remote conflict - not applied',e.remote,e.originals,true);
         await store.checkpoint('Local conflict - not uploaded',book);
       }catch(recoveryError){status='CONFLICT - recovery failed; local edits retained';flash(recoveryError);return;}
-      status = 'CONFLICT - both versions in recovery';
-      openConflict(e);
+      status = 'CONFLICT - both versions in recovery — review before syncing';
     } else status = state.sync?'Sync failed - local copy retained':'Recovery checkpoint failed - local save retained';
-    flash(e);
-  } finally { busy = false; renderStatus();schedulePrivateSync(); }
+    if(!comparisonActive||progress)flash(e);
+  } finally { renderStatus(); }
+  };
+  privateSyncFlight=run();
+  try{await privateSyncFlight;}finally{privateSyncFlight=undefined;schedulePrivateSync();}
 }
 function openConflict(conflict:SyncConflict):void {
   dialog('Sync conflict - choose deliberately',`<div class="menu"><button id="upload-local" ${state.sync&&token?'':'disabled'}>Upload local data to GitHub</button><button id="compare-conflict" class="primary">Compare versions or a backup</button></div><p>Both copies are in recovery. Upload creates a separate comparison snapshot; it does not resolve this conflict.</p><details class="file-imports"><summary>Choose a whole copy instead</summary><div class="menu"><button id="use-remote">Use remote version on this device</button><button id="keep-local">Keep local version and explicitly replace remote</button></div><p class="muted">These actions replace a whole copy. A new remote change still causes another conflict.</p></details>`,d=>{
@@ -956,13 +958,16 @@ function openConflict(conflict:SyncConflict):void {
         const received=migrateDropdownData(conflict.remote);
         state=await store.metadata(state.version,s=>({...s,book:clone(received.book),remoteSha:conflict.sha,pending:received.changed?[{id:uid(),label:'Move dropdown records into DD storage',time:new Date().toISOString()}]:[]}));
         adoptSavedWorkbook();
-        privateSyncConflict=false;schedulePrivateSync(0);
+        await updateSyncMetadata({paused:false,review:false});privateSyncConflict=false;preservedSyncConflict=undefined;schedulePrivateSync(0);
         error='';status='Remote version saved locally - previous local version in recovery';render();d.close();
       }catch(e){flash(e);}
     };
     d.querySelector<HTMLButtonElement>('#keep-local')!.onclick=()=>{
       d.close();confirmAction('Replace remote with local version?', 'The preserved remote version remains in recovery. This explicitly chooses your local workbook; the upload still checks the remote revision.',()=>{
-        void(async()=>{try{state=await store.metadata(state.version,s=>({...s,remoteSha:conflict.sha}));privateSyncConflict=false;await manualSave();}catch(e){flash(e);}})();
+        void(async()=>{try{
+          await updateSyncMetadata({sha:conflict.sha,paused:false,review:false});privateSyncConflict=false;preservedSyncConflict=undefined;
+          changed('Confirm local copy for GitHub replacement',false,true);await manualSave();
+        }catch(e){flash(e);}})();
       });
     };
   });
@@ -998,6 +1003,7 @@ function openComparison(conflict?:SyncConflict):void{
   if(comparisonActive)return;
   if(busy){flash('Wait for the current save or sync to finish before comparing.');return;}
   if(!commitDraft())return;
+  conflict??=preservedSyncConflict;
   const captured={...state,book:clone(book),pending:clone(state.pending)},config=state.sync,credential=token,capturedGeneration=generation;
   let applied=false,remoteHead=conflict&&config?{path:config.path,sha:conflict.sha}:undefined;
   const source=(copy:Workbook,kind:string,label:string,revision?:string):ComparisonSource=>({
@@ -1005,6 +1011,9 @@ function openComparison(conflict?:SyncConflict):void{
   });
   const view=document.createElement('section');view.className='comparison-view';view.setAttribute('aria-label','Compare versions');
   const wasInert=root.inert;comparisonActive=true;root.inert=true;
+  clearTimeout(privateSyncTimer);
+  const pause=config?updateSyncMetadata({paused:true,review:true}):Promise.resolve();
+  void pause.catch(error=>flash(error));
   document.querySelectorAll<HTMLDialogElement>('dialog[open]').forEach(dialog=>dialog.close());
   document.body.classList.add('comparison-open');document.body.append(view);
   let files:ComparisonSnapshot[]=[];
@@ -1012,6 +1021,7 @@ function openComparison(conflict?:SyncConflict):void{
     local:source(captured.book,'This device','Current local workbook'),
     remote:conflict?source(conflict.remote,'GitHub','Preserved sync-conflict copy',conflict.sha):undefined,
     readRemote:config&&credential?async()=>{
+      await pause;
       const received=await syncGitHub(captured,credential,fetch,[],{readOnly:true});
       if(!received.remote)throw Error('The saved GitHub workbook was not returned. Neither copy was changed.');
       remoteHead={path:received.readPath??config.path,sha:received.sha};
@@ -1029,14 +1039,17 @@ function openComparison(conflict?:SyncConflict):void{
     }:undefined,
     syncDestination:config&&credential?()=>remoteHead?`${config.owner}/${config.repo} · ${remoteHead.path}${remoteHead.path!==config.path?' (also updates your saved sync path)':''}`:undefined:undefined,
     apply:async request=>{
+      await pause;await privateSyncFlight;
       if(applied||busy)throw Error('This comparison has already been applied or another operation is running.');
       if(capturedGeneration!==generation||JSON.stringify(book)!==JSON.stringify(captured.book))throw Error('The local workbook changed after comparison opened. Close and compare again; your newer edits were not replaced.');
+      request.progress?.('Checking selected changes and formula dependencies...',0,6);
       const merged=await mergeComparison(request.left,request.right,request.choices);
       if(request.sync&&(!config||!credential||!remoteHead))throw Error('Read the current GitHub copy before applying and syncing.');
       busy=true;status='Validating selection and saving recovery copies...';renderStatus();
       clearTimeout(compactionTimer);compactionTimer=undefined;
       let saved=false;
       try{
+        request.progress?.('Checking saved local and GitHub revisions...',1,6);
         await flush();
         if(savedGeneration!==generation||capturedGeneration!==generation)throw Error('Local changes could not be saved or changed during comparison. Nothing was replaced.');
         const current=await store.load();
@@ -1047,20 +1060,23 @@ function openComparison(conflict?:SyncConflict):void{
           if(latest.sha!==target.sha)throw Error('GitHub changed after comparison opened. Read the latest copy and compare again; neither workbook was replaced.');
         }
         status='Saving complete pre-apply backup...';renderStatus();
+        request.progress?.(status,2,6);
         const before=await store.backup({...state,book:clone(book)});
         validateBackup({...before,state:{...before.state,book:merged}});
         status='Saving both comparison sources...';renderStatus();
+        request.progress?.(status,3,6);
         await store.checkpoint('Comparison left source - before apply',request.left,[],true);
         await store.checkpoint('Comparison right source - before apply',request.right,[],true);
         merged.revision=Math.max(book.revision,merged.revision)+1;
         const inverse:History=merged.id===book.id?structuralUndo(book,merged):{book:clone(book)},history={undo:[...clone(undo),inverse].slice(-undoLimit),redo:[]};
         if(capturedGeneration!==generation||JSON.stringify(book)!==JSON.stringify(captured.book))throw Error('The local workbook changed while recovery was being saved. Nothing was replaced.');
         status='Saving selected workbook and undo history...';renderStatus();
+        request.progress?.(status,4,6);
         const recoveryArchive=JSON.stringify({format:'fnt-compressed-v1',payload:compressArchive(before)});
         state=await store.save(merged,state.version,'Apply comparison selections',true,undefined,{recoveryArchive,undoHistory:history,comparisonSync:target,pauseSync:!request.sync});
         saved=true;applied=true;
         compactionWrites=0;fullSaveRequired=false;scopedChanges.length=0;
-        privateSyncConflict=false;adoptSavedWorkbook();undo.push(...history.undo);
+        privateSyncConflict=false;preservedSyncConflict=undefined;adoptSavedWorkbook();undo.push(...history.undo);
         if(target&&rememberPrivateSync)await store.rememberSyncToken(target.config,credential);
         error='';status='Selected data saved locally; both sources and the previous workbook are in Recovery.'+(request.sync?'':' Automatic sync paused until Save or reconnect.');
         channel?.postMessage({version:state.version});render();
@@ -1068,11 +1084,12 @@ function openComparison(conflict?:SyncConflict):void{
         if(saved){status='Selection saved locally; a follow-up step failed. Inspect Recovery before retrying.';flash(error);}
         else{status='Comparison not applied - original workbook retained';throw error;}
       }finally{busy=false;renderStatus();}
-      if(request.sync&&saved)await manualSave(false);
+      if(request.sync&&saved){request.progress?.('Syncing confirmed selection with GitHub...',5,6);await manualSave(false,(message)=>request.progress?.(message,5,6));}
+      request.progress?.('Selected workbook saved.',6,6);
     },
     close:()=>{
       dispose();view.remove();root.inert=wasInert;comparisonActive=false;document.body.classList.remove('comparison-open');
-      if(conflict&&!applied)openConflict(conflict);else root.querySelector<HTMLButtonElement>('[data-action="file"]')?.focus();
+      root.querySelector<HTMLButtonElement>('[data-action="file"]')?.focus();
       if(!applied)schedulePrivateSync();
     },
   });
@@ -1089,13 +1106,17 @@ function renderStatus(): void {
   if(expandedEditor)expandedEditor.input.disabled=busy||!editableReference()||!!gridReference()?.error;
   const el = document.querySelector('#save-state');
   if (el) { el.textContent = draft!==undefined?'Editing cell - not saved yet':appendDraft?'Editing new option - not saved yet':colorPicker?.pending?'Previewing color - release to apply':busy&&status.startsWith('Saved')?'Finishing complete save...':status; el.className = `save-state ${error ? 'bad' : ''}`; }
-  if(el&&state?.syncPaused&&!busy&&draft===undefined&&!el.textContent?.includes('sync paused'))el.textContent+=' — automatic sync paused until Save or reconnect';
+  if(el&&state?.syncReview&&!busy&&draft===undefined&&!el.textContent?.includes('review'))el.textContent+=' — comparison review required; no automatic upload';
+  else if(el&&state?.syncReview&&!busy&&draft===undefined&&!el.textContent?.includes('comparison review'))el.textContent+=' — comparison review required';
+  else if(el&&state?.syncPaused&&!busy&&draft===undefined&&!el.textContent?.includes('sync paused'))el.textContent+=' — automatic sync paused until Save';
   else if(el&&state?.sync&&!token&&status.startsWith('Saved')&&!busy&&draft===undefined)el.textContent+=' — sign in to resume private sync';
   const alert = document.querySelector<HTMLElement>('#error');
   if (alert) {
     alert.querySelector<HTMLElement>('.error-message')!.textContent=error;alert.hidden=!error;
     alert.querySelector<HTMLButtonElement>('.error-dismiss')!.onclick=()=>{error='';renderStatus();};
   }
+  const review=root.querySelector<HTMLButtonElement>('#sync-review');
+  if(review){review.hidden=!state?.syncReview&&!privateSyncConflict;review.onclick=()=>preservedSyncConflict?openConflict(preservedSyncConflict):openComparison();}
   if(root.querySelector('[data-action="bold"]')){
     const format=inGrid(selected.r,selected.c)?current().format:undefined;
     for(const flag of ['bold','italic','underline','strikethrough','wrap'] as const)root.querySelector(`[data-action="${flag}"]`)?.setAttribute('aria-pressed',String(!!format?.[flag]));
@@ -1330,7 +1351,7 @@ function render(options?:{preserveViewport:boolean}): void {
   const scroll = document.querySelector('#grid-scroll')?.scrollLeft ?? 0;
   root.innerHTML = `
     <header class="app-header">
-      <div class="workbook-heading"><span id="save-state" class="save-state">${esc(status)}</span></div>
+      <div class="workbook-heading"><span id="save-state" class="save-state">${esc(status)}</span><button id="sync-review" hidden>Review sync conflict</button></div>
       <div class="save-area"><button class="primary" data-action="save">Save <span class="desktop">workbook</span></button><button data-action="file" aria-label="Recovery" title="Import Excel, export and browser-local recovery">Recovery</button></div>
     </header>
     <div id="error" role="alert" class="error" ${error?'':'hidden'}><span class="error-message">${esc(error)}</span><button type="button" class="error-dismiss" aria-label="Dismiss error" title="Dismiss error">${toolbarIcon('close')}</button></div>

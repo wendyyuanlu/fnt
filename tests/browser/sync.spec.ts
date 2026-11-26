@@ -66,7 +66,7 @@ test('comparison reads the renamed default after an old saved path is removed, r
   expect(reads).toContain('personal-workbook.json');expect(reads).toContain('fnt-data.json');expect(writes).toBe(0);
 });
 
-test('independent browsers auto-sync saved edits, refresh on resume, retain failed/offline edits and detect concurrent changes',async({page,browser,isMobile})=>{
+test('independent browsers batch uploads, require deliberate remote adoption, and retain failed/offline edits',async({page,browser,isMobile})=>{
   let content:string|undefined,sha='revision-0',revision=0,failure=false;
   const other=await browser.newContext({viewport:page.viewportSize()!,isMobile,hasTouch:isMobile}),second=await other.newPage();
   const route=async(context:typeof other)=>context.route('https://api.github.com/**',async route=>{
@@ -81,6 +81,7 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
       {json:route.request().url().includes('/git/trees/')?{tree:[],truncated:false}:{private:true,has_pages:false}});
   });
   const connect=async(target:typeof page,remember=false)=>{
+    await target.bringToFront();
     await target.getByRole('button',{name:'Recovery',exact:true}).click();
     await expect(target.getByRole('dialog',{name:'Recovery',exact:true}).locator('.menu > :first-child')).toHaveText('Private GitHub sync');
     await target.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
@@ -89,43 +90,51 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
     await target.getByRole('button',{name:'Connect & sync now',exact:true}).click();
   };
   const edit=async(target:typeof page,value:string)=>{
-    await target.locator('td[data-r="1"][data-c="2"]').click();await target.locator('#formula').fill(value);await target.locator('#formula').press('Enter');
+    await target.bringToFront();await target.locator('td[data-r="1"][data-c="2"]').click();
+    if(isMobile){await target.locator('#formula').fill(value);await target.locator('#formula').press('Enter');}
+    else{await target.keyboard.press('F2');await target.getByRole('textbox',{name:'Edit selected cell',exact:true}).fill(value);await target.keyboard.press('Enter');}
   };
   const local=async(target:typeof page)=>target.evaluate(async()=>{
     const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();
     try{
       const state=(await store.load())!,sheet=state.book.sheets[0];
-      return{pending:state.pending.length,value:sheet.cells[`${sheet.rows[1].id}:${sheet.columns[2].id}`].value};
+      return{pending:state.pending.filter((operation:{label:string})=>operation.label!=='Visit table').length,value:sheet.cells[`${sheet.rows[1].id}:${sheet.columns[2].id}`].value};
     }finally{store.close();}
   });
+  const adopt=async(target:typeof page)=>{
+    await target.bringToFront();await target.locator('#sync-review').click();
+    await target.getByText('Choose a whole copy instead',{exact:true}).click();
+    await target.getByRole('button',{name:'Use remote version on this device',exact:true}).click();
+    await expect(target.locator('#save-state')).toContainText(/Remote version saved locally|Synced/);
+  };
   try{
     await route(page.context());await route(other);
     await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');await connect(page);
     await expect(page.locator('#save-state')).toHaveText('Synced with private repository');
     await second.goto(page.url());await expect(second.locator('#save-state')).toContainText('Saved');await connect(second,true);
-    await second.getByText('Choose a whole copy instead',{exact:true}).click();await second.getByRole('button',{name:'Use remote version on this device',exact:true}).click();
-    await expect(second.locator('#save-state')).toContainText('Synced');
-    await second.locator('td[data-r="1"][data-c="0"]').click();
-    if(isMobile)await second.locator('#formula').press('Escape');
+    await expect(second.locator('#save-state')).toContainText('CONFLICT');await adopt(second);
     const started=Date.now();await edit(page,'801');
-    await expect.poll(()=>local(page)).toEqual({pending:0,value:801});
-    await second.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+    await expect.poll(()=>local(page),{timeout:25000}).toEqual({pending:0,value:801});
+    await second.bringToFront();await second.locator('[data-action="save"]').click();
+    await expect(second.locator('#save-state')).toContainText('CONFLICT');
+    expect((await local(second)).value).not.toBe(801);await adopt(second);
     await expect(second.locator('td[data-r="1"][data-c="2"]')).toHaveText('801');
-    await expect(second.locator('td[data-r="1"][data-c="0"]')).toHaveClass(/active/);
     test.info().annotations.push({type:'controlled-sync-ms',description:String(Date.now()-started)});
-    failure=true;await edit(page,'802');
+    failure=true;await edit(page,'802');await page.locator('[data-action="save"]').click();
     await expect(page.locator('#save-state')).toHaveText('Sync failed - local copy retained');
     expect((await local(page)).value).toBe(802);expect((await local(page)).pending).toBeGreaterThan(0);
-    failure=false;await page.evaluate(()=>window.dispatchEvent(new Event('online')));
+    failure=false;await page.locator('[data-action="save"]').click();
     await expect.poll(()=>local(page)).toEqual({pending:0,value:802});
-    await second.reload();await expect(second.locator('#save-state')).toContainText('Synced');
+    await second.reload();await expect(second.locator('#save-state')).toContainText('CONFLICT');await adopt(second);
     await expect(second.locator('td[data-r="1"][data-c="2"]')).toHaveText('802');
     await page.context().setOffline(true);await edit(page,'901');await expect(page.locator('#save-state')).toContainText('Saved locally');
     expect((await local(page)).pending).toBeGreaterThan(0);
-    await edit(second,'902');await expect.poll(()=>local(second)).toEqual({pending:0,value:902});
+    await edit(second,'902');await second.locator('[data-action="save"]').click();await expect.poll(()=>local(second)).toEqual({pending:0,value:902});
     const before=revision;await page.context().setOffline(false);
-    await expect(page.locator('#save-state')).toHaveText('CONFLICT - both versions in recovery');
+    await page.bringToFront();await page.locator('[data-action="save"]').click();
+    await expect(page.locator('#save-state')).toContainText('CONFLICT');
     expect((await local(page)).value).toBe(901);expect((await local(second)).value).toBe(902);expect(revision).toBe(before);
+    await page.locator('#sync-review').click();
     await page.getByRole('button',{name:'Compare versions or a backup',exact:true}).click();
     const comparison=page.frameLocator('iframe.comparison-frame');
     await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
@@ -135,9 +144,10 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
     await expect(comparison.locator('#left-grid')).toContainText('901');
     await expect(comparison.locator('#right-grid')).toContainText('902');
     await comparison.getByRole('button',{name:'Back to workbook',exact:true}).click();
-    await expect(page.getByRole('dialog',{name:'Sync conflict - choose deliberately',exact:true})).toBeVisible();
+    await expect(page.getByRole('dialog',{name:'Sync conflict - choose deliberately',exact:true})).toHaveCount(0);
+    await expect(page.locator('#sync-review')).toBeVisible();
     expect(revision).toBe(before);
-    await page.reload();await expect(page.locator('#save-state')).toContainText('sign in to resume private sync');
+    await page.reload();await expect(page.locator('#save-state')).toContainText('comparison review required');
     expect((await local(page)).value).toBe(901);expect((await local(page)).pending).toBeGreaterThan(0);
     await second.getByRole('button',{name:'Recovery',exact:true}).click();
     await second.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
@@ -192,11 +202,13 @@ test('visual backup comparison supports choices and changed areas without restor
   await comparison.getByRole('button',{name:'Back to workbook',exact:true}).click();
 });
 
-test('sync holds a source-edit lock until remote acknowledgment, then restores editing',async({page})=>{
+test('connecting and uploading never locks source editing while waiting for acknowledgment',async({page})=>{
   let release:()=>void;
+  let uploading=false;
   const gate=new Promise<void>(resolve=>release=resolve);
   await page.route('https://api.github.com/**',async route=>{
     if(route.request().method()==='PUT'){
+      uploading=true;
       await gate;await route.fulfill({json:{content:{sha:'acknowledged'}}});return;
     }
     await route.fulfill(route.request().url().includes('/contents/')?{status:404,json:{message:'Not found'}}:{json:{private:true,has_pages:false}});
@@ -207,9 +219,9 @@ test('sync holds a source-edit lock until remote acknowledgment, then restores e
     await page.locator(`#sync-${name}`).fill(value);
   }
   await page.getByRole('button',{name:'Connect & sync now',exact:true}).click();
-  await expect(page.locator('#save-state')).toHaveText('Syncing private repository...');
-  await expect(page.locator('#formula')).toBeDisabled();
-  await page.locator('#grid-scroll').focus();await page.keyboard.type('should not become a draft');
+  await expect.poll(()=>uploading).toBe(true);
+  await expect(page.locator('#formula')).toBeEnabled();
+  await page.locator('#grid-scroll').focus();
   await expect(page.locator('.cell-inline-editor')).toHaveCount(0);
   expect(await page.evaluate(async()=>{
     const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
@@ -244,7 +256,7 @@ test('failed conflict recovery is explicit and never claims both versions were s
   await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
   for(const [name,value]of [['owner','example'],['repo','private-test'],['branch','main'],['path','synthetic.json'],['token','synthetic-test-token']])await page.locator(`#sync-${name}`).fill(value);
   await page.getByRole('button',{name:'Connect & sync now',exact:true}).click();
-  await expect(page.locator('#save-state')).toHaveText('CONFLICT - recovery failed; local edits retained');
+  await expect(page.locator('#save-state')).toContainText('CONFLICT - recovery failed; local edits retained');
   await expect(page.locator('#error')).toContainText('Controlled recovery quota');
   await expect(page.getByRole('dialog',{name:'Sync conflict - choose deliberately'})).toHaveCount(0);
   await expect(page.locator('#formula')).toBeEnabled();expect(errors).toEqual([]);
