@@ -95,7 +95,7 @@ test('independent browsers batch uploads, require deliberate remote adoption, an
     else{await target.keyboard.press('F2');await target.getByRole('textbox',{name:'Edit selected cell',exact:true}).fill(value);await target.keyboard.press('Enter');}
   };
   const local=async(target:typeof page)=>target.evaluate(async()=>{
-    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
     try{
       const state=(await store.load())!,sheet=state.book.sheets[0];
       return{pending:state.pending.filter((operation:{label:string})=>operation.label!=='Visit table').length,value:sheet.cells[`${sheet.rows[1].id}:${sheet.columns[2].id}`].value};
@@ -103,39 +103,50 @@ test('independent browsers batch uploads, require deliberate remote adoption, an
   });
   const adopt=async(target:typeof page)=>{
     await target.bringToFront();await target.locator('#sync-review').click();
-    await target.getByText('Choose a whole copy instead',{exact:true}).click();
-    await target.getByRole('button',{name:'Use remote version on this device',exact:true}).click();
-    await expect(target.locator('#save-state')).toContainText(/Remote version saved locally|Synced/);
+    const comparison=target.frameLocator('iframe.comparison-frame');
+    await comparison.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true}).click();
+    await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
+    await comparison.locator('.bulk-disclosure>summary').click();
+    await comparison.locator('#choice-scope-trigger').click();await comparison.getByRole('option',{name:'Every difference in both copies',exact:true}).click();
+    await comparison.locator('#bulk-buttons [data-pick="right"]').click();
+    await comparison.locator('#submit-decision').click();await comparison.locator('#apply-sync').check();
+    await comparison.locator('#apply-selection').click();await expect(target.locator('.comparison-view')).toHaveCount(0);
+    await expect(target.locator('#save-state')).toContainText('Synced');
   };
   try{
     await route(page.context());await route(other);
     await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');await connect(page);
     await expect(page.locator('#save-state')).toHaveText('Synced with private repository');
-    await second.goto(page.url());await expect(second.locator('#save-state')).toContainText('Saved');await connect(second,true);
-    await expect(second.locator('#save-state')).toContainText('CONFLICT');await adopt(second);
+    const baseline=await page.evaluate(async()=>{
+      const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();
+      try{return (await store.load())!;}finally{store.close();}
+    });
+    await second.goto(page.url());await expect(second.locator('#save-state')).toContainText('Saved');
+    await second.evaluate(async baseline=>{
+      const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+      try{const previous=(await store.load())!,saved=await store.save(baseline.book,previous.version,'Invented second-device baseline');await store.metadata(saved.version,state=>({...state,sync:baseline.sync,remoteSha:baseline.remoteSha,pending:[]}));}finally{store.close();}
+    },baseline);
+    await second.reload();await connect(second,true);await expect(second.locator('#save-state')).toContainText('Synced');
     const started=Date.now();await edit(page,'801');
     await expect.poll(()=>local(page),{timeout:25000}).toEqual({pending:0,value:801});
     await second.bringToFront();await second.locator('[data-action="save"]').click();
-    await expect(second.locator('#save-state')).toContainText('CONFLICT');
-    expect((await local(second)).value).not.toBe(801);await adopt(second);
-    await expect(second.locator('td[data-r="1"][data-c="2"]')).toHaveText('801');
+    await expect(second.locator('#save-state')).toContainText('Sync conflict');
+    expect((await local(second)).value).not.toBe(801);
     test.info().annotations.push({type:'controlled-sync-ms',description:String(Date.now()-started)});
     failure=true;await edit(page,'802');await page.locator('[data-action="save"]').click();
     await expect(page.locator('#save-state')).toHaveText('Sync failed - local copy retained');
     expect((await local(page)).value).toBe(802);expect((await local(page)).pending).toBeGreaterThan(0);
     failure=false;await page.locator('[data-action="save"]').click();
     await expect.poll(()=>local(page)).toEqual({pending:0,value:802});
-    await second.reload();await expect(second.locator('#save-state')).toContainText('CONFLICT');await adopt(second);
-    await expect(second.locator('td[data-r="1"][data-c="2"]')).toHaveText('802');
     await page.context().setOffline(true);await edit(page,'901');await expect(page.locator('#save-state')).toContainText('Saved locally');
     expect((await local(page)).pending).toBeGreaterThan(0);
+    await adopt(second);await expect(second.locator('td[data-r="1"][data-c="2"]')).toHaveText('802');
     await edit(second,'902');await second.locator('[data-action="save"]').click();await expect.poll(()=>local(second)).toEqual({pending:0,value:902});
     const before=revision;await page.context().setOffline(false);
     await page.bringToFront();await page.locator('[data-action="save"]').click();
-    await expect(page.locator('#save-state')).toContainText('CONFLICT');
+    await expect(page.locator('#save-state')).toContainText('Sync conflict');
     expect((await local(page)).value).toBe(901);expect((await local(second)).value).toBe(902);expect(revision).toBe(before);
     await page.locator('#sync-review').click();
-    await page.getByRole('button',{name:'Compare versions or a backup',exact:true}).click();
     const comparison=page.frameLocator('iframe.comparison-frame');
     await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
     await comparison.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true}).click();
@@ -147,7 +158,7 @@ test('independent browsers batch uploads, require deliberate remote adoption, an
     await expect(page.getByRole('dialog',{name:'Sync conflict - choose deliberately',exact:true})).toHaveCount(0);
     await expect(page.locator('#sync-review')).toBeVisible();
     expect(revision).toBe(before);
-    await page.reload();await expect(page.locator('#save-state')).toContainText('comparison review required');
+    await page.reload();await expect(page.locator('#save-state')).toContainText('sync paused');
     expect((await local(page)).value).toBe(901);expect((await local(page)).pending).toBeGreaterThan(0);
     await second.getByRole('button',{name:'Recovery',exact:true}).click();
     await second.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
@@ -256,7 +267,7 @@ test('failed conflict recovery is explicit and never claims both versions were s
   await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
   for(const [name,value]of [['owner','example'],['repo','private-test'],['branch','main'],['path','synthetic.json'],['token','synthetic-test-token']])await page.locator(`#sync-${name}`).fill(value);
   await page.getByRole('button',{name:'Connect & sync now',exact:true}).click();
-  await expect(page.locator('#save-state')).toContainText('CONFLICT - recovery failed; local edits retained');
+  await expect(page.locator('#save-state')).toContainText('Sync conflict — recovery failed; saved locally');
   await expect(page.locator('#error')).toContainText('Controlled recovery quota');
   await expect(page.getByRole('dialog',{name:'Sync conflict - choose deliberately'})).toHaveCount(0);
   await expect(page.locator('#formula')).toBeEnabled();expect(errors).toEqual([]);

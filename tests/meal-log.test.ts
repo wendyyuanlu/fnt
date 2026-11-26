@@ -1,8 +1,10 @@
 import {expect,it} from 'vitest';
 import {addMasterFood,masterLogging,masterDayBlocks} from '../src/day-logging';
 import {Engine,scalar} from '../src/formula';
-import {addMealIngredient,mealLogConfig,mealLogContext,moveMealFood} from '../src/meal-log';
-import {addTableColumns,blankSheet,createDemo,getCell,moveColumns,renameColumn,setInput} from '../src/model';
+import {addMealIngredient,markMealDraft,mealLogConfig,mealLogContext,moveMealFood} from '../src/meal-log';
+import {addTableColumns,blankSheet,clone,createDemo,getCell,moveColumns,renameColumn,setInput} from '../src/model';
+import {applyUndo,structuralUndo} from '../src/undo-history';
+import {validationChoiceGroups} from '../src/references';
 import {validateBook} from '../src/storage';
 import {defaultHeaderFormula} from '../src/meal-block';
 
@@ -45,13 +47,39 @@ it('retains live field identities and formulas after column moves and names chan
   expect(scalar(new Engine(book).cell(sheet.id,header,fields.get('calories')!.column))).toBe(421);
   validateBook(book);
 });
-it('copies manual nutrition to Ingredients with weight-based units, retaining the historical cells',()=>{
+it('copies manual nutrition to Ingredients, links the Food cell, and reverses the whole action with Undo',()=>{
   const {book,sheet,input}=fixture();input(2,10,'300');
-  const row=sheet.rows[2].id,before=JSON.stringify(sheet.cells),added=addMealIngredient(book,sheet,row),target=book.tables.find(table=>table.id===added.table)!,destination=book.sheets.find(sheet=>sheet.id===target.sheet)!;
+  const row=sheet.rows[2].id,before=clone(book),food=mealLogContext(book,sheet).fields.get('food')!,added=addMealIngredient(book,sheet,row),target=book.tables.find(table=>table.id===added.table)!,destination=book.sheets.find(sheet=>sheet.id===target.sheet)!;
   const read=(name:string)=>scalar(new Engine(book).cell(destination.id,added.row,target.columns.find(field=>field.name===name)!.column));
   expect(read('Serving (g)')).toBe(300);expect(read('Conversion Amount')).toBe(300);expect(read('Conversion Unit')).toBe('g');
-  expect(read('Calories (kcal)')).toBe(100);expect(read('Protein (g)')).toBe(20);expect(JSON.stringify(sheet.cells)).toBe(before);
+  expect(read('Calories (kcal)')).toBe(100);expect(read('Protein (g)')).toBe(20);
+  for(const [address,cell]of Object.entries(before.sheets.find(source=>source.id===sheet.id)!.cells))if(address!==`${row}:${food.column}`)expect(sheet.cells[address]).toEqual(cell);
+  expect(getCell(sheet,row,food.column).binding).toEqual({table:target.id,row:added.row,column:target.columns.find(field=>field.name==='Ingredients')!.id});
+  expect(validationChoiceGroups(book,sheet.validations.find(source=>source.rows.includes(row))!,row,food.column,new Engine(book)).some(group=>group.choices.some(choice=>choice.binding?.row===added.row))).toBe(true);
+  const restored=applyUndo(book,structuralUndo(before,book)).book;
+  expect(restored.sheets.find(source=>source.id===sheet.id)!.cells[`${row}:${food.column}`]).toEqual(before.sheets.find(source=>source.id===sheet.id)!.cells[`${row}:${food.column}`]);
+  expect(restored.tables.find(table=>table.id===target.id)!.rows).not.toContain(added.row);
   expect(()=>addMealIngredient(book,sheet,row)).toThrow('already exists');validateBook(book);
+});
+it('quietly marks blank manual macros as draft, accepts zero, and clears the marker when complete or linked',()=>{
+  const {book,sheet,input}=fixture(),row=sheet.rows[2].id,food=mealLogContext(book,sheet).fields.get('food')!.column;
+  markMealDraft(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
+  for(let c=4;c<10;c++)input(2,c,'0');
+  markMealDraft(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBeUndefined();
+  input(2,4,'=""');markMealDraft(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
+  const added=addMealIngredient(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBeUndefined();
+  expect(getCell(sheet,row,food).binding?.row).toBe(added.row);validateBook(book);
+});
+it('adds the Ingredients picker source only to the linked Food cell without changing other dropdown targets',()=>{
+  const {book,sheet}=fixture(),row=sheet.rows[2].id,other=sheet.rows[3].id,fields=mealLogContext(book,sheet).fields,food=fields.get('food')!.column,unit=fields.get('unit')!.column;
+  const original={id:'original-picker',rows:[row,other],columns:[food,unit],source:'=Meals[Meal]',sheet:sheet.id};
+  sheet.validations.push(original);const added=addMealIngredient(book,sheet,row);
+  const source=sheet.validations.find(source=>source.rows.includes(row)&&source.columns.includes(food))!;
+  const groups=validationChoiceGroups(book,source,row,food,new Engine(book));
+  expect(groups.some(group=>group.target?.table===added.table)).toBe(true);expect(groups.some(group=>group.name==='Meals')).toBe(true);
+  expect(sheet.validations.find(source=>source.rows.includes(other)&&source.columns.includes(food))!.source).toBe(original.source);
+  expect(sheet.validations.find(source=>source.rows.includes(row)&&source.columns.includes(unit))!.source).toBe(original.source);
+  validateBook(book);
 });
 it('keeps all three serving/conversion fields empty when the quantity row is blank',()=>{
   const {book,sheet}=fixture(),added=addMealIngredient(book,sheet,sheet.rows[2].id),table=book.tables.find(table=>table.id===added.table)!,destination=book.sheets.find(sheet=>sheet.id===table.sheet)!;

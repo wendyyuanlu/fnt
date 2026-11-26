@@ -52,12 +52,14 @@ test('touch taps focus one bottom editor in the gesture, commit across cells and
   await page.reload();await expect(cell(page,1,0)).toHaveText('First changed');await expect(bar).toBeHidden();
 });
 
-test('touch dropdown shares editing and filtering, retains sources and pagination, and commits the exact choice binding',async({page,isMobile})=>{
+test('touch dropdown shares editing and filtering, retains sources while scrolling, and commits the exact choice binding',async({page,isMobile})=>{
   test.skip(!isMobile,'Touch-specific shared input; desktop dropdown coverage remains in controls.');
   await fixture(page);const input=page.locator('#formula'),popup=page.locator('.cell-dropdown');
   await cell(page,1,1).tap();await expect(input).toBeFocused();await expect(popup).toBeVisible();
   await expect(popup.locator('input')).toHaveCount(0);await expect(popup.getByRole('option')).toHaveCount(80);
-  await page.getByRole('button',{name:'Next dropdown options',exact:true}).tap();await expect(input).toBeFocused();await expect(popup.getByRole('option').first()).toHaveText('Choice 080');
+  await popup.locator('[role=listbox]').evaluate(element=>element.scrollTop=element.scrollHeight);
+  await expect(input).toBeFocused();await expect(popup.getByRole('option',{name:'Choice 119',exact:true})).toBeVisible();
+  await expect(popup.locator('.find-pagination')).toHaveCount(0);
   await input.fill('Choice 119');await expect(popup.getByRole('option')).toHaveText(['Choice 119']);
   await page.getByRole('tab',{name:'Touch other',exact:true}).tap();await expect(input).toBeFocused();await expect(popup).toContainText('No matching options.');
   await input.fill('choice');await expect(popup.getByRole('option')).toHaveText(['Other choice','Another choice']);

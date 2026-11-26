@@ -14,6 +14,7 @@ export interface Cell {
   value?: Scalar; formula?: Ast; calculation?: Ast; original?: string; format?: Format; note?: string; link?: string;
   spillHint?: boolean; dateLiteral?: boolean; fractionInput?:string; fractionLiteral?:boolean;
   dayDateTable?:string;
+  foodDraft?:boolean;
   binding?: { table: string; row: string; column: string };
 }
 export interface Column { id: string; label: string; width?: number; wrap?:boolean; hidden?: boolean; hypothetical?:boolean; hypotheticalTables?:Record<string,boolean> }
@@ -461,13 +462,14 @@ export function moveRows(book:Workbook,sheet:Sheet,ids:string[],boundary:number,
   const selected=new Set(ids),groups=moveGroupPlan(sheet,'row',ids,boundary);
   if(scope){
     if(ids.some(id=>!scope.rows.includes(id)))throw Error('Move options, not the list header.');
-    const slots=sheet.rows.map((r,i)=>scope.rows.includes(r.id)?i:-1).filter(i=>i>=0),records=slots.map(i=>sheet.rows[i]);
+    const owned=new Set(scope.rows),slots=sheet.rows.map((r,i)=>owned.has(r.id)?i:-1).filter(i=>i>=0),records=slots.map(i=>sheet.rows[i]);
     const columns=new Set(scope.columns.map(c=>c.column));
-    for(const row of records){
-      if(allTables(book).some(t=>t.id!==scope.id&&t.sheet===sheet.id&&(t.header===row.id||t.rows.includes(row.id)))||Object.entries(sheet.cells).some(([address,c])=>address.startsWith(row.id+':')&&!columns.has(address.split(':')[1])&&(c.value!=null||c.formula||c.binding||c.note||c.link)))throw Error('These rows share other data. Move them in the full sheet instead.');
-    }
     const at=slots.filter((i,n)=>i<boundary&&!selected.has(records[n].id)).length,moving=records.filter(r=>selected.has(r.id)),remaining=records.filter(r=>!selected.has(r.id));
-    remaining.splice(at,0,...moving);slots.forEach((i,n)=>sheet.rows[i]=remaining[n]);scope.rows=remaining.map(r=>r.id);
+    remaining.splice(at,0,...moving);
+    const affected=new Set(records.filter((row,i)=>row.id!==remaining[i].id).map(row=>row.id));
+    if(allTables(book).some(table=>table.id!==scope.id&&table.sheet===sheet.id&&[table.header,...table.rows].some(row=>affected.has(row)))||
+      Object.entries(sheet.cells).some(([address,cell])=>{const [row,column]=address.split(':');return affected.has(row)&&!columns.has(column)&&(cell.value!=null||cell.formula||cell.binding||cell.note||cell.link);}))throw Error('These rows share other data. Move them in the full sheet instead.');
+    slots.forEach((i,n)=>sheet.rows[i]=remaining[n]);scope.rows=remaining.map(r=>r.id);
     applyMoveGroupPlan(sheet,'row',ids,groups);
     return slots[at];
   }

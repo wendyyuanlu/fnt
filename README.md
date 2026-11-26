@@ -185,10 +185,23 @@ remain viewable only in history.
   Undo/Redo, Food dropdown and retained calculations. Desktop uses a 450px
   side panel; touch uses the space between the app header and sheet tabs, with
   a keyboard-aware footer and Next field action. Opening follows the selected
-  day/field, or the most recent day if nothing was selected. Today and the
+  day/field, or the bottom of the most recent day if nothing was selected.
+  Switching sheets preserves its open state and scroll. Calculated fields use
+  the grid's lighter text; icon-only controls remain square on desktop and touch.
+  Food opens the shared picker from anywhere in the field unless manual input
+  is selected; large option sets scroll continuously without a pager.
+  **Weight**, above the foods, maps to the selected day-summary row's `Weight`.
+  **Grams** maps to Master `Amount (g)`; choosing a linked Meals entry collapses
+  Grams/Amount/Unit behind a shared chevron.
+  Collapsed **Notes**, directly below Grams/Amount/Unit, maps to `Exercise` and
+  preserves literal multiline content. Nutrition summaries round upward to
+  whole numbers; field values themselves retain precision. Today and the
   calendar open an existing day or create one without advancing the logging
   cursor. Inline + Food inserts below that food and joins its day summary.
-  Manual Food expands nutrition fields and can add an Ingredients reference:
+  Manual Food keeps macros collapsed by default. A manual Food cell gets a
+  quiet persistent draft marker while any macro is blank; zero is complete.
+  Adding to Ingredients creates a new row and links Food to that row, hides
+  the checkbox, and can be undone back to manual input in one action:
   blank amount/unit inherit entered weight and `g`, while completely blank
   quantities stay blank. This requires the Ingredients serving, conversion
   and nutrition fields; missing fields or duplicate names produce explicit
@@ -911,6 +924,10 @@ comparison, never automatically installed over this device's workbook, even
 when there are no pending content edits. Opening comparison or finding a
 conflict persistently pauses uploads across reloads until a decision is submitted.
 Save alone cannot bypass an unresolved review.
+The compact **Compare** button and linked conflict/status message open the
+comparison directly with this device and the exact preserved GitHub revision.
+That conflicting revision remains available after reload; newer remote revisions
+are loaded only when explicitly requested in comparison.
 Exact remote conflict checkpoints are not substituted with the local journal.
 
 Recovery keeps Download independent full backup and Rename workbook on separate

@@ -1,9 +1,26 @@
 import { expect,it } from 'vitest';
-import { clone,createDemo,getCell,insertColumn,key,moveRows,setInput } from '../src/model';
+import { blankSheet,clone,createDemo,getCell,insertColumn,key,moveRows,setInput } from '../src/model';
 import { addReferenceValue,createReference,moveReferenceValue,referenceTable,unitsSource,upsertConversion } from '../src/references';
 import { conversionEditImpact,deleteReferenceColumns,referenceView,writeGridCell } from '../src/reference-grid';
 import { dropdownCatalog,dropdownFormatMigration,seedDropdownCatalog } from '../src/dropdown-catalog';
 
+it('checks shared data only on rows actually reordered, retaining rejection and atomicity for affected rows',()=>{
+  const book=createDemo(),source=createReference(book,'Scoped move'),[a,b,c]=['A','B','C'].map(value=>addReferenceValue(book,source,value)),{sheet,table}=referenceTable(book,source);
+  sheet.cells[key(c,sheet.columns.find(column=>!table.columns.some(field=>field.column===column.id))!.id)]={value:'Unrelated sheet-only data'};
+  moveRows(book,sheet,[b],sheet.rows.findIndex(row=>row.id===a),table);expect(table.rows).toEqual([b,a,c]);
+  const before=clone(sheet);
+  expect(()=>moveRows(book,sheet,[a],sheet.rows.findIndex(row=>row.id===c)+1,table)).toThrow('share other data');
+  expect(sheet).toEqual(before);
+});
+it('reorders a Master-sized scoped table without rescanning all cells for every record',()=>{
+  const book=createDemo(),sheet=blankSheet('Invented large move',6001,14);book.sheets.push(sheet);
+  const table={id:'large-move',name:'LargeMove',sheet:sheet.id,header:sheet.rows[0].id,rows:sheet.rows.slice(1).map(row=>row.id),columns:sheet.columns.map((column,i)=>({id:'field-'+i,name:'Field '+i,column:column.id}))};book.tables.push(table);
+  for(const row of table.rows)for(const column of sheet.columns)sheet.cells[key(row,column.id)]={value:'Invented'};
+  const moving=table.rows.at(-1)!,neighbor=table.rows.at(-2)!,cells=sheet.cells,started=performance.now();
+  moveRows(book,sheet,[moving],sheet.rows.findIndex(row=>row.id===neighbor),table);
+  const duration=performance.now()-started;console.info('84,000-cell scoped reorder (ms)',duration);
+  expect(duration).toBeLessThan(500);expect(table.rows.slice(-2)).toEqual([moving,neighbor]);expect(sheet.cells).toBe(cells);
+});
 it('moves scoped rows with formats and identities without moving gaps or another source',()=>{
   const book=createDemo(),source=createReference(book,'Types'),a=addReferenceValue(book,source,'A'),b=addReferenceValue(book,source,'B'),other=createReference(book,'Other');
   addReferenceValue(book,other,'Keep');const {sheet,table}=referenceTable(book,source),column=table.columns[0].column;

@@ -6,6 +6,20 @@ import { parseArchive,stringifyArchive } from '../src/archive';
 import {getHypotheticalStyle} from '../src/hypothetical';
 
 describe('recoverable local storage',()=>{
+  it('reopens the exact conflicting remote copy by destination without reading unrelated history, and clears obsolete pointers before a new conflict',async()=>{
+    const store=await Store.open(uid()),config={owner:'example',repo:'private',branch:'main',path:'book.json'};
+    try{
+      let state=await store.save(createDemo(),0,'Initial');
+      state=await store.metadata(state.version,state=>({...state,sync:config}));
+      const remote=structuredClone(state.book);remote.title='Preserved conflicting revision';
+      await store.checkpoint('Remote conflict - not applied',remote,[],true,{config,sha:'conflicting-sha'});
+      expect(await store.syncConflict(config)).toEqual({book:remote,sha:'conflicting-sha'});
+      expect(await store.syncConflict({...config,path:'other.json'})).toBeUndefined();
+      await store.syncMetadata(state.version,{paused:true,review:true,clearConflict:true});
+      expect(await store.syncConflict(config)).toBeUndefined();
+      expect((await store.history()).some(copy=>copy.book.title===remote.title)).toBe(true);
+    }finally{store.close();}
+  });
   it('acknowledges only the captured sync operation IDs without materializing or losing newer journal edits and Undo',async()=>{
     const store=await Store.open(uid());
     try{

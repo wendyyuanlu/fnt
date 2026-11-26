@@ -41,6 +41,7 @@ test('in-flight sync leaves fields, picker and scroll intact, preserving edits m
   hold=true;
   await page.getByRole('button',{name:'Quiet sync log',exact:true}).click();await page.getByRole('button',{name:'Meal log',exact:true}).click();
   const panel=page.locator('.meal-log-panel'),card=panel.locator('[data-log-card]').last();
+  await card.locator('.meal-log-macros summary').click();
   await card.getByRole('textbox',{name:'Calories',exact:true}).fill('101');
   await expect(page.locator('#save-state')).toContainText('Saved locally');
   const before=await saved(page);await page.locator('[data-action="save"]').click();await expect.poll(()=>started).toBe(true);
@@ -74,17 +75,44 @@ test('remote changes and unsubmitted choices never replace local data or upload 
   guard=true;
   const remote=structuredClone(local);remote.title='Never adopted without submission';content=encode64(JSON.stringify({format:'fnt-sync-v1',book:remote,operations:[]}));sha='changed-remote';
   await page.locator('[data-action="save"]').click();
-  await expect(page.locator('#save-state')).toContainText('CONFLICT');
+  await expect(page.locator('#save-state')).toHaveText('Sync conflict — saved locally');
+  await expect(page.locator('.save-area #sync-review')).toHaveText('Compare');
+  expect(await page.locator('#sync-review').evaluate(element=>getComputedStyle(element).fontSize)).toBe(await page.locator('[data-action="file"]').evaluate(element=>getComputedStyle(element).fontSize));
   expect((await saved(page)).book.title).toBe(local.title);expect((await saved(page)).syncReview).toBe(true);
-  await page.getByRole('button',{name:'Recovery',exact:true}).click();
-  await page.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
+  await page.locator('#error .error-message a').click();
   const comparison=page.frameLocator('iframe.comparison-frame');await comparison.locator('#keep-right button').click();
+  await expect(comparison.locator('#right-source')).toHaveText('Preserved sync-conflict copy');
+  await expect(comparison.locator('#right-source-commit')).toContainText('changed-remote');
   await expect(comparison.locator('#selection-progress')).toContainText(/1 of \d+ chosen/);
   await comparison.getByRole('button',{name:'Back to workbook',exact:true}).click();
   await page.evaluate(()=>window.dispatchEvent(new Event('online')));
   await page.locator('[data-action="save"]').click();
-  await page.reload();await expect(page.locator('#save-state')).toContainText('comparison review required');
+  await page.reload();await expect(page.locator('#save-state')).toContainText('sync paused');
   expect((await saved(page)).book.title).toBe(local.title);expect(writes).toBe(0);
+  sha='different-later-revision';content=encode64(JSON.stringify({format:'fnt-sync-v1',book:{...remote,title:'Not the conflicting revision'},operations:[]}));
+  await page.locator('#save-state a').click();
+  await expect(comparison.locator('#right-source')).toHaveText('Preserved sync-conflict copy');
+  await expect(comparison.locator('#right-source-commit')).toContainText('changed-remote');
+  expect(writes).toBe(0);
+});
+test('disconnecting during a remote read never attaches the old destination conflict to the new local state',async({page})=>{
+  let content='',sha='original-sha',held=false,started=false,release:(()=>void)|undefined;
+  await page.route('https://api.github.com/**',async route=>{
+    if(route.request().method()==='PUT'){content=route.request().postDataJSON().content;sha='baseline-sha';await route.fulfill({json:{content:{sha}}});return;}
+    if(!route.request().url().includes('/contents/')){await route.fulfill({json:{private:true,has_pages:false}});return;}
+    if(held){started=true;await new Promise<void>(resolve=>release=resolve);}
+    await route.fulfill({json:{sha:held?'old-destination-conflict':sha,content,encoding:'base64'}});
+  });
+  await fixture(page);const local=(await saved(page)).book;
+  content=encode64(JSON.stringify({format:'fnt-sync-v1',book:local,operations:[]}));
+  await page.reload();await expect(page.locator('#save-state')).toContainText('Synced');
+  content=encode64(JSON.stringify({format:'fnt-sync-v1',book:{...local,title:'Old destination only'},operations:[]}));held=true;
+  await page.locator('[data-action="save"]').click();await expect.poll(()=>started).toBe(true);
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
+  await page.getByRole('button',{name:'Disconnect',exact:true}).click();await expect(page.locator('#save-state')).toHaveText('Disconnected - local only');
+  release!();await expect(page.locator('#error')).toContainText('previous sync response was not applied');
+  const after=await saved(page);expect(after.sync).toBeUndefined();expect(after.syncReview).not.toBe(true);expect(after.book.title).toBe(local.title);
+  await expect(page.locator('#sync-review')).toBeHidden();
 });
 test('public-sized sync compression runs off the UI thread with a bounded frame gap',async({page})=>{
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');

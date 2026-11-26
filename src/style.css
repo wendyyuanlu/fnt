@@ -44,6 +44,7 @@ dialog .picker-results{max-height:none}
 .save-area{margin-left:auto;width:auto;flex-shrink:0;gap:6px}
 .workbook-heading{flex:1;min-width:0;overflow:hidden}
 .workbook-heading .save-state{max-width:none}
+.save-state>a,.error-message>a{color:inherit;text-decoration:underline;text-underline-offset:2px}
 .file-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
 .file-actions button{white-space:normal;overflow-wrap:anywhere}
 .file-imports{border:1px solid var(--line);border-radius:5px;padding:10px}
@@ -303,10 +304,11 @@ dialog .picker-results{max-height:none}
 @media(max-width:720px){.group-manager{--dialog-available-height:calc(100dvh - 56px);top:auto;bottom:44px;right:var(--dialog-edge)}.group-create-controls button{padding:5px;font-size:9px}.group-card-heading{flex-wrap:wrap}.group-type-guide{grid-template-columns:1fr 1fr;gap:8px}}
 .format-caret{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;flex-shrink:0}
 .format-caret svg,.summary-group-add .toolbar-icon{display:block;width:14px;height:14px;flex-shrink:0}
-.toolbar{--toggle-background:#e8efdf;--toggle-border:#d6dfc9}
-.toolbar button[aria-pressed=true]{background:var(--toggle-background);border-color:var(--toggle-border)}
+.toolbar,.master-toolbar{--toggle-background:#e8efdf;--toggle-border:#d6dfc9}
+.toolbar button[aria-pressed=true],.master-toolbar button[aria-pressed=true]{background:var(--toggle-background);border-color:var(--toggle-border)}
 .toolbar .summary-group-control[data-active=true]{background:var(--toggle-background);box-shadow:inset 0 0 0 1px var(--toggle-border)}
 .toolbar .summary-group-control[data-active=true]>.icon-button{background:transparent;border-color:transparent}
+.grid td.calculated:not(.table-header),.meal-log-field :is(input,textarea).calculated{--field-color:#647852;color:var(--field-color)}
 .color-palette{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:6px;margin:12px 0 16px}
 .color-palette .color-swatch{width:100%;aspect-ratio:1;min-height:24px;padding:0;border:1px solid #abb6a3;border-radius:3px}
 .color-palette .color-swatch:hover{outline:2px solid #286b56;outline-offset:1px}
@@ -554,7 +556,7 @@ fieldset.find-scope,.find-results-scroll{border:1px solid var(--line);border-rad
   border:1px solid var(--field-border);
   border-radius:5px;
   background:var(--field-background);
-  color:#233c34;
+  color:var(--field-color,#233c34);
   font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   font-size:12px;
   line-height:1.5;

@@ -41,8 +41,8 @@ import {createTextSearch} from './find';
 import {loadPublishedTesting,publishedTestingId,untouchedStarter} from './published';
 import {migrateDropdownData} from './dd-storage';
 import {numericKeyboardFields,numericKeyboardCell} from './touch-keyboard';
-import {addMealIngredient,mealFields,mealLogConfig,mealLogContext,moveMealFood,type MealField} from './meal-log';
-import {mountMealLog,type MealLogView} from './meal-log-ui';
+import {addMealIngredient,markMealDraft,mealFields,mealLogConfig,mealLogContext,moveMealFood,type MealField} from './meal-log';
+import {mountMealLog,type MealLogInputField,type MealLogView} from './meal-log-ui';
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
@@ -158,11 +158,13 @@ let stickyTableHeaders:ReturnType<typeof mountStickyTableHeaders>|undefined;
 const toolbarSelection:{ids:Set<string>;anchor?:string}={ids:new Set()};
 let closeCellDropdown:(()=>void)|undefined;
 let mealPanel:ReturnType<typeof mountMealLog>|undefined,mealDay='',mealSheet='',mealSelected=false;
-const mealManual=new Set<string>(),mealIngredients=new Map<string,{table:string;row:string}>();
+const mealManual=new Set<string>();
 const mealCalculated=new Map<string,Map<string,{calculation:string;value:Cell['value']}>>();
 document.addEventListener('pointerdown',event=>{if(event.target instanceof Element&&event.target.closest('#grid-scroll td,#grid-scroll th'))mealSelected=true;},{capture:true});
 function mealView():MealLogView{
-  const s=sheet(),context=mealLogContext(book,s,engine),block=context.blocks.find(block=>block.header===mealDay)??[...context.blocks].sort((a,b)=>(b.date??-1)-(a.date??-1))[0];
+  const s=book.sheets.find(sheet=>sheet.id===mealSheet);
+  if(!s)throw Error('The Meal log sheet was removed. Restore it before logging.');
+  const context=mealLogContext(book,s,engine),block=context.blocks.find(block=>block.header===mealDay)??[...context.blocks].sort((a,b)=>(b.date??-1)-(a.date??-1))[0];
   if(!block)throw Error('Create a day before opening Meal log.');
   mealDay=block.header;
   const value=(row:string,field:MealField)=>{
@@ -171,24 +173,33 @@ function mealView():MealLogView{
     const result=cell.formula||cell.binding?scalar(engine.cell(s.id,row,column.column)):cell.value??null;
     return isFault(result)?result.error:cell.fractionInput??String(result??'');
   };
-  const totals=(row:string)=>`${value(row,'calories')||'0'} cal · ${value(row,'protein')||'0'}P`;
+  const rounded=(row:string,field:MealField)=>{
+    const column=context.fields.get(field);if(!column)return'0';
+    const result=scalar(engine.cell(s.id,row,column.column));if(isFault(result))return result.error;
+    if(result===null||result==='')return'0';
+    const number=Number(result);return Number.isFinite(number)?String(Math.ceil(number)):String(result);
+  };
+  const totals=(row:string)=>`${rounded(row,'calories')} cal · ${rounded(row,'protein')}P`;
   const numeric=numericKeyboardFields(book);
+  const label=masterLogging(book,s).label,weightCell=getCell(s,block.header,label.column),weight=scalar(engine.cell(s.id,block.header,label.column)),config=mealLogConfig(book,s);
   return{header:block.header,date:block.date===undefined?'Undated':displayExcelDate(block.date)??'Undated',totals:totals(block.header),undo:!!undo.length,redo:!!redo.length,busy,
+    weight:{value:isFault(weight)?weight.error:weightCell.fractionInput??String(weight??''),numeric:true,calculated:!!(weightCell.formula||weightCell.binding)},
     fields:Object.fromEntries([...context.fields].map(([field,column])=>[field,{name:column.name,numeric:field==='weight'||field==='amount'||numeric.has(`${context.table.id}:${column.id}`)}])),
     rows:block.rows.slice(1).map(row=>{
-      const food=getCell(s,row,context.fields.get('food')!.column),added=mealIngredients.get(row);
-      return{id:row,values:Object.fromEntries(mealFields.map(field=>[field,value(row,field)])),manual:mealManual.has(row)||!food.binding&&!food.formula&&food.value!==undefined&&food.value!==null&&food.value!=='',
-        added:!!added&&!!allTables(book).find(table=>table.id===added.table)?.rows.includes(added.row),totals:totals(row)};
+      const food=getCell(s,row,context.fields.get('food')!.column);
+      const foodColumn=context.fields.get('food')!.column,manualPreference=(book.pickerSources[`default:${s.id}:${foodColumn}`]??book.pickerSources[`${s.id}:${foodColumn}`])==='manual';
+      return{id:row,values:Object.fromEntries(mealFields.map(field=>[field,value(row,field)])),calculated:mealFields.filter(field=>{const column=context.fields.get(field);return!!column&&!!(getCell(s,row,column.column).formula||getCell(s,row,column.column).binding);}),manual:!food.binding&&!food.formula&&(mealManual.has(row)||manualPreference||!cellValidation(s,row,foodColumn)||food.value!==undefined&&food.value!==null&&food.value!==''),
+        ...(food.binding?.table===config.meals?{meal:food.binding?.row}:{}),totals:totals(row)};
     })};
 }
-function selectMealField(row:string,field:MealField,repaint=false):void{
-  const s=sheet(),column=mealLogContext(book,s,engine).fields.get(field);
+function selectMealField(row:string,field:MealLogInputField,repaint=false):void{
+  const s=sheet(),column=field==='dayWeight'?masterLogging(book,s).label:mealLogContext(book,s,engine).fields.get(field);
   if(!column||!s.rows.some(item=>item.id===row))return;
   const next={r:s.rows.findIndex(item=>item.id===row),c:s.columns.findIndex(item=>item.id===column.column)},changed=selected.r!==next.r||selected.c!==next.c;
   selected=next;
   mealSelected=true;
   anchor={...selected};selectionKind='cells';extraSelections=[];scrollTarget={row:selected.r,contextRows:0,align:'nearest'};
-  if(repaint||changed)render({preserveViewport:true});else refreshSelection(false);
+  if(repaint)render({preserveViewport:true});else if(changed)refreshSelection(false);
 }
 function closeMealLog():void{
   closeCellDropdown?.();mealPanel?.dispose();mealPanel=undefined;document.body.classList.remove('meal-log-open');render({preserveViewport:true});root.querySelector<HTMLElement>('#grid-scroll')?.focus({preventScroll:true});
@@ -234,8 +245,8 @@ function openMealLog():void{
     const block=(mealSelected?context.blocks.find(block=>block.rows.includes(row)):undefined)??[...context.blocks].sort((a,b)=>(b.date??-1)-(a.date??-1))[0];
     if(!block){chooseMealDay(localToday());if(mealLogContext(book,s,engine).blocks.length)openMealLog();return;}
     mealDay=block.header;mealSheet=s.id;
-    const initialField=mealSelected?[...context.fields].find(([,field])=>field.column===s.columns[selected.c]?.id)?.[0]:undefined;
-    const initialRow=mealSelected&&block.rows.slice(1).includes(row)?row:undefined;
+    const initialField:MealLogInputField|undefined=mealSelected&&row===block.header&&masterLogging(book,s).label.column===s.columns[selected.c]?.id?'dayWeight':mealSelected?[...context.fields].find(([,field])=>field.column===s.columns[selected.c]?.id)?.[0]:undefined;
+    const initialRow=mealSelected&&(block.rows.slice(1).includes(row)||initialField==='dayWeight')?row:undefined;
     const config=mealLogConfig(book,s),collapsed=s.groups.filter(group=>group.axis==='row'&&group.collapsed&&block.rows.some(row=>group.members.includes(row)));
     if(!mutateMetadata('Remember Meal log field identities',()=>{s.mealLog=config;for(const group of collapsed)group.collapsed=false;},[[...sheetPath(s),'mealLog'],...collapsed.map(group=>[...sheetPath(s),'groups',s.groups.indexOf(group),'collapsed'])],false,false))return;
     mealPanel=mountMealLog({
@@ -243,11 +254,11 @@ function openMealLog():void{
       day:direction=>{const days=[...mealLogContext(book,sheet(),engine).blocks].sort((a,b)=>(a.date??Infinity)-(b.date??Infinity)),at=days.findIndex(block=>block.header===mealDay),next=days[at+direction];if(next){mealDay=next.header;selectMealField(next.header,'food',true);}},
       date:openMealCalendar,select:selectMealField,
       write:(row,field,text)=>{
-        const s=sheet(),column=mealLogContext(book,s,engine).fields.get(field);
+        const s=sheet(),column=field==='dayWeight'?masterLogging(book,s).label:mealLogContext(book,s,engine).fields.get(field);
         if(!column){flash('This Meal log field was removed. Restore it before editing.');return false;}
         const cell=getCell(s,row,column.column),value=cell.formula||cell.binding?scalar(engine.cell(s.id,row,column.column)):cell.value??null;
         if(text===(cell.fractionInput??(isFault(value)?value.error:String(value??''))))return true;
-        const ok=mutateCell(s,row,column.column,()=>writeGridCell(book,s,row,column.column,text,field==='food'||field==='unit'));
+        const ok=field==='dayWeight'&&!text.trim()?mutate('Edit day Weight',()=>editMasterDayInput(book,s,row,column.column,()=>writeGridCell(book,s,row,column.column,text))):mutateCell(s,row,column.column,()=>writeGridCell(book,s,row,column.column,text,field==='food'||field==='unit'||field==='notes'));
         if(ok)mealPanel?.refresh();return ok;
       },
       dropdown:(row,field,anchor)=>{
@@ -270,18 +281,24 @@ function openMealLog():void{
                   }
                 }
                 writeGridCell(book,s,row,food.column,String(value??''),true);
+                markMealDraft(book,s,row);
               }
-            })){if(field==='food'){mealManual.add(row);if(calculated.size)mealCalculated.set(row,calculated);}mealPanel?.refresh();mealPanel?.reveal(row,field,true);}
+            })){if(field==='food'){mealManual.add(row);if(calculated.size)mealCalculated.set(row,calculated);mealPanel?.foodMode(row,true);}mealPanel?.refresh();mealPanel?.reveal(row,field,true);}
           },linked:()=>{
             if(field!=='food')return;
             for(const [column,snapshot]of mealCalculated.get(row)??[]){
               const s=sheet(),current=getCell(s,row,column);
               if(current.calculation&&!current.formula&&!current.binding&&JSON.stringify(current.calculation)===snapshot.calculation&&current.value===snapshot.value)restoreCalculation(book,s,row,column,current.calculation);
             }
-          },chosen:()=>{if(field==='food')mealManual.delete(row);mealPanel?.refresh();mealPanel?.reveal(row,field,true);}
+          },chosen:()=>{if(field==='food'){mealManual.delete(row);mealPanel?.foodMode(row,false);}mealPanel?.refresh();mealPanel?.reveal(row,field,true);}
         });
       },
-      add:addMealFood,move:(row,direction)=>{if(mutate('Move logged food',()=>moveMealFood(book,sheet(),row,direction))){mealPanel?.refresh();mealPanel?.reveal(row);}},
+      add:addMealFood,move:(row,direction)=>{
+        const s=sheet(),table=mealLogContext(book,s,engine).table;
+        if(mutateMetadata('Move logged food',()=>moveMealFood(book,s,row,direction,engine),[[...sheetPath(s),'rows'],[...sheetPath(s),'groups'],[...tablePath(table),'rows']],true)){
+          mealPanel?.refresh();mealPanel?.reveal(row);
+        }
+      },
       remove:row=>{mutate('Delete logged food',()=>{
         const s=sheet(),context=mealLogContext(book,s,engine);
         if(!context.blocks.find(block=>block.header===mealDay)?.rows.slice(1).includes(row))throw Error('This food no longer belongs to the selected day.');
@@ -289,12 +306,12 @@ function openMealLog():void{
         if(s.groups.some(group=>group.axis==='row'&&group.kind==='summary'&&group.members[0]===row))throw Error('Remove this nested food summary in the spreadsheet instead.');
         deleteRows(book,s,[row]);
       });},
-      ingredient:row=>{let added:{table:string;row:string}|undefined;if(mutate('Add logged food to Ingredients',()=>{added=addMealIngredient(book,sheet(),row);})){mealIngredients.set(row,added!);mealPanel?.refresh();}},
+      ingredient:row=>{if(mutate('Add logged food to Ingredients',()=>{addMealIngredient(book,sheet(),row);})){mealManual.delete(row);mealPanel?.refresh();}},
       history:name=>{void action(name);},error:e=>{mealPanel?.dispose();mealPanel=undefined;document.body.classList.remove('meal-log-open');flash(e);}
     });
     document.body.classList.add('meal-log-open');
     selectMealField(block.header,'food');render({preserveViewport:true});mealPanel.refresh();
-    if(initialRow)mealPanel.reveal(initialRow,initialField,!!initialField);
+    if(initialRow)mealPanel.reveal(initialRow,initialField,!!initialField);else mealPanel.bottom();
   }catch(error){flash(error);}
 }
 let groupControls:ReturnType<typeof mountGroupControls>|undefined,groupMenuOpen=false,groupMenuSheet='';
@@ -787,17 +804,19 @@ function sheetPath(s:Sheet=sheet()):Patch['path']{
 }
 function mutateCell(s:Sheet,row:string,column:string,fn:()=>void):boolean{
   if(busy){flash('Wait for the current save or sync to finish.');return false;}
-  const address=key(row,column),previous=s.cells[address],inverse:History={cells:[{sheet:s.id,key:address,value:clone(previous)}]};
-  try{fn();validateCellChanges(book,inverse.cells);}catch(e){
-    if(previous)s.cells[address]=previous;else delete s.cells[address];
+  const config=s.mealLog,table=config?allTables(book).find(table=>table.id===config.table):undefined,food=table?.columns.find(field=>field.id===config?.fields.food);
+  const tracksDraft=!!food&&!!table?.rows.includes(row)&&[...mealFields.slice(0,7)].some(field=>table.columns.find(column=>column.id===config?.fields[field])?.column===column);
+  const addresses=[...new Set([key(row,column),...(tracksDraft?[key(row,food!.column)]:[])])],inverse:History={cells:addresses.map(address=>({sheet:s.id,key:address,value:clone(s.cells[address])}))};
+  try{fn();if(tracksDraft)markMealDraft(book,s,row);validateCellChanges(book,inverse.cells);}catch(e){
+    for(const change of inverse.cells){if(change.value)s.cells[change.key]=change.value;else delete s.cells[change.key];}
     flash(e);render();return false;
   }
-  const oldSheet={...s,cells:previous?{[address]:previous}:{}},before={...book,sheets:book.sheets.map(sheet=>sheet===s?oldSheet:sheet),...(book.dropdownData?{dropdownData:{...book.dropdownData,sheets:book.dropdownData.sheets.map(sheet=>sheet===s?oldSheet:sheet)}}:{})};
+  const oldSheet={...s,cells:Object.fromEntries(inverse.cells.flatMap(change=>change.value?[[change.key,change.value]]:[]))},before={...book,sheets:book.sheets.map(sheet=>sheet===s?oldSheet:sheet),...(book.dropdownData?{dropdownData:{...book.dropdownData,sheets:book.dropdownData.sheets.map(sheet=>sheet===s?oldSheet:sheet)}}:{})};
   recordTableEdits(before,book,inverse.cells);
   undo.push(inverse);while(undo.length>undoLimit)undo.shift();redo.length=0;
-  const forward:History={cells:[{sheet:s.id,key:address,value:clone(s.cells[address])}]};
+  const forward:History={cells:addresses.map(address=>({sheet:s.id,key:address,value:clone(s.cells[address])}))};
   scopedChanges.push(capturePatch(book,[['tableActivity']]));
-  engine.invalidate([`${s.id}:${address}`]);displayedVersion++;
+  engine.invalidate(addresses.map(address=>`${s.id}:${address}`));displayedVersion++;
   changed('Edit cell',false,false,forward);
   drawRowWindow?.(true);groupManager?.refresh();renderStatus();return true;
 }
@@ -903,17 +922,21 @@ async function manualSave(automatic=false,progress?:(message:string,completed:nu
   if(!automatic&&!commitDraft())return;
   if(privateSyncFlight){await privateSyncFlight;return;}
   if(state.syncReview||privateSyncConflict||comparisonActive&&!progress){
-    if(!automatic){await flush();status='Saved locally — comparison review required before syncing';renderStatus();}
+    if(!automatic){await flush();status='Saved locally — sync paused';renderStatus();}
     return;
   }
   const run=async()=>{
+  const connection=state.sync,credentialAtStart=token;
   try {
     await navigationSaving;
     if(navigationError)generation++;
     await flush(automatic?'Autosave':'Manual save');
     if(savedGeneration!==generation)return;
     if(!state.sync){
-      if(!automatic){await store.checkpoint('Manual save',book);status='Saved locally + recovery checkpoint';}
+      if(!automatic){
+        status='Saving recovery checkpoint...';renderStatus();await store.checkpoint('Manual save',book);
+        status=generation!==savedGeneration?'Unsaved changes - saving locally...':'Saved locally + recovery checkpoint';
+      }
       return;
     }
     if(!token){if(!automatic)openSync();return;}
@@ -923,24 +946,28 @@ async function manualSave(automatic=false,progress?:(message:string,completed:nu
     progress?.('Checking private GitHub revision...',0,2);
     const originals=hasPendingContent(captured)?await store.originals():[];
     const result=await syncGitHub(captured,credential,fetch,originals,{canUpload:()=>!state.syncReview&&!privateSyncConflict&&(!comparisonActive||!!progress)&&token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)});
+    if(token!==credential||JSON.stringify(state.sync)!==JSON.stringify(config))throw Error('Sync connection changed during transfer. Local edits retained; acknowledgement not applied.');
     if(result.remote){
       throw new SyncConflict(result.remote,result.sha,result.originals??[]);
     }
-    if(token!==credential||JSON.stringify(state.sync)!==JSON.stringify(config))throw Error('Sync connection changed during transfer. Local edits retained; acknowledgement not applied.');
     if(!captured.pending.length&&result.sha===state.remoteSha){status='Synced with private repository';return;}
     progress?.('Recording confirmed GitHub revision...',1,2);
     await updateSyncMetadata({sha:result.sha,acknowledged:captured.pending.map(operation=>operation.id)});
     status=generation!==savedGeneration?'Unsaved changes - saving locally...':hasPendingContent(state)?'Saved locally — newer edits pending sync':'Synced with private repository';
     progress?.('Selected data synced with private GitHub.',2,2);
   } catch(e) {
+    if(token!==credentialAtStart||JSON.stringify(state.sync)!==JSON.stringify(connection)){
+      status='Sync connection changed — local copy retained';
+      flash('The previous sync response was not applied to this connection. Local edits were retained. An upload already sent may still have reached GitHub.');return;
+    }
     if (e instanceof SyncConflict) {
       privateSyncConflict=true;preservedSyncConflict=e;
       try{
-        await updateSyncMetadata({paused:true,review:true});
-        await store.checkpoint('Remote conflict - not applied',e.remote,e.originals,true);
+        await updateSyncMetadata({paused:true,review:true,clearConflict:true});
+        await store.checkpoint('Remote conflict - not applied',e.remote,e.originals,true,connection?{config:connection,sha:e.sha}:undefined);
         await store.checkpoint('Local conflict - not uploaded',book);
-      }catch(recoveryError){status='CONFLICT - recovery failed; local edits retained';flash(recoveryError);return;}
-      status = 'CONFLICT - both versions in recovery — review before syncing';
+      }catch(recoveryError){status='Sync conflict — recovery failed; saved locally';flash(recoveryError);return;}
+      status = 'Sync conflict — saved locally';
     } else status = state.sync?'Sync failed - local copy retained':'Recovery checkpoint failed - local save retained';
     if(!comparisonActive||progress)flash(e);
   } finally { renderStatus(); }
@@ -998,6 +1025,19 @@ function openSnapshotUpload(back:()=>void):void{
   d.addEventListener('cancel',e=>{if(uploading)e.preventDefault();});
   d.querySelector<HTMLButtonElement>('.close')!.onclick=()=>{if(!uploading)d.close();};
   d.addEventListener('close',back,{once:true});
+}
+async function openSyncComparison():Promise<void>{
+  if(comparisonActive)return;
+  const config=state.sync;
+  let conflict=preservedSyncConflict;
+  try{
+    if(!conflict&&state.syncReview&&config){
+      const saved=await store.syncConflict(config);
+      if(JSON.stringify(state.sync)!==JSON.stringify(config))throw Error('The sync destination changed. Open comparison again.');
+      if(saved)conflict=new SyncConflict(saved.book,saved.sha);
+    }
+    openComparison(conflict);
+  }catch(error){flash(error);}
 }
 function openComparison(conflict?:SyncConflict):void{
   if(comparisonActive)return;
@@ -1104,19 +1144,24 @@ function renderStatus(): void {
   }
   root.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('#formula,.cell-inline-editor').forEach(el=>el.disabled=busy||!editableReference()||!!gridReference()?.error);
   if(expandedEditor)expandedEditor.input.disabled=busy||!editableReference()||!!gridReference()?.error;
-  const el = document.querySelector('#save-state');
+  const el = document.querySelector<HTMLElement>('#save-state');
   if (el) { el.textContent = draft!==undefined?'Editing cell - not saved yet':appendDraft?'Editing new option - not saved yet':colorPicker?.pending?'Previewing color - release to apply':busy&&status.startsWith('Saved')?'Finishing complete save...':status; el.className = `save-state ${error ? 'bad' : ''}`; }
-  if(el&&state?.syncReview&&!busy&&draft===undefined&&!el.textContent?.includes('review'))el.textContent+=' — comparison review required; no automatic upload';
-  else if(el&&state?.syncReview&&!busy&&draft===undefined&&!el.textContent?.includes('comparison review'))el.textContent+=' — comparison review required';
-  else if(el&&state?.syncPaused&&!busy&&draft===undefined&&!el.textContent?.includes('sync paused'))el.textContent+=' — automatic sync paused until Save';
+  if(el&&state?.syncReview&&!busy&&draft===undefined&&status.startsWith('Saved'))el.textContent='Saved locally — sync paused';
+  else if(el&&state?.syncPaused&&!state.syncReview&&!busy&&draft===undefined&&!el.textContent?.includes('sync paused'))el.textContent+=' — sync paused';
+  const conflictLink=(container:HTMLElement)=>{
+    const link=document.createElement('a');link.href='#compare-versions';link.textContent=container.textContent;
+    link.onclick=event=>{event.preventDefault();void openSyncComparison();};container.replaceChildren(link);
+  };
+  if(el&&(privateSyncConflict||state?.syncReview)&&!busy&&draft===undefined)conflictLink(el);
   else if(el&&state?.sync&&!token&&status.startsWith('Saved')&&!busy&&draft===undefined)el.textContent+=' — sign in to resume private sync';
   const alert = document.querySelector<HTMLElement>('#error');
   if (alert) {
-    alert.querySelector<HTMLElement>('.error-message')!.textContent=error;alert.hidden=!error;
+    const message=alert.querySelector<HTMLElement>('.error-message')!;message.textContent=error;alert.hidden=!error;
+    if(error&&(privateSyncConflict||state?.syncReview))conflictLink(message);
     alert.querySelector<HTMLButtonElement>('.error-dismiss')!.onclick=()=>{error='';renderStatus();};
   }
   const review=root.querySelector<HTMLButtonElement>('#sync-review');
-  if(review){review.hidden=!state?.syncReview&&!privateSyncConflict;review.onclick=()=>preservedSyncConflict?openConflict(preservedSyncConflict):openComparison();}
+  if(review){review.hidden=!state?.syncReview&&!privateSyncConflict;review.onclick=()=>void openSyncComparison();}
   if(root.querySelector('[data-action="bold"]')){
     const format=inGrid(selected.r,selected.c)?current().format:undefined;
     for(const flag of ['bold','italic','underline','strikethrough','wrap'] as const)root.querySelector(`[data-action="${flag}"]`)?.setAttribute('aria-pressed',String(!!format?.[flag]));
@@ -1150,7 +1195,7 @@ function renderStatus(): void {
     tag.dataset.shortcutLabel=`${all?'Remove':'Add'} ${label} tag`;
     tag.title=mixed?`Add ${label} to the selection (mixed tags)`:`${all?'Remove':'Add'} ${label} tag`;
   }
-  mealPanel?.refresh();
+  if(mealPanel&&!referenceId&&sheetId===mealSheet)mealPanel.refresh();
 }
 function categoryTabHtml(kind:'sheet'|'reference',group:string,label:string,expanded:boolean,source?:ReferenceSource):string{
   return`<button type="button" class="sheet-tab tab-category${source?.archived?' archived':''}" data-${kind}-group="${esc(group)}"${source?` data-reference="${source.id}"`:''} aria-expanded="${expanded}">${esc(label)}<span class="category-chevron">${dropdownArrowHtml}</span></button>`;
@@ -1176,7 +1221,8 @@ function workbookTabsHtml():string{
 }
 let captureViewport:(()=>{row:string;index:number;offset:number}|undefined)|undefined;
 function render(options?:{preserveViewport:boolean}): void {
-  const mealFocus=!!mealPanel&&document.activeElement instanceof HTMLInputElement&&mealPanel.element.contains(document.activeElement);
+  const mealFocus=!!mealPanel&&(document.activeElement instanceof HTMLInputElement||document.activeElement instanceof HTMLTextAreaElement)&&mealPanel.element.contains(document.activeElement);
+  mealPanel?.rememberScroll();
   const restoreTouchFocus=!!touchCell&&document.activeElement?.id==='formula';
   hideTouchEditor();
   if(touchInputDevice)rememberTouchNumericFields();
@@ -1203,7 +1249,9 @@ function render(options?:{preserveViewport:boolean}): void {
   const view=gridReference();
   if(view?.sheet)sheetId=view.sheet.id;
   const s = sheet();
-  if(mealPanel&&(referenceId||s.id!==mealSheet||!isMasterSheet(book,s))){mealPanel.dispose();mealPanel=undefined;document.body.classList.remove('meal-log-open');}
+  const mealVisible=!!mealPanel&&!referenceId&&s.id===mealSheet&&isMasterSheet(book,s);
+  document.body.classList.toggle('meal-log-open',mealVisible);
+  if(!mealVisible)document.body.classList.remove('meal-log-keyboard');
   if (!s.rows.length || !s.columns.length) return;
   const pageConfig=pagination();calendarPlan=undefined;calendarRows=undefined;calendarTail=[];masterLandingScroll=undefined;
   if(pageConfig?.mode==='calendar'){
@@ -1351,8 +1399,8 @@ function render(options?:{preserveViewport:boolean}): void {
   const scroll = document.querySelector('#grid-scroll')?.scrollLeft ?? 0;
   root.innerHTML = `
     <header class="app-header">
-      <div class="workbook-heading"><span id="save-state" class="save-state">${esc(status)}</span><button id="sync-review" hidden>Review sync conflict</button></div>
-      <div class="save-area"><button class="primary" data-action="save">Save <span class="desktop">workbook</span></button><button data-action="file" aria-label="Recovery" title="Import Excel, export and browser-local recovery">Recovery</button></div>
+      <div class="workbook-heading"><span id="save-state" class="save-state">${esc(status)}</span></div>
+      <div class="save-area"><button id="sync-review" hidden title="Compare versions for merge conflict">Compare</button><button class="primary" data-action="save">Save <span class="desktop">workbook</span></button><button data-action="file" aria-label="Recovery" title="Import Excel, export and browser-local recovery">Recovery</button></div>
     </header>
     <div id="error" role="alert" class="error" ${error?'':'hidden'}><span class="error-message">${esc(error)}</span><button type="button" class="error-dismiss" aria-label="Dismiss error" title="Dismiss error">${toolbarIcon('close')}</button></div>
     <nav class="toolbar" aria-label="Spreadsheet tools">
@@ -1375,7 +1423,7 @@ function render(options?:{preserveViewport:boolean}): void {
     <tbody></tbody></table></div></div>
     <div class="grid-footer"><div><button class="selection-count" data-action="range" title="Select a cell range, including on mobile">${selectionCount(selectedRanges)} cells</button><span id="selection-scope-label"></span></div><div class="navigator">${referenceId?'':`<button data-action="page-mode" aria-pressed="${pageConfig?.mode==='calendar'}" title="Switch between one page and calendar date pages">${pageConfig?.mode==='calendar'?datePagesIcon:onePageIcon}<span>${pageConfig?.mode==='calendar'?'Date pages':'One page'}</span></button>`}${calendarPlan?`<button data-action="top" aria-label="Jump to top">${navigationIcon('up')} Top</button><button data-action="bottom" aria-label="Jump to bottom">${navigationIcon('down')} Bottom</button><button data-action="newest-date-page" aria-label="Newest date page" title="Newest date page" ${datePage===0&&!master?'disabled':''}>${navigationIcon('newest')}</button><button data-action="prev" aria-label="Newer dates" title="Newer dates">${navigationIcon('previous')}</button><button class="date-page-label" data-action="date-range" aria-label="Choose date page" title="${datePage===calendarPlan.pages.length?'Choose a dated page':`Page ${datePage+1} of ${calendarPlan.pages.length} — choose a date`}" ${calendarPlan.ranges.length?'':'disabled'}>${datePage===calendarPlan.pages.length?'Undated':`${displayExcelDate(calendarPlan.ranges[datePage].start)}–${displayExcelDate(calendarPlan.ranges[datePage].end)}`}</button><button data-action="next" aria-label="Older dates" title="Older dates">${navigationIcon('next')}</button>${calendarPlan.unassigned.length&&datePage!==calendarPlan.pages.length?`<button data-action="unassigned-date-rows" title="Records without assigned dates">Undated (${calendarPlan.unassigned.length})</button>`:''}`:`<button data-action="top" aria-label="Jump to top">${navigationIcon('up')} Top</button><button data-action="bottom">${navigationIcon('down')} Bottom</button><button data-action="prev" aria-label="Previous rows">${navigationIcon('previous')}</button><input id="row-jump" type="number" min="1" max="${s.rows.length}" aria-label="Jump to row"><span>/ ${s.rows.length}</span><button data-action="next" aria-label="Next rows">${navigationIcon('next')}</button>`}</div></div>
     </div></div><footer class="sheet-bar" aria-label="${referenceId?'Dropdown sources':'Workbook sheets'}">${referenceId?referenceTabsHtml():workbookTabsHtml()}<div class="tab-actions"><button type="button" data-action="${referenceId?'reference-settings':'sheet-settings'}" title="${referenceId?'Dropdown settings':'Sheet settings'}" aria-label="${referenceId?'Dropdown settings':'Sheet settings'}">${toolbarIcon('settings')}</button></div><button class="reference-manager" data-action="references" title="Dropdown sources" aria-label="DD">${toolbarIcon('references')}</button></footer>`;
-  if(mealPanel){root.querySelector('.meal-log-slot')!.append(mealPanel.element);mealPanel.refresh();}
+  if(mealPanel&&mealVisible){root.querySelector('.meal-log-slot')!.append(mealPanel.element);mealPanel.refresh();mealPanel.restoreScroll();}
   const grid=root.querySelector<HTMLElement>('#grid-scroll')!,body=grid.querySelector('tbody')!;
   captureViewport=()=>{const at=layout.at(grid.scrollTop),row=rows[at];return row?{row:row.id,index:row.i,offset:grid.scrollTop-layout.offsets[at]}:undefined;};
   grid.dataset.firstRow=String(rows[0]?.i??0);grid.dataset.firstColumn=String(columns[0]?.i??0);
@@ -1476,7 +1524,7 @@ function render(options?:{preserveViewport:boolean}): void {
   groupControls?.positionMenu();
   rememberView();
   primeSearchValues();
-  if(mealFocus)mealPanel?.restoreFocus();
+  if(mealFocus&&mealVisible)mealPanel?.restoreFocus();
 }
 function safeLink(value: string): boolean {
   try { return ['https:','http:','mailto:'].includes(new URL(value).protocol); } catch { return false; }
@@ -1702,6 +1750,7 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{
         if(!s.rows.some(r=>r.id===row)||!s.columns.some(c=>c.id===column)||cellValidation(s,row,column)?.id!==validation.id)throw Error('The dropdown target changed. Open it again.');
         if(choice.binding){writeLinkedCell(s,row,column,choice.binding);external?.linked?.();}
         else writeGridCell(book,s,row,column,String(choice.raw??''),typeof choice.raw==='string');
+        if(s.mealLog&&allTables(book).find(table=>table.id===s.mealLog!.table)?.columns.find(field=>field.id===s.mealLog!.fields.food)?.column===column)markMealDraft(book,s,row);
       });
       if(!ok&&sharedInput&&previousDraft!==undefined){syncDraft(previousDraft,true,previousLiteral);return;}
       if(ok&&external)external.chosen();else if(!external)root.querySelector<HTMLElement>('#grid-scroll')?.focus({preventScroll:true});
@@ -2459,7 +2508,7 @@ async function action(name:string):Promise<void> {
     }
     case 'add-food':{
       if(!isMasterSheet(book,sheet())||referenceId)break;
-      if(mealPanel){addMealFood();break;}
+      if(mealPanel&&sheetId===mealSheet&&!referenceId){addMealFood();break;}
       const s=sheet();
       if(mutate('Add food',()=>{
         const row=addMasterFood(book,s,s.rows[selected.r]?.id),field=masterLogging(book,s).food!;
@@ -4226,7 +4275,7 @@ async function openHistory():Promise<void> {
 }
 function openSync():void {
   const cfg=githubFormDefaults(state.sync),pathNote=state.sync&&cfg.path!==state.sync.path?`<p class="muted" id="sync-path-note">Saved destination: ${esc(state.sync.path)}. The renamed default is ${esc(cfg.path)}. Connecting updates this device's destination; it does not rename or delete files on GitHub.</p>`:'';
-  dialog('Optional private GitHub sync',`<p>Opt-in only. This uploads workbook data to the private repository you choose. Never use your website source or a public repository. Existing remote files are not overwritten on conflict.</p><form id="sync-form"><label>Personal repository owner<input id="sync-owner" value="${esc(cfg?.owner)}" required autocomplete="off"></label><label>Private data repository<input id="sync-repo" value="${esc(cfg?.repo)}" required></label><label>Existing branch<input id="sync-branch" value="${esc(cfg?.branch??'main')}" required></label><label>JSON path<input id="sync-path" value="${esc(cfg.path)}" required></label>${pathNote}<label>Fine-grained token: Contents read/write, only this data repository<input id="sync-token" type="password" autocomplete="off" required></label><label class="inline"><input id="sync-remember" type="checkbox" ${rememberPrivateSync?'checked':''}>Remember on this trusted device</label><p class="muted">Unchecked: token stays in this tab's memory; sign in again after reloading. Checked: token is stored in this browser's IndexedDB, separately from workbook data, never in backups or Git. Anyone with access to this browser or malicious app code could read it. Use only a fine-grained token restricted to this data repository. Disconnect forgets it on this device.</p><p class="muted">Saved edits sync automatically after a short pause; active tabs check every 15 seconds and on startup/resume/reconnection when authenticated. Save also syncs immediately. GitHub must already contain the branch. Large files may exceed the Contents API limit.</p><button class="primary">Connect & sync now</button><button id="disconnect" type="button">Disconnect</button></form>`,d=>{
+  dialog('Optional private GitHub sync',`<p>Opt-in only. This uploads workbook data to the private repository you choose. Never use your website source or a public repository. Existing remote files are not overwritten on conflict.</p><form id="sync-form"><label>Personal repository owner<input id="sync-owner" value="${esc(cfg?.owner)}" required autocomplete="off"></label><label>Private data repository<input id="sync-repo" value="${esc(cfg?.repo)}" required></label><label>Existing branch<input id="sync-branch" value="${esc(cfg?.branch??'main')}" required></label><label>JSON path<input id="sync-path" value="${esc(cfg.path)}" required></label>${pathNote}<label>Fine-grained token: Contents read/write, only this data repository<input id="sync-token" type="password" autocomplete="off" required></label><label class="inline"><input id="sync-remember" type="checkbox" ${rememberPrivateSync?'checked':''}>Remember on this trusted device</label><p class="muted">Unchecked: token stays in this tab's memory; sign in again after reloading. Checked: token is stored in this browser's IndexedDB, separately from workbook data, never in backups or Git. Anyone with access to this browser or malicious app code could read it. Use only a fine-grained token restricted to this data repository. Disconnect forgets it on this device.</p><p class="muted">Saved edits batch after a 15-second pause. Clean authenticated tabs check no more often than every 60 seconds; startup/resume/reconnection may also check. Ordinary sync does not block editing or refresh the grid. Conflicts pause uploads and require submitted comparison decisions. Save syncs immediately unless review is unresolved. GitHub must already contain the branch. Large files may exceed the Contents API limit.</p><button class="primary">Connect & sync now</button><button id="disconnect" type="button">Disconnect</button></form>`,d=>{
     const compare=document.createElement('button');compare.type='button';compare.id='sync-compare';compare.textContent='Compare copies';compare.onclick=()=>openComparison();d.querySelector('form')!.after(compare);
     d.querySelector('form')!.onsubmit=async e=>{
       e.preventDefault();await flush();if(savedGeneration!==generation)return;

@@ -87,40 +87,60 @@ export function mountDropdownOptions<T>(panel:HTMLElement,options:{
   list.className='cell-dropdown-options';list.setAttribute('role','listbox');list.setAttribute('aria-label',options.name+' options');
   panel.replaceChildren(...options.sharedInput?[list]:[search,list]);
   const normalized=options.choices.map(choice=>({choice,value:options.value(choice),lower:options.value(choice).toLowerCase()}));
-  let matches=normalized,page=0,active=0;
-  const pagination=document.createElement('div'),previous=document.createElement('button'),next=document.createElement('button'),count=document.createElement('span');
-  pagination.className='find-pagination';previous.type=next.type='button';previous.textContent='Previous';next.textContent='Next';
-  previous.setAttribute('aria-label','Previous dropdown options');next.setAttribute('aria-label','Next dropdown options');pagination.append(previous,count,next);panel.append(pagination);
+  let matches=normalized,start=0,active=0,frame=0;
+  const heights=new Map<(typeof normalized)[number],number>();
+  let offsets:number[]=[];
+  const measureOffsets=()=>{offsets=[0];for(const match of matches)offsets.push(offsets.at(-1)!+(heights.get(match)??28));};
+  const spacer=(height:number)=>{const element=document.createElement('div');element.setAttribute('role','presentation');element.style.height=Math.max(0,height)+'px';element.style.flexShrink='0';return element;};
   const draw=()=>{
+    const end=Math.min(matches.length,start+80),focused=document.activeElement as HTMLElement|null,focusedIndex=focused?.parentElement===list?Number(focused.dataset.optionIndex):undefined;
     list.replaceChildren();
-    for(let i=page*80;i<Math.min(matches.length,page*80+80);i++){
+    const top=spacer(offsets[start]??0),bottom=spacer((offsets.at(-1)??0)-(offsets[end]??0));
+    list.append(top);
+    for(let i=start;i<end;i++){
       const {choice,value}=matches[i],button=document.createElement('button');button.type='button';button.setAttribute('role','option');button.tabIndex=i===active?0:-1;button.dataset.optionIndex=String(i);
+      button.setAttribute('aria-posinset',String(i+1));button.setAttribute('aria-setsize',String(matches.length));
       button.textContent=value===''?'(Blank)':value===' '?'(Space)':value;options.renderOption?.(button,choice);button.title=value;button.setAttribute('aria-selected',String(options.selected(choice)));button.onclick=()=>options.choose(choice);list.append(button);
     }
+    list.append(bottom);
     if(!matches.length)list.textContent=options.choices.length?'No matching options.':options.empty??'No available options.';
-    pagination.hidden=matches.length<=80;count.textContent=`${page*80+1}-${Math.min(matches.length,page*80+80)} of ${matches.length}`;
-    previous.disabled=page===0;next.disabled=(page+1)*80>=matches.length;
     options.position();
+    let changed=false;
+    for(const button of list.querySelectorAll<HTMLElement>('[role=option]')){
+      const match=matches[Number(button.dataset.optionIndex)],height=button.getBoundingClientRect().height;
+      if(height&&heights.get(match)!==height){heights.set(match,height);changed=true;}
+    }
+    if(changed){measureOffsets();top.style.height=offsets[start]+'px';bottom.style.height=(offsets.at(-1)!-offsets[end])+'px';}
+    if(focusedIndex!==undefined&&focusedIndex>=start&&focusedIndex<end)list.querySelector<HTMLButtonElement>(`[data-option-index="${focusedIndex}"]`)?.focus({preventScroll:true});
   };
   const focus=(index:number)=>{
     if(!matches.length)return;
-    active=index;const targetPage=Math.floor(index/80);
-    if(page!==targetPage){page=targetPage;draw();}
+    active=index;
+    if(index<start||index>=start+80){start=Math.max(0,Math.min(index-8,matches.length-80));draw();}
     list.querySelectorAll<HTMLButtonElement>('[role=option]').forEach(button=>button.tabIndex=Number(button.dataset.optionIndex)===index?0:-1);
     const button=list.querySelector<HTMLButtonElement>(`[data-option-index="${index}"]`)!;button.focus({preventScroll:true});button.scrollIntoView({block:'nearest'});
   };
-  previous.onclick=()=>{page--;active=page*80;draw();list.scrollTop=0;};next.onclick=()=>{page++;active=page*80;draw();list.scrollTop=0;};
+  const onScroll=()=>{
+    cancelAnimationFrame(frame);
+    frame=requestAnimationFrame(()=>{
+      let low=0,high=matches.length;
+      while(low<high){const middle=(low+high)>>>1;if(offsets[middle+1]<=list.scrollTop)low=middle+1;else high=middle;}
+      const next=Math.max(0,Math.min(low-8,matches.length-80));
+      if(start!==next){start=next;draw();}
+    });
+  };
+  list.addEventListener('scroll',onScroll);
   optionNavigation.set(list,(key,focused)=>{
     const at=focused===search?-1:Number((focused as HTMLElement)?.dataset.optionIndex??active);
     focus(key==='Home'?0:key==='End'?matches.length-1:key==='ArrowDown'?(at+1)%matches.length:at<0?matches.length-1:(at-1+matches.length)%matches.length);
   });
   const filter=(value:string)=>{
     const query=value.toLowerCase();matches=normalized.filter(choice=>choice.lower.includes(query));
-    active=Math.max(0,matches.findIndex(entry=>options.selected(entry.choice)));page=Math.floor(active/80);draw();
+    active=Math.max(0,matches.findIndex(entry=>options.selected(entry.choice)));start=Math.max(0,Math.min(active-8,matches.length-80));measureOffsets();draw();list.scrollTop=offsets[active]??0;
   };
   const onInput=()=>filter(search.value);
   search.addEventListener('input',onInput);filter(options.initialQuery??search.value);
-  return{search,list,dispose:()=>search.removeEventListener('input',onInput)};
+  return{search,list,dispose:()=>{search.removeEventListener('input',onInput);list.removeEventListener('scroll',onScroll);cancelAnimationFrame(frame);optionNavigation.delete(list);}};
 }
 export function dropdownOptionsKey(e:KeyboardEvent,search:HTMLInputElement,list:HTMLElement):void{
   const focused=document.activeElement;

@@ -126,22 +126,24 @@ test('complete Save reports success only after its recovery transaction commits'
   await page.reload();await expect(page.locator('.grid')).toBeVisible();
 });
 
-test('large dropdown options preserve End, Home, paging and selection',async({page})=>{
+test('large wrapped dropdown options preserve End, Home, continuous scrolling and selection without a pager',async({page})=>{
   await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
   await page.evaluate(async()=>{
     const path='/src/dropdown-ui.ts',{mountDropdownOptions,dropdownOptionsKey}=await import(/* @vite-ignore */path);
     const panel=document.createElement('div');panel.id='isolated-options';panel.style.cssText='position:fixed;inset:20px;z-index:200;background:white;display:flex;flex-direction:column';document.body.append(panel);
-    const {search,list}=mountDropdownOptions(panel,{choices:Array.from({length:1000},(_,i)=>i),value:(i:number)=>`Option ${i}`,selected:()=>false,choose:(i:number)=>panel.dataset.chosen=String(i),name:'Isolated',position:()=>{}});
+    const {search,list}=mountDropdownOptions(panel,{choices:Array.from({length:1000},(_,i)=>i),value:(i:number)=>`Option ${i}`+(i%3===0?'\nSynthetic wrapped line\nMore lines':''),selected:()=>false,choose:(i:number)=>panel.dataset.chosen=String(i),name:'Isolated',position:()=>{}});
     panel.onkeydown=e=>dropdownOptionsKey(e,search,list);search.focus();
   });
 
   const panel=page.locator('#isolated-options');
   await page.keyboard.press('ArrowDown');await page.keyboard.press('End');
-  await expect(panel.locator('[role=option]:focus')).toHaveText('Option 999');
+  await expect(panel.locator('[role=option]:focus')).toContainText('Option 999');
   expect(await panel.locator('[role=option]').count()).toBeLessThanOrEqual(80);
-  await page.keyboard.press('Home');await expect(panel.locator('[role=option]:focus')).toHaveText('Option 0');
-  await page.getByRole('button',{name:'Next dropdown options'}).click();
-  await panel.locator('[role=option]').first().click();await expect(panel).toHaveAttribute('data-chosen','80');
+  await page.keyboard.press('Home');await expect(panel.locator('[role=option]:focus')).toContainText('Option 0');
+  await expect(panel.locator('.find-pagination')).toHaveCount(0);
+  await panel.locator('[role=listbox]').evaluate(element=>element.scrollTop=element.scrollHeight);
+  await expect(panel.locator('[data-option-index="999"]')).toBeVisible();
+  await panel.locator('[data-option-index="999"]').click();await expect(panel).toHaveAttribute('data-chosen','999');
   await panel.getByRole('searchbox').fill('999');await panel.locator('[role=option]').click();await expect(panel).toHaveAttribute('data-chosen','999');
 });
 
@@ -204,7 +206,7 @@ test('File requests persistent storage directly and reports grants, refusals and
   }
 });
 
-test('paged DD choices retain explicit source identity for duplicate labels and Custom through search, Undo and reload',async({page,isMobile})=>{
+test('continuously scrolled DD choices retain explicit source identity for duplicate labels and Custom through search, Undo and reload',async({page,isMobile})=>{
   await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
   const sources=await page.evaluate(async()=>{
     const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{allTables}=await import(p+'model.ts') as typeof import('../../src/model'),{addReferenceValue,referenceLabel}=await import(p+'references.ts') as typeof import('../../src/references'),store=await Store.open();
@@ -228,7 +230,7 @@ test('paged DD choices retain explicit source identity for duplicate labels and 
     const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{key}=await import(p+'model.ts') as typeof import('../../src/model'),store=await Store.open();
     try{const book=(await store.load())!.book,s=book.sheets.find(s=>s.name==='Notebook')!;return s.cells[key(s.rows[2].id,s.columns[2].id)].binding;}finally{store.close();}
   });
-  await cell.click();await page.getByRole('button',{name:'Next dropdown options',exact:true}).click();await page.getByRole('option',{name:'Shared food',exact:true}).click();
+  await cell.click();await page.locator('.cell-dropdown [role=listbox]').evaluate(element=>element.scrollTop=element.scrollHeight);await page.getByRole('option',{name:'Shared food',exact:true}).click();
   await expect(page.locator('#save-state')).toContainText('Saved');expect(await binding()).toEqual(sources[0]);
   await cell.click();await page.getByRole('tab',{name:'Snack / Category',exact:true}).click();await page.locator('.cell-dropdown input, .formula-bar.touch-editing #formula').fill('Shared food');await page.getByRole('option',{name:'Shared food',exact:true}).click();
   await expect(page.locator('#save-state')).toContainText('Saved');expect(await binding()).toEqual(sources[1]);

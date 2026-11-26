@@ -8,6 +8,7 @@ import {runSyncCodec} from './sync-processing';
 
 export interface Pending { id: string; label: string; time: string }
 export interface SyncConfig { owner: string; repo: string; branch: string; path: string }
+const syncConflictKey=(config:SyncConfig)=>`sync-conflict:${JSON.stringify(config)}`;
 export interface LocalState {
   book: Workbook; version: number; pending: Pending[]; updated: string;
   sync?: SyncConfig; remoteSha?: string;syncPaused?:boolean;syncReview?:boolean;
@@ -200,6 +201,7 @@ function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook
       if(c.calculation)ast(c.calculation);
       if(c.dateLiteral!==undefined&&typeof c.dateLiteral!=='boolean')throw Error('Invalid literal date text.');
       if(c.dayDateTable!==undefined&&!safeId(c.dayDateTable))throw Error('Invalid inherited day-date table.');
+      if(c.foodDraft!==undefined&&typeof c.foodDraft!=='boolean')throw Error('Invalid food draft metadata.');
       if(c.fractionInput!==undefined&&typeof c.fractionInput!=='string'||c.fractionLiteral!==undefined&&typeof c.fractionLiteral!=='boolean')throw Error('Invalid fraction input metadata.');
       if(c.format)for(const color of[c.format.color,c.format.background])if(color&&!/^#[0-9a-f]{6}$/i.test(color))throw Error('Invalid cell color.');
       if(c.format?.excelNumberFormat!==undefined&&typeof c.format.excelNumberFormat!=='string')throw Error('Invalid Excel number format.');
@@ -395,11 +397,12 @@ export class Store {
     try { await done; } catch (e) { if (conflict) throw Error('Another tab changed this workbook. Your edits are still in memory. Download a backup before reloading.'); throw failure??e; }
     return result!;
   }
-  async syncMetadata(expected:number,change:{sha?:string;acknowledged?:string[];paused?:boolean;review?:boolean}):Promise<Omit<LocalState,'book'>>{
+  async syncMetadata(expected:number,change:{sha?:string;acknowledged?:string[];paused?:boolean;review?:boolean;clearConflict?:boolean}):Promise<Omit<LocalState,'book'>>{
     const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
     let result:Omit<LocalState,'book'>|undefined,failure:unknown;
     const update=(state:Omit<LocalState,'book'>,write:(metadata:Omit<LocalState,'book'>)=>void)=>{
       if(state.version!==expected)throw Error('Another tab changed this workbook. Sync acknowledgement was not applied; local edits retained.');
+      if(change.clearConflict&&state.sync)store.delete(syncConflictKey(state.sync));
       const acknowledged=new Set(change.acknowledged??[]);
       result={...state,version:expected+1,pending:state.pending.filter(operation=>!acknowledged.has(operation.id)),
         ...(change.sha!==undefined?{remoteSha:change.sha}:{}),...(change.paused!==undefined?{syncPaused:change.paused}:{}),...(change.review!==undefined?{syncReview:change.review}:{})};
@@ -453,7 +456,7 @@ export class Store {
     try { await done; } catch (e) { if (conflict) throw Error('Workbook changed during this operation. Retry after saving.'); throw failure??e; }
     return result!;
   }
-  async checkpoint(label: string, book: Workbook, originals:Original[]=[],exact=false): Promise<void> {
+  async checkpoint(label: string, book: Workbook, originals:Original[]=[],exact=false,conflict?:{config:SyncConfig;sha:string}): Promise<void> {
     book=clone(book);originals=clone(originals);
     const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx),store=tx.objectStore('state');
     let failure:unknown;
@@ -463,7 +466,9 @@ export class Store {
         try{
           const current=!exact&&head?.count&&state?.book.id===book.id&&book.revision<=head.revision?state.book:book;
           const snapshot=exact?current:withNavigation({book:current,pending:[],version:0,updated:''},navigation.result).book;
-          tx.objectStore('history').put({ id:uid(), label, time:new Date().toISOString(), book:snapshot } satisfies Checkpoint);
+          const id=uid();
+          tx.objectStore('history').put({ id, label, time:new Date().toISOString(), book:snapshot } satisfies Checkpoint);
+          if(conflict)store.put({id,sha:conflict.sha},syncConflictKey(conflict.config));
           for(const original of originals)tx.objectStore('originals').put(original);
         }catch(e){failure=e;tx.abort();}
       };
@@ -472,6 +477,24 @@ export class Store {
   }
   async history(): Promise<Checkpoint[]> {
     return (await request(this.db.transaction('history').objectStore('history').getAll()) as Checkpoint[]).sort((a,b) => b.time.localeCompare(a.time));
+  }
+  async syncConflict(config:SyncConfig):Promise<{book:Workbook;sha:string}|undefined>{
+    const tx=this.db.transaction(['state','history']),done=complete(tx),pointer=tx.objectStore('state').get(syncConflictKey(config));
+    let result:{book:Workbook;sha:string}|undefined,failure:unknown;
+    pointer.onsuccess=()=>{
+      if(!pointer.result)return;
+      const saved=pointer.result as {id:string;sha:string};
+      if(typeof saved.id!=='string'||typeof saved.sha!=='string'||!saved.sha){failure=Error('Saved sync conflict metadata is damaged. Use Recovery before continuing.');tx.abort();return;}
+      const checkpoint=tx.objectStore('history').get(saved.id);
+      checkpoint.onsuccess=()=>{
+        try{
+          const record=checkpoint.result as Checkpoint|undefined;
+          if(!record||record.label!=='Remote conflict - not applied')throw Error('Saved sync conflict copy is unavailable. Use Recovery before continuing.');
+          validateBook(record.book);result={book:record.book,sha:saved.sha};
+        }catch(error){failure=error;tx.abort();}
+      };
+    };
+    try{await done;}catch(error){throw failure??error;}return result;
   }
   async backup(state: LocalState): Promise<Backup> {
     const tx=this.db.transaction(['state','originals']),done=complete(tx),store=tx.objectStore('state'),originals=tx.objectStore('originals').getAll();
