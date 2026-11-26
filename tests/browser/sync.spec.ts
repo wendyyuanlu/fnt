@@ -12,7 +12,7 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
     }
     await route.fulfill(route.request().url().includes('/contents/')?
       content?{json:{sha,content,encoding:'base64'}}:{status:404,json:{message:'Not found'}}:
-      {json:{private:true,has_pages:false}});
+      {json:route.request().url().includes('/git/trees/')?{tree:[],truncated:false}:{private:true,has_pages:false}});
   });
   const connect=async(target:typeof page,remember=false)=>{
     await target.getByRole('button',{name:'Workbook and backups',exact:true}).click();
@@ -37,7 +37,7 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
     await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');await connect(page);
     await expect(page.locator('#save-state')).toHaveText('Synced with private repository');
     await second.goto(page.url());await expect(second.locator('#save-state')).toContainText('Saved');await connect(second,true);
-    await second.getByRole('button',{name:'Use remote version on this device',exact:true}).click();
+    await second.getByText('Choose a whole copy instead',{exact:true}).click();await second.getByRole('button',{name:'Use remote version on this device',exact:true}).click();
     await expect(second.locator('#save-state')).toContainText('Synced');
     await second.locator('td[data-r="1"][data-c="0"]').click();
     if(isMobile)await second.locator('#formula').press('Escape');
@@ -97,7 +97,8 @@ test('backup comparison is local, searchable, paged and never restores or syncs 
     }finally{store.close();}
   });
   await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
-  await page.getByRole('button',{name:'Compare workbooks and backups',exact:true}).click();
+  await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
+  await page.getByRole('button',{name:'Compare copies',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'Compare workbooks and backups',exact:true});
   await expect(dialog.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeVisible();
   await expect(dialog.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeDisabled();

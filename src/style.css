@@ -24,7 +24,7 @@ dialog .picker-results{max-height:none}
 .grid td.scoped-hidden .cell-display,.grid td.scoped-hidden .note-dot,.grid td.scoped-hidden .fill-handle{visibility:hidden}
 .grid td.scoped-hidden:after{display:none}
 :root{--active-cell-stroke:#64834b;--outline-control-stroke:#dde3dc}
-.master-toolbar{display:flex;align-items:center;gap:6px;flex-shrink:0;padding:3px 8px;background:#fff;border-bottom:1px solid var(--line)}
+.master-toolbar{display:flex;align-items:center;gap:6px;flex-shrink:0;margin:0 8px;padding:3px 8px;background:#fff;border:1px solid var(--line);border-top:0}
 .master-toolbar button,.master-toolbar summary{font-size:11px;padding:6px 9px;min-height:30px}
 .day-create{display:flex;position:relative}
 .day-create>#new-day{border-radius:5px 0 0 5px}
@@ -41,9 +41,21 @@ dialog .picker-results{max-height:none}
 .sticky-table-header:hover{background:#e5eddf}
 #app{height:100dvh;display:flex;flex-direction:column;overflow:hidden}
 .app-header{padding:6px 10px;gap:10px;flex-wrap:nowrap;flex-shrink:0}
-.workbook-heading{min-width:0;overflow:hidden}
-.workbook-heading button{font-size:12px;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
-.save-area{width:auto;flex-shrink:0;gap:6px}
+.save-area{margin-left:auto;width:auto;flex-shrink:0;gap:6px}
+.workbook-heading{flex:1;min-width:0;overflow:hidden}
+.workbook-heading .save-state{max-width:none}
+.file-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.file-actions button{white-space:normal;overflow-wrap:anywhere}
+.file-imports{border:1px solid var(--line);border-radius:5px;padding:10px}
+.file-imports summary{cursor:pointer;font-size:12px}
+.file-imports .menu{margin-top:10px}
+.snapshot-selectors{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.snapshot-selectors label{min-width:0}
+.snapshot-option{display:flex!important;align-items:center;gap:8px;min-width:0}
+.snapshot-date{flex:1;text-align:left;white-space:nowrap}
+.snapshot-device{margin-left:auto;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45%}
+.snapshot-option svg{flex:none}
+@media(max-width:600px){.snapshot-selectors{grid-template-columns:1fr}}
 .save-state{font-size:10px;max-width:190px;line-height:1.2}
 .save-area button{font-size:11px;padding:6px 9px}
 .toolbar{margin:0 8px;padding:3px 4px;flex-wrap:nowrap;overflow-x:auto;flex-shrink:0;scrollbar-width:thin;border-radius:4px 4px 0 0}
@@ -83,7 +95,7 @@ dialog .picker-results{max-height:none}
   .app-header{padding:4px 8px;gap:6px}
   .save-state{max-width:96px;font-size:9px}
   .save-area button{padding:5px 7px}
-  .toolbar,.formula-bar,.grid-shell,.grid-footer{margin-left:3px;margin-right:3px}
+  .toolbar,.master-toolbar,.formula-bar,.grid-shell,.grid-footer{margin-left:3px;margin-right:3px}
   .spreadsheet-grid td{height:33px}
   .tabs{margin-left:3px;margin-right:3px}
   .sheet-tab{padding:7px 9px}

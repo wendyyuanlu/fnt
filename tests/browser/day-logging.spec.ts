@@ -1,5 +1,46 @@
 import {expect,test} from '@playwright/test';
 
+test('Food preserves an already visible row and reveals distant additions below sticky headers',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.evaluate(async()=>{
+    const storage='/src/storage.ts',model='/src/model.ts',logging='/src/day-logging.ts';
+    const {Store}=await import(/* @vite-ignore */storage) as typeof import('../../src/storage'),{uid,setInput}=await import(/* @vite-ignore */model) as typeof import('../../src/model'),{masterLogging}=await import(/* @vite-ignore */logging) as typeof import('../../src/day-logging'),store=await Store.open();
+    try{
+      const state=(await store.load())!,sheet=state.book.sheets.find(s=>s.name==='Notebook')!;
+      while(sheet.rows.length<130)sheet.rows.push({id:uid()});
+      sheet.cells={};sheet.groups=[];
+      const table={id:uid(),name:'Master',sheet:sheet.id,header:sheet.rows[0].id,rows:sheet.rows.slice(1,91).map(row=>row.id),
+        columns:['Date','isDay','Weight','Food','Calories'].map((name,i)=>({id:uid(),name,column:sheet.columns[i].id}))};
+      state.book.tables.push(table);
+      for(const [i,field]of table.columns.entries())setInput(state.book,sheet,table.header,field.column,field.name);
+      for(let i=1;i<=90;i++){
+        setInput(state.book,sheet,sheet.rows[i].id,table.columns[0].column,'=DATE(2026,11,25)');
+        setInput(state.book,sheet,sheet.rows[i].id,table.columns[1].column,i===1?'TRUE':'FALSE');
+        if(i===1)setInput(state.book,sheet,sheet.rows[i].id,table.columns[2].column,'x');
+        else setInput(state.book,sheet,sheet.rows[i].id,table.columns[3].column,'Invented food');
+      }
+      sheet.dayLogging=masterLogging(state.book,sheet).config;
+      await store.save(state.book,state.version,'Invented Food visibility');
+    }finally{store.close();}
+  });
+  await page.reload();await page.getByRole('button',{name:'Notebook',exact:true}).click();
+  await page.locator('td[data-r="90"][data-c="3"]').click();
+  const before=await page.locator('#grid-scroll').evaluate(el=>el.scrollTop);
+  await page.locator('#add-food').click();
+  await expect(page.locator('td[data-r="91"][data-c="3"]')).toHaveClass(/active/);
+  expect(await page.locator('#grid-scroll').evaluate(el=>el.scrollTop)).toBeCloseTo(before,0);
+  const visible=()=>page.evaluate(()=>{
+    const cell=document.querySelector('.grid td.active')!.getBoundingClientRect(),grid=document.querySelector('#grid-scroll')!.getBoundingClientRect();
+    const headers=[...document.querySelectorAll('.grid thead,.sticky-table-header')].map(el=>el.getBoundingClientRect()).filter(rect=>rect.width>0&&rect.height>0&&rect.bottom>grid.top&&rect.top<grid.bottom);
+    return cell.top>=Math.max(grid.top,...headers.map(rect=>rect.bottom))-1&&cell.bottom<=grid.bottom+1;
+  });
+  expect(await visible()).toBe(true);
+  await page.locator('[data-action="top"]').click();await page.locator('td[data-r="1"][data-c="2"]').click();
+  await page.locator('#add-food').click();
+  await expect(page.locator('td[data-r="92"][data-c="3"]')).toHaveClass(/active/);
+  await expect.poll(visible).toBe(true);
+});
+
 test('Master-only logging controls preserve settings drafts, create real and undated days, and undo chronological date corrections',async({page})=>{
   await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
   const fixture=await page.evaluate(async()=>{
@@ -24,6 +65,9 @@ test('Master-only logging controls preserve settings drafts, create real and und
   await page.reload();await page.getByRole('button',{name:'Notebook',exact:true}).click();
   const controls=page.getByRole('navigation',{name:'Master logging',exact:true});
   await expect(controls).toBeVisible();expect(await controls.locator('#new-day,#add-food,#date-settings').allTextContents()).toEqual(['New day','Food','New day settings']);
+  const toolbar=(await page.locator('.toolbar').boundingBox())!,subtoolbar=(await controls.boundingBox())!,grid=(await page.locator('.grid-shell').boundingBox())!;
+  expect(subtoolbar.y).toBeGreaterThanOrEqual(toolbar.y+toolbar.height-1);
+  expect(subtoolbar.x).toBeCloseTo(grid.x,0);expect(subtoolbar.width).toBeCloseTo(grid.width,0);
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();await expect(controls).toHaveCount(0);
   await page.getByRole('button',{name:'Notebook',exact:true}).click();
   await page.locator('#date-settings').click();await expect(page.locator('#logging-date')).toHaveValue(fixture.cursor!);

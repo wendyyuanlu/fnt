@@ -1,5 +1,6 @@
 import './style.css';
 import {mountWorkbookComparison} from './sync-comparison';
+import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,snapshotDate,type ComparisonSnapshot} from './github-snapshots';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
 import { Store, SyncConflict, syncGitHub, hasPendingContent,validateBook,validateBookMetadata,validateCellChanges, type Backup, type LocalState } from './storage';
@@ -99,7 +100,7 @@ let book: Workbook, state: LocalState, store: Store, engine: Engine;
 let sheetId = '', selected = {r:1,c:0}, anchor = {...selected}, page = 0, showHypothetical=true;
 let selectionKind:'cells'|'rows'|'columns'='cells';
 let extraSelections:SelectionArea[]=[];
-let renderedSheet='',renderedTarget='',scrollTarget:number|{row:number;contextRows:number;align?:'bottom';afterRows?:number}|undefined,drawRowWindow:((force?:boolean)=>void)|undefined;
+let renderedSheet='',renderedTarget='',scrollTarget:number|{row:number;contextRows:number;align?:'bottom'|'nearest';afterRows?:number}|undefined,drawRowWindow:((force?:boolean)=>void)|undefined;
 let navigationRows:number[]=[],navigationColumns:number[]=[];
 const measuredRowHeights=new Map<string,number>();
 const pinnedColumns=new Map<string,string[]>();
@@ -798,7 +799,8 @@ async function manualSave(automatic=false): Promise<void> {
   } finally { busy = false; renderStatus();schedulePrivateSync(); }
 }
 function openConflict(conflict:SyncConflict):void {
-  dialog('Sync conflict - choose deliberately',`<p>Both versions were saved as recovery checkpoints. No automatic merge or upload occurred. Structural edits are conservatively treated as conflicts.</p><div class="menu"><button id="compare-conflict" class="primary">Compare versions or a backup</button><button id="use-remote">Use remote version on this device</button><button id="keep-local">Keep local version and explicitly replace remote</button></div><p class="muted">Closing this dialog leaves both versions unchanged. A remote change after this decision will cause another conflict, never an unconditional overwrite.</p>`,d=>{
+  dialog('Sync conflict - choose deliberately',`<div class="menu"><button id="upload-local" ${state.sync&&token?'':'disabled'}>Upload local data to GitHub</button><button id="compare-conflict" class="primary">Compare versions or a backup</button></div><p>Both copies are in recovery. Upload creates a separate comparison snapshot; it does not resolve this conflict.</p><details class="file-imports"><summary>Choose a whole copy instead</summary><div class="menu"><button id="use-remote">Use remote version on this device</button><button id="keep-local">Keep local version and explicitly replace remote</button></div><p class="muted">These actions replace a whole copy. A new remote change still causes another conflict.</p></details>`,d=>{
+    d.querySelector<HTMLButtonElement>('#upload-local')!.onclick=()=>{d.close();openSnapshotUpload(()=>openConflict(conflict));};
     d.querySelector<HTMLButtonElement>('#compare-conflict')!.onclick=()=>openComparison(conflict);
     d.querySelector<HTMLButtonElement>('#use-remote')!.onclick=async()=>{
       if(busy)return;
@@ -817,9 +819,72 @@ function openConflict(conflict:SyncConflict):void {
     };
   });
 }
+function openSnapshotUpload(back:()=>void):void{
+  const d=dialog('Upload local data to GitHub',`<p>Create a separate workbook snapshot in your configured private data repository. This does not replace the synced workbook, clear pending edits, or resolve a conflict. Original Excel attachments are not included; keep full backups separately.</p><form id="snapshot-upload-form"><label>Device name<input id="snapshot-device" required maxlength="64" autocomplete="off" placeholder="For example, Phone or Desktop"></label><button class="primary" id="snapshot-upload">Upload local data to GitHub</button></form><p id="snapshot-upload-status" role="status"></p><p id="snapshot-upload-error" role="alert" hidden></p>`);
+  const input=d.querySelector<HTMLInputElement>('#snapshot-device')!,button=d.querySelector<HTMLButtonElement>('#snapshot-upload')!,notice=d.querySelector<HTMLElement>('#snapshot-upload-status')!,failure=d.querySelector<HTMLElement>('#snapshot-upload-error')!;
+  let uploading=false;
+  void store.comparisonDeviceName().then(name=>{if(d.isConnected&&!input.value&&name)input.value=name;}).catch(e=>{failure.hidden=false;failure.textContent=String(e);flash(e);});
+  d.querySelector<HTMLFormElement>('form')!.onsubmit=async e=>{
+    e.preventDefault();if(uploading)return;
+    if(busy){flash('Wait for the current save or sync to finish.');return;}
+    if(!commitDraft())return;
+    let previousStatus=status;
+    try{
+      const device=comparisonDeviceName(input.value);
+      uploading=true;busy=true;button.disabled=true;input.disabled=true;failure.hidden=true;renderStatus();
+      await flush();if(savedGeneration!==generation)throw Error('Local save failed. Snapshot was not uploaded.');
+      await store.assertVersion(state.version);
+      previousStatus=status;status='Uploading comparison snapshot...';renderStatus();notice.textContent='Uploading a separate copy...';
+      await store.rememberComparisonDeviceName(device);
+      const saved=await uploadComparisonSnapshot(state.sync,token,book,device);
+      notice.textContent=`Uploaded ${snapshotDate(saved.time)} [${saved.device}]. The synced workbook and pending edits are unchanged. Choose this copy in Compare.`;
+      button.textContent='Upload another snapshot';
+    }catch(error){failure.hidden=false;failure.textContent=error instanceof Error?error.message:String(error);notice.textContent='Upload not confirmed. Your local workbook is retained.';flash(error);}
+    finally{uploading=false;busy=false;button.disabled=false;input.disabled=false;status=previousStatus;renderStatus();}
+  };
+  d.addEventListener('cancel',e=>{if(uploading)e.preventDefault();});
+  d.querySelector<HTMLButtonElement>('.close')!.onclick=()=>{if(!uploading)d.close();};
+  d.addEventListener('close',back,{once:true});
+}
 function openComparison(conflict?:SyncConflict):void{
-  const d=dialog('Compare workbooks and backups',`<button id="comparison-github" ${state.sync&&token?'':'disabled'}>Compare with remote version (GitHub)</button>${state.sync&&token?'':`<p class="muted">${state.sync?'Reconnect':'Configure'} Private GitHub sync from File first to authenticate a remote read. Backup comparisons work offline.</p>`}<section id="workbook-comparison"></section>`);
+  const connected=!!(state.sync&&token);
+  const d=dialog('Compare workbooks and backups',`<div class="button-row"><button id="comparison-github" ${connected?'':'disabled'}>Compare with remote version (GitHub)</button><button id="snapshot-refresh" ${connected?'':'disabled'}>Refresh uploaded copies</button></div>${connected?'':`<p class="muted">${state.sync?'Reconnect':'Configure'} Private GitHub sync from File first to authenticate a remote read. Backup comparisons work offline.</p>`}<div class="snapshot-selectors">${(['left','right'] as const).map(side=>`<label>Uploaded copy — ${side}<select id="snapshot-${side}" disabled><option value="">Choose uploaded copy</option></select></label>`).join('')}</div><p id="snapshot-list-status" role="status"></p><section id="workbook-comparison"></section>`);
   const comparison=mountWorkbookComparison(d.querySelector<HTMLElement>('#workbook-comparison')!,book,conflict?.remote,flash);
+  let files:ComparisonSnapshot[]=[],listGeneration=0;
+  const decorate=(button:HTMLButtonElement,option:HTMLOptionElement)=>{
+    if(!option.value)return;
+    button.classList.add('snapshot-option');const date=document.createElement('span'),device=document.createElement('span');
+    date.className='snapshot-date';device.className='snapshot-device';date.textContent=option.dataset.date!;device.textContent=`[${option.dataset.device}]`;button.replaceChildren(date,device);
+  };
+  const selectors=(['left','right'] as const).map(side=>{
+    const select=d.querySelector<HTMLSelectElement>(`#snapshot-${side}`)!,control=mountSelectDropdown(select,{renderOption:decorate});
+    let generation=0;
+    select.onchange=async()=>{
+      const entry=files.find(file=>file.path===select.value);if(!entry)return;
+      const current=++generation;select.disabled=true;control.refresh();
+      try{const copy=await readComparisonSnapshot(state.sync,token,entry);if(d.isConnected&&current===generation)comparison.setCopy(side,copy,`${snapshotDate(entry.time)} [${entry.device}]`);}
+      catch(error){if(d.isConnected){d.querySelector('#snapshot-list-status')!.textContent=String(error);flash(error);}}
+      finally{if(d.isConnected&&current===generation){select.disabled=false;control.refresh();}}
+    };
+    return {select,control};
+  });
+  const refresh=d.querySelector<HTMLButtonElement>('#snapshot-refresh')!;
+  refresh.onclick=async()=>{
+    const generation=++listGeneration;refresh.disabled=true;d.querySelector('#snapshot-list-status')!.textContent='Reading uploaded copies...';
+    try{
+      const received=await listComparisonSnapshots(state.sync,token,book.id);
+      if(!d.isConnected||generation!==listGeneration)return;
+      files=received;
+      for(const {select,control}of selectors){
+        const selected=select.value;select.replaceChildren(new Option('Choose uploaded copy',''));
+        for(const file of files){const date=snapshotDate(file.time),option=new Option(`${date} [${file.device}]`,file.path);option.dataset.date=date;option.dataset.device=file.device;select.append(option);}
+        select.value=files.some(file=>file.path===selected)?selected:'';select.disabled=!files.length;control.refresh();
+      }
+      d.querySelector('#snapshot-list-status')!.textContent=files.length?`${files.length} uploaded copies, newest first. Times use this device’s time zone.`:'No uploaded copies for this workbook yet.';
+    }catch(error){if(d.isConnected){d.querySelector('#snapshot-list-status')!.textContent=`Could not list uploaded copies. ${String(error)}`;flash(error);}}
+    finally{if(d.isConnected&&generation===listGeneration)refresh.disabled=false;}
+  };
+  if(connected)refresh.click();
   const load=d.querySelector<HTMLButtonElement>('#comparison-github');
   if(load)load.onclick=async()=>{
     load.disabled=true;load.textContent='Reading GitHub copy…';
@@ -833,7 +898,6 @@ function openComparison(conflict?:SyncConflict):void{
   d.addEventListener('close',()=>{comparison.dispose();if(conflict)openConflict(conflict);},{once:true});
 }
 function renderStatus(): void {
-  const title=root.querySelector('#title');if(title)title.textContent=book.title;
   updateCalculationState();
   for(const [action,entries]of [['undo',undo],['redo',redo]] as const){
     const button=root.querySelector<HTMLButtonElement>(`[data-action="${action}"]`);if(!button)continue;
@@ -1066,7 +1130,12 @@ function render(options?:{preserveViewport:boolean}): void {
   if(target!==undefined){
     const display=groupProjection.display(s.rows[target]?.id,s.columns[selected.c].id),displayIndex=display?s.rows.findIndex(row=>row.id===display.row):target;
     const exact=rows.findIndex(r=>r.i===displayIndex),position=exact>=0?exact:rows.findIndex(r=>r.i>=displayIndex),at=position<0?rows.length-1:position,top=layout.offsets[Math.max(0,at)],height=previousGrid?.clientHeight??innerHeight-180;
-    if(typeof scrollTarget==='object'&&scrollTarget.align==='bottom'){
+    if(typeof scrollTarget==='object'&&scrollTarget.align==='nearest'){
+      const owner=cellTable(rows[at]?.id,s.columns[selected.c].id),header=rows.findIndex(row=>row.id===owner?.header);
+      const sticky=header>=0&&header<at?layout.heights[header]:0,end=top+(layout.heights[at]??33);
+      if(top<vertical+sticky)vertical=Math.max(0,top-sticky);
+      else if(end>vertical+height-estimatedHeaderHeight)vertical=Math.max(0,end+estimatedHeaderHeight-height);
+    }else if(typeof scrollTarget==='object'&&scrollTarget.align==='bottom'){
       const end=Math.min(rows.length-1,at+(scrollTarget.afterRows??0));
       bottomRow=rows[end]?.i;vertical=Math.max(0,layout.offsets[end+1]+estimatedHeaderHeight-height);
     }else if(!sameSheet||scrollTarget!==undefined||top<vertical||top+(layout.heights[at]??33)>vertical+height-estimatedHeaderHeight)vertical=layout.offsets[Math.max(0,at-(typeof scrollTarget==='object'?scrollTarget.contextRows:0))];
@@ -1077,10 +1146,9 @@ function render(options?:{preserveViewport:boolean}): void {
   const scroll = document.querySelector('#grid-scroll')?.scrollLeft ?? 0;
   root.innerHTML = `
     <header class="app-header">
-      <div class="workbook-heading"><button id="title" title="Rename workbook">${esc(book.title)}</button></div>
-      <div class="save-area"><span id="save-state" class="save-state">${esc(status)}</span><button class="primary" data-action="save">Save <span class="desktop">workbook</span></button><button data-action="file" aria-label="Workbook and backups" title="Import Excel, export and browser-local recovery">File</button></div>
+      <div class="workbook-heading"><span id="save-state" class="save-state">${esc(status)}</span></div>
+      <div class="save-area"><button class="primary" data-action="save">Save <span class="desktop">workbook</span></button><button data-action="file" aria-label="Workbook and backups" title="Import Excel, export and browser-local recovery">File</button></div>
     </header>
-    ${master?`<nav class="master-toolbar" aria-label="Master logging"><div class="day-create"><button id="new-day" class="primary" data-action="new-day">New day</button><details><summary aria-label="New day options">${dropdownArrowHtml}</summary><div class="day-kind-menu"><button data-action="new-hypothetical-day">New hypothetical day</button></div></details></div><button id="add-food" data-action="add-food">Food</button><button id="date-settings" class="next" data-action="date-settings">New day settings</button></nav>`:''}
     <div id="error" role="alert" class="error" ${error?'':'hidden'}><span class="error-message">${esc(error)}</span><button type="button" class="error-dismiss" aria-label="Dismiss error" title="Dismiss error">${toolbarIcon('close')}</button></div>
     <nav class="toolbar" aria-label="Spreadsheet tools">
       <div class="tool-set">${(['undo','redo'] as const).map(name=>`<button class="icon-button" data-action="${name}" aria-label="${name==='undo'?'Undo':'Redo'}" title="${name==='undo'?'Undo (Ctrl+Z)':'Redo (Ctrl+Y)'}" ${(name==='undo'?undo:redo).length?'':'disabled'}>${toolbarIcon(name)}</button>`).join('')}</div>
@@ -1092,6 +1160,7 @@ function render(options?:{preserveViewport:boolean}): void {
       ${referenceId?'':`<div class="tool-set"><button class="icon-button" data-action="convert-table" aria-label="Convert to table" title="Create a table, or join selected rows/columns to their surrounding table">${toolbarIcon('convert-table')}</button><button class="icon-button" data-action="move-to-top" data-toolbar-before="action:tables" aria-label="Move to top" title="Move selected rows or a summary group below the table header">${toolbarIcon('move-to-top')}</button><button class="icon-button" data-action="tables" aria-label="Table manager" title="Table manager; rename the table containing the selected cell">${toolbarIcon('tables')}</button><button data-action="block">Meal / day</button></div>`}
       <div class="tool-set toolbar-layout-controls"><button class="icon-button" data-action="toolbar-layout" aria-label="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar'}" aria-pressed="${arrangingToolbar}" title="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar: drag tools or use Alt+Left/Right'}">${toolbarIcon('toolbar-layout')}</button></div>
     </nav>
+    ${master?`<nav class="master-toolbar" aria-label="Master logging"><div class="day-create"><button id="new-day" class="primary" data-action="new-day">New day</button><details><summary aria-label="New day options">${dropdownArrowHtml}</summary><div class="day-kind-menu"><button data-action="new-hypothetical-day">New hypothetical day</button></div></details></div><button id="add-food" data-action="add-food">Food</button><button id="date-settings" class="next" data-action="date-settings">New day settings</button></nav>`:''}
     <form class="formula-bar" id="formula-form"><span class="address">${letters(selected.c)}${selected.r+1}</span><span class="fx">fx</span><input id="formula" aria-label="Cell value or formula" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(draft??inputText(current()))}"><button type="button" class="touch-keyboard-toggle" aria-label="Use full keyboard" hidden>ABC</button><button type="button" class="icon-button touch-dropdown-toggle" aria-label="Show cell choices" aria-expanded="false" hidden><span class="format-caret">${dropdownArrowHtml}</span></button><span id="calculation-state"></span></form>
     ${view&&(view.error||referenceNotice)?`<div class="reference-notice" id="reference-notice" role="${view.error?'alert':'status'}">${esc(view.error||referenceNotice)}</div>`:''}
     <div class="grid-shell"><div id="grid-scroll" class="grid-scroll" tabindex="0" aria-label="Spreadsheet, use arrow keys to navigate">
@@ -1696,7 +1765,6 @@ function bind(): void {
   const rowJump=document.querySelector<HTMLInputElement>('#row-jump');if(rowJump)rowJump.onchange=e=>{
     if(!commitDraft())return;const s=sheet(),view=gridReference(),number=Number((e.target as HTMLInputElement).value),count=view?.rows.length??s.rows.length;if(!Number.isInteger(number)||number<1||number>count){flash(`Enter a row between 1 and ${count}.`);return;}selected.r=view?s.rows.findIndex(r=>r.id===view.rows[number-1]):number-1;anchor={...selected};selectionKind='cells';scrollTarget=selected.r;page=Math.floor(selected.r/60);render();
   };
-  document.querySelector('#title')!.addEventListener('click',()=>askText('Rename workbook',book.title,name=>mutateMetadata('Rename workbook',()=>{book.title=name;},[['title']],false,false)));
 }
 function scheduleSelectionPaint():void{
   if(!selectionPaintFrame)selectionPaintFrame=requestAnimationFrame(()=>{selectionPaintFrame=0;refreshSelection();});
@@ -2180,7 +2248,7 @@ async function action(name:string):Promise<void> {
       const s=sheet();
       if(mutate('Add food',()=>{
         const row=addMasterFood(book,s,s.rows[selected.r]?.id),field=masterLogging(book,s).food!;
-        selected={r:s.rows.findIndex(item=>item.id===row),c:s.columns.findIndex(column=>column.id===field.column)};anchor={...selected};selectionKind='cells';extraSelections=[];scrollTarget=selected.r;
+        selected={r:s.rows.findIndex(item=>item.id===row),c:s.columns.findIndex(column=>column.id===field.column)};anchor={...selected};selectionKind='cells';extraSelections=[];scrollTarget={row:selected.r,contextRows:0,align:'nearest'};
       }))root.querySelector<HTMLInputElement>('#formula')?.focus({preventScroll:true});
       break;
     }
@@ -3739,9 +3807,10 @@ async function exportBackup():Promise<void> {
   }catch(e){flash(e);}
 }
 function openFile():void {
-  dialog('Workbook & recovery',`<div class="menu"><button id="sync">Private GitHub sync</button><button id="compare-backup">Compare workbooks and backups</button><button id="backup" class="primary">Download independent full backup</button>${referenceId?'':'<button id="file-page-settings">Page settings for this sheet</button>'}${book.importReport?'<button id="original">Download unchanged original XLSX</button><button id="report">Compatibility report</button>':''}<label>Import Ingredients into this workbook<input type="file" id="import-ingredients" accept=".xlsx"></label><label>Restore Fnt backup<input type="file" id="restore" accept=".json"></label><label>Replace workbook from Excel (pre-import recovery)<input type="file" id="import" accept=".xlsx"></label><button id="history">Recovery checkpoints</button><button id="privacy">Storage & privacy</button></div><p class="muted">Ingredients import keeps existing records and other sheets, saves a full pre-import recovery archive, and disconnects sync. Backups contain your data; keep them private. XLSX compatibility is not certified.</p>`,d=>{
-    d.querySelector<HTMLButtonElement>('#compare-backup')!.onclick=()=>openComparison();
-    const pageSettings=d.querySelector<HTMLButtonElement>('#file-page-settings');if(pageSettings)pageSettings.onclick=()=>{d.close();openPageSettings();};
+  dialog('Workbook & recovery',`<div class="menu file-menu"><button id="sync">Private GitHub sync</button><button id="upload-local" ${state.sync&&token?'':'disabled'}>Upload local data to GitHub</button><button id="backup" class="primary">Download independent full backup</button><button id="rename-workbook">Rename workbook</button><details class="file-imports"><summary>Import or restore</summary><label>Import Ingredients<input type="file" id="import-ingredients" accept=".xlsx"></label><label>Restore Fnt backup<input type="file" id="restore" accept=".json"></label><label>Replace workbook from Excel<input type="file" id="import" accept=".xlsx"></label></details><div class="file-actions" id="file-recovery-actions"><button id="history">Recovery checkpoints</button><button id="persist">Request persistent browser storage</button>${book.importReport?'<button id="original">Download unchanged original XLSX</button>':''}</div></div><p id="storage-info" class="muted" role="status"></p><p class="muted">${state.sync&&token?'Uploads create separate comparison copies, not sync replacements.':'Connect private GitHub sync to upload comparison copies.'} Imports and restores preserve recovery and disconnect sync. Keep full backups private.</p>`,d=>{
+    d.classList.add('file-dialog');
+    d.querySelector<HTMLButtonElement>('#upload-local')!.onclick=()=>{d.close();openSnapshotUpload(openFile);};
+    d.querySelector<HTMLButtonElement>('#rename-workbook')!.onclick=()=>{d.close();askText('Rename workbook',book.title,name=>mutateMetadata('Rename workbook',()=>{book.title=name;},[['title']],false,false));};
     const masterLabel=document.createElement('label'),masterInput=document.createElement('input');
     masterLabel.textContent='Review Master import (no changes until approved)';masterInput.type='file';masterInput.id='import-master';masterInput.accept='.xlsx';masterLabel.append(masterInput);
     d.querySelector('#import-ingredients')!.closest('label')!.after(masterLabel);
@@ -3819,13 +3888,13 @@ function openFile():void {
     };
     mealsInput.onchange=()=>{if(mealsInput.files?.[0])void importMeals(mealsInput.files[0]);};
     if(book.importReport){const attachedMeals=document.createElement('button');attachedMeals.id='import-attached-meals';attachedMeals.textContent='Import Meals from attached original XLSX';attachedMeals.onclick=()=>void importMeals();mealsLabel.before(attachedMeals);}
-    const ingredients=allTables(book).find(t=>t.name.toLowerCase()==='ingredients'),localContext=document.createElement('p');
+    const localContext=document.createElement('p');
     localContext.id='browser-workbook';localContext.className='muted';
-    localContext.textContent=`This browser profile at ${location.origin}. Other browser profiles and preview ports have separate local workbooks. ${ingredients?`Ingredients: ${ingredients.rows.length} records, ${ingredients.columns.length} columns.`:'No Ingredients table in this workbook.'} ${book.importReport?'An Excel source is attached locally.':'No Excel source has been imported into this workbook. Choose Import Ingredients below to load your Excel data here.'}`;
+    localContext.textContent=`This browser: ${location.origin} — ${state.sync?'private sync configured':'local only'}.`;
     d.querySelector('.menu')!.before(localContext);
     if(import.meta.env.PROD){
       const published=document.createElement('button');published.textContent='Load published testing workbook';
-      d.querySelector('.menu')!.prepend(published);
+      d.querySelector('#file-recovery-actions')!.append(published);
       published.onclick=()=>{d.close();confirmAction('Load published testing workbook','Your current workbook and original attachments will be preserved in a full recovery checkpoint before loading the published testing snapshot.',()=>{
         void(async()=>{busy=true;renderStatus();try{
           await flush();if(savedGeneration!==generation)throw Error('Save failed. Published workbook was not loaded.');
@@ -3853,7 +3922,6 @@ function openFile():void {
       });
     };
     d.querySelector<HTMLButtonElement>('#backup')!.onclick=()=>{void exportBackup();};
-    const reportButton=d.querySelector<HTMLButtonElement>('#report');if(reportButton)reportButton.onclick=()=>{d.close();void action('report');};
     const originalButton=d.querySelector<HTMLButtonElement>('#original');if(originalButton)originalButton.onclick=async()=>{
       try{
         const original=(await store.backup(state)).originals.find(o=>o.id===book.importReport!.originalId);if(!original)throw Error('Original package is missing. Restore a complete backup before relying on this copy.');
@@ -3911,7 +3979,16 @@ function openFile():void {
     };
     d.querySelector<HTMLButtonElement>('#history')!.onclick=()=>{d.close();void openHistory();};
     d.querySelector<HTMLButtonElement>('#sync')!.onclick=()=>{d.close();openSync();};
-    d.querySelector<HTMLButtonElement>('#privacy')!.onclick=()=>{d.close();openSafety();};
+    const persist=d.querySelector<HTMLButtonElement>('#persist')!,info=d.querySelector<HTMLParagraphElement>('#storage-info')!;
+    persist.onclick=async()=>{
+      persist.disabled=true;info.textContent='Requesting persistent browser storage…';
+      try{
+        if(!navigator.storage?.persist)throw Error('Persistent storage requests are not supported by this browser. Download backups regularly.');
+        const ok=await navigator.storage.persist();
+        info.textContent=ok?'Persistent storage granted. Still keep independent backups.':'Browser did not grant persistent storage. Download backups regularly.';
+      }catch(e){info.textContent=e instanceof Error?e.message:String(e);flash(e);}
+      finally{persist.disabled=false;}
+    };
   });
 }
 async function openHistory():Promise<void> {
@@ -3934,6 +4011,7 @@ async function openHistory():Promise<void> {
 function openSync():void {
   const cfg=state.sync;
   dialog('Optional private GitHub sync',`<p>Opt-in only. This uploads workbook data to the private repository you choose. Never use your website source or a public repository. Existing remote files are not overwritten on conflict.</p><form id="sync-form"><label>Personal repository owner<input id="sync-owner" value="${esc(cfg?.owner)}" required autocomplete="off"></label><label>Private data repository<input id="sync-repo" value="${esc(cfg?.repo)}" required></label><label>Existing branch<input id="sync-branch" value="${esc(cfg?.branch??'main')}" required></label><label>JSON path<input id="sync-path" value="${esc(cfg?.path??'workbook.json')}" required></label><label>Fine-grained token: Contents read/write, only this data repository<input id="sync-token" type="password" autocomplete="off" required></label><label class="inline"><input id="sync-remember" type="checkbox" ${rememberPrivateSync?'checked':''}>Remember on this trusted device</label><p class="muted">Unchecked: token stays in this tab's memory; sign in again after reloading. Checked: token is stored in this browser's IndexedDB, separately from workbook data, never in backups or Git. Anyone with access to this browser or malicious app code could read it. Use only a fine-grained token restricted to this data repository. Disconnect forgets it on this device.</p><p class="muted">Saved edits sync automatically after a short pause; active tabs check every 15 seconds and on startup/resume/reconnection when authenticated. Save also syncs immediately. GitHub must already contain the branch. Large files may exceed the Contents API limit.</p><button class="primary">Connect & sync now</button><button id="disconnect" type="button">Disconnect</button></form>`,d=>{
+    const compare=document.createElement('button');compare.type='button';compare.id='sync-compare';compare.textContent='Compare copies';compare.onclick=()=>openComparison();d.querySelector('form')!.after(compare);
     d.querySelector('form')!.onsubmit=async e=>{
       e.preventDefault();await flush();if(savedGeneration!==generation)return;
       const read=(id:string)=>d.querySelector<HTMLInputElement>(id)!.value.trim();
@@ -3951,9 +4029,8 @@ function openSync():void {
   });
 }
 function openSafety():void {
-  dialog('Your data, deliberately local',`<p><b>Local autosave:</b> edits and their pending-operation IDs are committed together in IndexedDB. "Saved" appears only after the transaction completes. Save also creates a local checkpoint, or syncs if connected.</p><p><b>Independent backups matter:</b> browser data can be evicted, cleared, or lost with your device. Download full backups regularly. Recovery history on the same device is not a separate backup.</p><p><b>Nothing uploaded by default:</b> no analytics, hosted spreadsheet engine, account requirement, or bundled personal workbook. Optional GitHub sync verifies the repository is private before uploading. Conflicts preserve both versions instead of last-write-wins.</p><p><b>Review build:</b> not yet a certified replacement for Excel. Unsupported calculations display errors, not stale cached results. The original workbook remains authoritative. Text-based INDIRECT cannot follow source renames by definition.</p><p id="storage-info"></p><button id="persist">Request persistent browser storage</button>`,d=>{
+  dialog('Your data, deliberately local',`<p><b>Local autosave:</b> edits and their pending-operation IDs are committed together in IndexedDB. "Saved" appears only after the transaction completes. Save also creates a local checkpoint, or syncs if connected.</p><p><b>Independent backups matter:</b> browser data can be evicted, cleared, or lost with your device. Download full backups regularly. Recovery history on the same device is not a separate backup.</p><p><b>Nothing uploaded by default:</b> no analytics, hosted spreadsheet engine, account requirement, or bundled personal workbook. Optional GitHub sync verifies the repository is private before uploading. Conflicts preserve both versions instead of last-write-wins.</p><p><b>Review build:</b> not yet a certified replacement for Excel. Unsupported calculations display errors, not stale cached results. The original workbook remains authoritative. Text-based INDIRECT cannot follow source renames by definition.</p><p id="storage-info"></p>`,d=>{
     void navigator.storage?.estimate().then(e=>{const p=d.querySelector('#storage-info');if(p)p.textContent=`Browser storage: approximately ${((e.usage??0)/1048576).toFixed(1)} MB used of ${((e.quota??0)/1048576).toFixed(0)} MB available.`;});
-    d.querySelector<HTMLButtonElement>('#persist')!.onclick=async()=>{try{const ok=await navigator.storage.persist();d.querySelector('#storage-info')!.textContent=ok?'Persistent storage granted. Still keep independent backups.':'Browser did not grant persistent storage. Download backups regularly.';}catch(e){flash(e);}};
   });
 }
 function deleteSelection(structural:boolean):void {

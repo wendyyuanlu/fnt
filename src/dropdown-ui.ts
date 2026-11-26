@@ -34,14 +34,14 @@ export function mountSourcePicker(dialog:HTMLDialogElement,options:{
   refresh();return{refresh};
 }
 
-export function mountSelectDropdown(select:HTMLSelectElement):{refresh:()=>void}{
+export function mountSelectDropdown(select:HTMLSelectElement,options?:{renderOption:(button:HTMLButtonElement,option:HTMLOptionElement)=>void}):{refresh:()=>void}{
   const dialog=select.closest('dialog')!,label=select.labels?.[0],trigger=document.createElement('button');
   const name=select.getAttribute('aria-label')??[...label?.childNodes??[]].filter(node=>node.nodeType===Node.TEXT_NODE).map(node=>node.textContent).join('').trim();
   trigger.type='button';trigger.id=select.id+'-trigger';trigger.className='dropdown-field';
   trigger.setAttribute('role','combobox');trigger.setAttribute('aria-label',name);trigger.setAttribute('aria-haspopup','listbox');trigger.setAttribute('aria-expanded','false');trigger.setAttribute('aria-controls',select.id+'-options');
   select.hidden=true;select.after(trigger);if(label)label.htmlFor=trigger.id;
   let closePopup:(()=>void)|undefined;
-  const refresh=()=>{const text=document.createElement('span');text.textContent=select.selectedOptions[0]?.textContent??'';trigger.replaceChildren(text);trigger.insertAdjacentHTML('beforeend',dropdownArrowHtml);trigger.disabled=select.disabled;};
+  const refresh=()=>{const text=document.createElement('span');text.textContent=select.selectedOptions[0]?.textContent??'';trigger.replaceChildren(text);if(options&&select.selectedOptions[0])options.renderOption(trigger,select.selectedOptions[0]);trigger.insertAdjacentHTML('beforeend',dropdownArrowHtml);trigger.disabled=select.disabled;};
   trigger.onclick=()=>{
     if(closePopup){closePopup();return;}
     const popup=document.createElement('div'),panel=document.createElement('div'),controller=new AbortController();
@@ -53,7 +53,7 @@ export function mountSelectDropdown(select:HTMLSelectElement):{refresh:()=>void}
       popup.style.width=Math.min(rect.width,width-12)+'px';popup.style.maxHeight=Math.min(360,height-12)+'px';
       const bounds=popup.getBoundingClientRect();popup.style.left=Math.max(left+6,Math.min(rect.left,left+width-bounds.width-6))+'px';popup.style.top=Math.max(top+6,Math.min(rect.bottom+3,top+height-bounds.height-6))+'px';
     };
-    const {search,list}=mountDropdownOptions(panel,{choices:[...select.options].filter(option=>!option.disabled),value:option=>option.text,selected:option=>option.value===select.value,name,position,
+    const {search,list}=mountDropdownOptions(panel,{choices:[...select.options].filter(option=>!option.disabled),value:option=>option.text,selected:option=>option.value===select.value,name,position,renderOption:options?.renderOption,
       choose:option=>{select.value=option.value;select.dispatchEvent(new Event('change',{bubbles:true}));refresh();close();trigger.focus({preventScroll:true});}});
     search.hidden=true;list.id=select.id+'-options';
     popup.onkeydown=e=>{if(e.key==='Escape'||e.key==='Tab'){if(e.key==='Escape')e.preventDefault();close();trigger.focus({preventScroll:true});}else dropdownOptionsKey(e,search,list);e.stopPropagation();};
@@ -69,7 +69,7 @@ export function mountSelectDropdown(select:HTMLSelectElement):{refresh:()=>void}
 
 export function mountDropdownOptions<T>(panel:HTMLElement,options:{
   choices:T[];value:(choice:T)=>string;selected:(choice:T)=>boolean;choose:(choice:T)=>void;
-  name:string;searchLabel?:string;empty?:string;position:()=>void;sharedInput?:HTMLInputElement;initialQuery?:string;
+  name:string;searchLabel?:string;empty?:string;position:()=>void;sharedInput?:HTMLInputElement;initialQuery?:string;renderOption?:(button:HTMLButtonElement,choice:T)=>void;
 }):{search:HTMLInputElement;list:HTMLDivElement;dispose:()=>void}{
   const search=options.sharedInput??document.createElement('input'),list=document.createElement('div');
   if(!options.sharedInput){search.type='search';search.setAttribute('aria-label',options.searchLabel??'Search dropdown options');search.placeholder='Search options…';search.autocomplete='off';}
@@ -84,7 +84,7 @@ export function mountDropdownOptions<T>(panel:HTMLElement,options:{
     list.replaceChildren();
     for(let i=page*80;i<Math.min(matches.length,page*80+80);i++){
       const {choice,value}=matches[i],button=document.createElement('button');button.type='button';button.setAttribute('role','option');button.tabIndex=i===active?0:-1;button.dataset.optionIndex=String(i);
-      button.textContent=value===''?'(Blank)':value===' '?'(Space)':value;button.title=value;button.setAttribute('aria-selected',String(options.selected(choice)));button.onclick=()=>options.choose(choice);list.append(button);
+      button.textContent=value===''?'(Blank)':value===' '?'(Space)':value;options.renderOption?.(button,choice);button.title=value;button.setAttribute('aria-selected',String(options.selected(choice)));button.onclick=()=>options.choose(choice);list.append(button);
     }
     if(!matches.length)list.textContent=options.choices.length?'No matching options.':options.empty??'No available options.';
     pagination.hidden=matches.length<=80;count.textContent=`${page*80+1}-${Math.min(matches.length,page*80+80)} of ${matches.length}`;

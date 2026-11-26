@@ -37,12 +37,16 @@ test('deep mixed undo and redo survive reloads and a new edit clears the redo br
   await page.goto('/');await expect(page.locator('#save-state')).toContainText(/^Saved/);
   await page.getByRole('button',{name:'Notebook',exact:true}).click();
   await page.locator('td[data-r="0"][data-c="0"]').click();
-  const original=await page.locator('#formula').inputValue(),title=await page.locator('#title').textContent();
+  const original=await page.locator('#formula').inputValue();
+  const rename=async()=>{await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();};
+  await rename();const title=await page.locator('#answer').inputValue();await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+  await page.locator('td[data-r="0"][data-c="0"]').click();
   for(let i=1;i<=45;i++){
+    await page.locator('td[data-r="0"][data-c="0"]').click();
     await page.locator('#formula').fill('History value '+i);await page.locator('#formula').press('Enter');
   }
   for(let i=1;i<=6;i++){
-    await page.locator('#title').click();await page.getByLabel('Name',{exact:true}).fill('History title '+i);
+    await rename();await page.getByLabel('Name',{exact:true}).fill('History title '+i);
     await page.getByRole('button',{name:'Apply',exact:true}).click();
   }
   const undo=()=>page.getByRole('button',{name:'Undo',exact:true}),redo=()=>page.getByRole('button',{name:'Redo',exact:true});
@@ -54,8 +58,9 @@ test('deep mixed undo and redo survive reloads and a new edit clears the redo br
   await expect(undo()).toHaveAttribute('data-history-count','46');await expect(redo()).toHaveAttribute('data-history-count','5');
   await redo().click();await redo().click();
   for(let i=0;i<48;i++)await undo().click();
-  await expect(undo()).toBeDisabled();await expect(page.locator('#title')).toHaveText(title!);
+  await expect(undo()).toBeDisabled();await rename();await expect(page.locator('#answer')).toHaveValue(title);await page.getByRole('button',{name:'Close dialog',exact:true}).click();
   await expect(page.locator('#formula')).toHaveValue(original);
+  await page.locator('td[data-r="0"][data-c="0"]').click();
   await page.locator('#formula').fill('New branch');await page.locator('#formula').press('Enter');await expect(redo()).toBeDisabled();
   await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.reload();await expect(redo()).toBeDisabled();
 });

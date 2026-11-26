@@ -2,13 +2,15 @@ import {parseArchive} from './archive';
 import {validateBackup,type Backup} from './storage';
 import type {Workbook} from './model';
 import {workbookDifferences,type WorkbookDifference} from './sync-diff';
+import {comparisonSnapshot} from './github-snapshots';
 
 export function comparisonBackup(contents:string):Workbook{
   const backup=parseArchive(contents) as Backup;
+  if((backup as {format:string}).format==='fnt-comparison-snapshot')return comparisonSnapshot(contents);
   validateBackup(backup);
   return backup.state.book;
 }
-export function mountWorkbookComparison(container:HTMLElement,local:Workbook,remote:Workbook|undefined,onError:(error:unknown)=>void):{dispose:()=>void;setRemote:(copy:Workbook)=>void}{
+export function mountWorkbookComparison(container:HTMLElement,local:Workbook,remote:Workbook|undefined,onError:(error:unknown)=>void):{dispose:()=>void;setRemote:(copy:Workbook)=>void;setCopy:(side:'left'|'right',copy:Workbook,label:string)=>void}{
   container.classList.add('sync-comparison');
   container.innerHTML=`<p>Read-only comparison. Backup files stay in this browser: they are not restored or sent to GitHub. Without a common base, these are differences, not proof both devices edited the same cell. Revision and activity counters are ignored.</p>
     <p id="comparison-left-label"></p><label>Use a backup for the left side<input id="comparison-left" type="file" accept=".json"></label>
@@ -99,5 +101,6 @@ export function mountWorkbookComparison(container:HTMLElement,local:Workbook,rem
   return{
     dispose:()=>{disposed=true;clearTimeout(timer);},
     setRemote:copy=>{right=copy;rightLabel='GitHub saved version';error.hidden=true;start();},
+    setCopy:(side,copy,label)=>{loads[side]++;if(side==='left'){left=copy;leftLabel=label;}else{right=copy;rightLabel=label;}error.hidden=true;start();},
   };
 }

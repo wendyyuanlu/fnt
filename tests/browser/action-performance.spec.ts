@@ -162,14 +162,46 @@ test('public-sized tiny-table duplication saves only changed cells and retains s
   expect(rows).toBe(2);
 });
 
-test('scoped title changes repaint the heading and persist with Undo',async({page})=>{
-  await page.goto('/');await expect(page.locator('#title')).toBeVisible();
-  const before=await page.locator('#title').innerText();
-  await page.locator('#title').click();await page.locator('#answer').fill('Scoped workbook title');await page.locator('#answer').press('Enter');
-  await expect(page.locator('#title')).toHaveText('Scoped workbook title');
+test('workbook renaming remains available through File and persists with Undo without a header title',async({page})=>{
+  await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
+  await expect(page.locator('#title')).toHaveCount(0);
+  await expect(page.locator('.workbook-heading #save-state')).toHaveCount(1);
+  const rename=async()=>{
+    await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+    await expect(page.locator('#file-page-settings, #compare-backup, #privacy, #report')).toHaveCount(0);
+    const backup=await page.locator('#backup').boundingBox(),rename=await page.locator('#rename-workbook').boundingBox();
+    expect(backup).not.toBeNull();expect(rename).not.toBeNull();
+    expect(Math.abs(backup!.x-rename!.x)).toBeLessThan(1);
+    expect(Math.abs(backup!.width-rename!.width)).toBeLessThan(1);
+    expect(rename!.y).toBeGreaterThanOrEqual(backup!.y+backup!.height);
+    expect(await page.locator('#backup, #rename-workbook').evaluateAll(buttons=>buttons.every(button=>button.parentElement?.classList.contains('file-menu')))).toBe(true);
+    await page.getByRole('button',{name:'Rename workbook',exact:true}).click();
+  };
+  await rename();const before=await page.locator('#answer').inputValue();
+  await page.locator('#answer').fill('Scoped workbook title');await page.locator('#answer').press('Enter');
   await expect(page.locator('#save-state')).toContainText('Saved');
-  await page.reload();await expect(page.locator('#title')).toHaveText('Scoped workbook title');
-  await page.locator('[data-action="undo"]').click();await expect(page.locator('#title')).toHaveText(before);
+  await page.reload();await expect(page.locator('.grid')).toBeVisible();await rename();await expect(page.locator('#answer')).toHaveValue('Scoped workbook title');
+  await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+  await page.locator('[data-action="undo"]').click();await rename();await expect(page.locator('#answer')).toHaveValue(before);
+});
+
+test('File requests persistent storage directly and reports grants, refusals and failures',async({page})=>{
+  await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
+  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();
+  const file=page.getByRole('dialog',{name:'Workbook & recovery',exact:true}),persist=file.locator('#persist');
+  await expect(persist).toBeVisible();await expect(file.locator('#privacy, #report')).toHaveCount(0);
+  for(const [mode,result]of [
+    ['granted','Persistent storage granted. Still keep independent backups.'],
+    ['refused','Browser did not grant persistent storage. Download backups regularly.'],
+    ['failed','Invented persistence failure'],
+    ['unsupported','Persistent storage requests are not supported by this browser. Download backups regularly.'],
+  ] as const){
+    await page.evaluate(mode=>Object.defineProperty(navigator.storage,'persist',{configurable:true,value:mode==='unsupported'?undefined:async()=>{
+      if(mode==='failed')throw Error('Invented persistence failure');return mode==='granted';
+    }}),mode);
+    await persist.click();await expect(file.locator('#storage-info')).toHaveText(result);
+    await expect(file).toBeVisible();await expect(persist).toBeEnabled();
+  }
 });
 
 test('paged DD choices retain explicit source identity for duplicate labels and Custom through search, Undo and reload',async({page,isMobile})=>{

@@ -2,6 +2,7 @@ import { clone, uid, type Workbook } from './model';
 import { compressArchive, decompressArchive, stringifyArchive } from './archive';
 import {validateHypotheticalStyle} from './hypothetical';
 import {applyUndo,type History,type UndoHistory} from './undo-history';
+import {withPrivateGitHub} from './github-client';
 
 export interface Pending { id: string; label: string; time: string }
 export interface SyncConfig { owner: string; repo: string; branch: string; path: string }
@@ -340,6 +341,15 @@ export class Store {
     else store.delete(syncCredentialKey);
     await done;
   }
+  async comparisonDeviceName():Promise<string|undefined>{
+    const value=await request(this.db.transaction('state').objectStore('state').get('device:comparison-name')) as unknown;
+    if(value!==undefined&&typeof value!=='string')throw Error('Saved device name is damaged. Enter it again before uploading a comparison copy.');
+    return value;
+  }
+  async rememberComparisonDeviceName(name:string):Promise<void>{
+    const tx=this.db.transaction('state','readwrite'),done=complete(tx);
+    tx.objectStore('state').put(name,'device:comparison-name');await done;
+  }
   async undoHistory(version:number,book:string):Promise<UndoHistory|undefined>{
     const saved=await request(this.db.transaction('state').objectStore('state').get('undo')) as {version:number;book:string;history:UndoHistory}|undefined;
     if(!saved||saved.version!==version||saved.book!==book)return;
@@ -471,34 +481,10 @@ export class SyncConflict extends Error {
   constructor(public remote: Workbook, public sha: string,public originals:Original[]=[]) { super('Remote changes found. Both versions are preserved in recovery. No upload was made.'); }
 }
 export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[],options?:{readOnly?:boolean}): Promise<{sha:string;remote?:Workbook;originals?:Original[]}> {
-  const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
-  try{
-    return await Promise.race([
-      privateSync(state,token,(url,init)=>fetcher(url,{...init,signal:controller.signal}),originals,options?.readOnly===true),
-      new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('Private sync timed out while transferring data. Local edits are retained.')),90000);}),
-    ]);
-  }finally{clearTimeout(timer);controller.abort();}
+  return privateSync(state,token,fetcher,originals,options?.readOnly===true);
 }
 async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[],readOnly:boolean):Promise<{sha:string;remote?:Workbook;originals?:Original[]}>{
-  const cfg = state.sync;
-  if (!cfg || !token) throw Error('Connect a private repository and enter a token for this browser session.');
-  if (!/^[\w.-]+$/.test(cfg.owner) || !/^[\w.-]+$/.test(cfg.repo) || !cfg.branch || !cfg.path || cfg.path.split('/').some(s => s === '..') || !cfg.path.endsWith('.json')) throw Error('Invalid sync destination. Use a JSON file in a private data repository.');
-  if(`${cfg.owner}/${cfg.repo}`.toLowerCase()==='wendyyuanlu/fnt')throw Error('The website source repository cannot be used for nutrition data. Choose a separate private data repository with no Pages publishing.');
-  const root = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}`;
-  const headers = { Authorization:`Bearer ${token}`, Accept:'application/vnd.github+json', 'X-GitHub-Api-Version':'2022-11-28' };
-  const request=async(url:string,init:RequestInit):Promise<Response>=>{
-    let timer:ReturnType<typeof setTimeout>|undefined;
-    try{
-      return await Promise.race([fetcher(url,init),new Promise<Response>((_,reject)=>{
-        timer=setTimeout(()=>{reject(Error('Private sync request timed out. Local edits are retained.'));},30000);
-      })]);
-    }finally{clearTimeout(timer);}
-  };
-  const repo = await request(root,{headers,cache:'no-store',redirect:'error'});
-  if (!repo.ok) throw Error(`Cannot verify private repository (${repo.status}). Nothing uploaded.`);
-  const info = await repo.json() as {private:boolean;has_pages?:boolean};
-  if (!info.private) throw Error('Sync requires a PRIVATE repository. Nothing uploaded.');
-  if(info.has_pages!==false)throw Error('Sync requires a private data repository with GitHub Pages disabled. Nothing uploaded.');
+  return withPrivateGitHub(state.sync,token,fetcher,async({root,headers,request,config:cfg})=>{
   const url = `${root}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}`;
   const response = await request(url,{headers,cache:'no-store',redirect:'error'});
   let sha: string | undefined, remote: Workbook | undefined;
@@ -539,6 +525,7 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
   const ack = await upload.json() as {content:{sha:string}};
   if (!ack.content?.sha) throw Error('GitHub did not acknowledge a file revision. Sync not confirmed.');
   return {sha:ack.content.sha};
+  });
 }
 import {validatePagination} from './date-pagination';
 import {validateDayLogging} from './day-logging';

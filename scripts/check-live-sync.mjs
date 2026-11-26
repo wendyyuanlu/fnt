@@ -101,7 +101,7 @@ async function client(mobile=false){
   await page.evaluate(()=>navigator.serviceWorker.ready);
   await page.reload();await page.locator('table[role="grid"]').waitFor();
   await waitFor(page,()=>page.evaluate(()=>!!navigator.serviceWorker.controller),'offline shell installation');
-  await page.locator('#title').click();await page.locator('#answer').fill(`Fnt live sync test - ${mobile?'mobile B':'desktop A'}`);
+  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();await page.locator('#answer').fill(`Fnt live sync test - ${mobile?'mobile B':'desktop A'}`);
   await page.getByRole('dialog').getByRole('button',{name:'Apply',exact:true}).click();await saved(page);
   const initial=await durable(page);
   assert.equal(initial.book.importReport,undefined);assert.equal(initial.book.sheets.length,4);
@@ -118,7 +118,7 @@ try{
   await check('online authenticated initial write and independently initialized mobile client download',async()=>{
     await connect(A);await synced(A);
     const first=await durable(A);assert.equal(first.pending.length,0);
-    await connect(B);await B.locator('#use-remote').waitFor();
+    await connect(B);await B.getByText('Choose a whole copy instead',{exact:true}).click();await B.locator('#use-remote').waitFor();
     const seed=await durable(B);assert(seed.pending.length>0);
     const recovery=await history(B);assert(recovery.some(c=>c.label==='Local conflict - not uploaded'));assert(recovery.some(c=>c.label==='Remote conflict - not applied'));
     await B.locator('#use-remote').click();
@@ -143,7 +143,7 @@ try{
     await a.context.setOffline(false);await b.context.setOffline(false);a.offline=b.offline=false;
     await save(A);await synced(A);
     await save(B);await B.locator('#sync-form').waitFor();assert.equal(await B.locator('#sync-token').inputValue(),'');await connect(B);
-    await B.locator('#use-remote').waitFor();assert.deepEqual(pendingIds(await durable(B)),pb);
+    await B.getByText('Choose a whole copy instead',{exact:true}).click();await B.locator('#use-remote').waitFor();assert.deepEqual(pendingIds(await durable(B)),pb);
     const copies=await history(B);
     assert(copies.some(c=>c.label==='Local conflict - not uploaded'&&grams(c.book)===200));
     assert(copies.some(c=>c.label==='Remote conflict - not applied'&&grams(c.book)===120));
@@ -161,7 +161,7 @@ try{
     assert(!await A.locator('#formula').isDisabled(),'Editing must resume after a failed sync');
     assert([409,422].includes(a.putStatuses.at(-1)));
     assert.deepEqual(pendingIds(await durable(A)),pending);assert.equal(grams((await durable(A)).book),140);
-    await save(A);await A.locator('#use-remote').waitFor();
+    await save(A);await A.getByText('Choose a whole copy instead',{exact:true}).click();await A.locator('#use-remote').waitFor();
     const copies=await history(A);assert(copies.some(c=>c.label==='Local conflict - not uploaded'&&grams(c.book)===140));
     await A.locator('#use-remote').click();await waitFor(A,async()=>(await durable(A)).pending.length===0,'explicit stale-version recovery');
     assert.equal(grams((await durable(A)).book),160);
@@ -187,7 +187,7 @@ try{
       assert.deepEqual(pendingIds(await durable(A)),pendingIds(current));assert.equal(grams((await durable(A)).book),210);
     }finally{release();await tab.close();}
     await A.reload();await A.locator('table[role="grid"]').waitFor();await save(A);await A.locator('#sync-form').waitFor();await connect(A);
-    await A.locator('#keep-local').waitFor();await A.locator('#keep-local').click();await A.locator('#confirm').click();await synced(A);
+    await A.getByText('Choose a whole copy instead',{exact:true}).click();await A.locator('#keep-local').waitFor();await A.locator('#keep-local').click();await A.locator('#confirm').click();await synced(A);
     await save(B);await synced(B);assert.equal(grams((await durable(B)).book),210);
   });
   await check('no credential is persisted in either isolated client workbook or recovery records',async()=>{

@@ -156,7 +156,7 @@ try{
     await handle.dblclick({position:{x:box.width/2,y:box.height-2}});
   });
   await sample('autofit-undo',()=>page.locator('[data-action="undo"]').click());
-  await page.locator('#title').click();await page.locator('#answer').fill('Disposable measured title');
+  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();await page.locator('#answer').fill('Disposable measured title');
   await sample('workbook-title',()=>page.locator('#answer').press('Enter'));
   await sample('title-undo',()=>page.locator('[data-action="undo"]').click());
 

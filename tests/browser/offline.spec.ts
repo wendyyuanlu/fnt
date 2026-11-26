@@ -8,7 +8,7 @@ test('production shell reloads offline, persists editable data and exports the n
   await page.route('**/testing-workbook.json',route=>route.fulfill({contentType:'application/json',body:stringifyArchive({format:'fnt-published-testing',version:1,id,book:createDemo()})}));
   await page.goto(process.env.FNT_PUBLISHED_URL??'http://127.0.0.1:4184/');
   await expect(page.locator('td[data-r="1"][data-c="3"]')).toHaveText('208.8');
-  await page.locator('#title').click();await page.getByLabel('Name',{exact:true}).fill('Edited offline fixture');await page.getByRole('button',{name:'Apply',exact:true}).click();
+  await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();await page.getByLabel('Name',{exact:true}).fill('Edited offline fixture');await page.getByRole('button',{name:'Apply',exact:true}).click();
   await expect(page.locator('#save-state')).toContainText('Saved');
   await page.evaluate(async()=>{await navigator.serviceWorker.ready;});
   await page.reload();

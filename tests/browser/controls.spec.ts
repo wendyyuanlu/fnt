@@ -88,7 +88,7 @@ test('dropdown dialogs grow only for their visible sources and keep scrolling at
   expect(bounds.height).toBeLessThanOrEqual(580);expect(bounds.y).toBeGreaterThanOrEqual(10);
   expect(bounds.y+bounds.height).toBeLessThanOrEqual(590);expect(apply.y+apply.height).toBeLessThanOrEqual(bounds.y+bounds.height);
   expect(await scrolls()).toBe(true);
-  await page.getByRole('button',{name:'Close dialog',exact:true}).click();await page.locator('#title').click();
+  await page.getByRole('button',{name:'Close dialog',exact:true}).click();await page.getByRole('button',{name:'Workbook and backups',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();
   expect((await page.getByRole('dialog').boundingBox())!.height).toBeLessThan(400);
 });
 

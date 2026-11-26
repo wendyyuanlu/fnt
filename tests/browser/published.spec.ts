@@ -30,7 +30,7 @@ test('published site loads the complete testing grid, bypasses stale HTML and wo
     for(const path of ['./','./index.html'])await cache.put(new URL(path,location.href),new Response('<p id="stale-shell">Obsolete cached website</p>',{headers:{'Content-Type':'text/html'}}));
   });
   await page.goto(url);await expect(page.locator('#save-state')).toContainText('Saved');
-  await expect(page.locator('#title')).toHaveText(snapshot.book.title);await expect(page.locator('.grid')).toBeVisible();
+  await expect(page.locator('#title')).toHaveCount(0);expect((await state(page)).book.title).toBe(snapshot.book.title);await expect(page.locator('.grid')).toBeVisible();
   expect(JSON.stringify((await state(page)).book.sheets)===JSON.stringify(snapshot.book.sheets)).toBe(true);
   await expect.poll(()=>page.evaluate(()=>!!navigator.serviceWorker.controller)).toBe(true);
   await page.evaluate(async()=>{
@@ -47,7 +47,7 @@ test('published site loads the complete testing grid, bypasses stale HTML and wo
 });
 test('existing website edits are not overwritten; explicit testing restore preserves their recovery archive',async({page})=>{
   await page.goto(url);await expect(page.locator('#save-state')).toContainText('Saved');const own=await seed(page,true);
-  await page.reload();await expect(page.locator('#title')).toHaveText(own.title);expect((await state(page)).book.id).toBe(own.id);
+  await page.reload();await expect(page.locator('#save-state')).toContainText('Saved');expect((await state(page)).book.title).toBe(own.title);expect((await state(page)).book.id).toBe(own.id);
   await page.getByRole('button',{name:'Workbook and backups'}).click();await page.getByRole('button',{name:'Load published testing workbook',exact:true}).click();await page.getByRole('button',{name:'Confirm',exact:true}).click();
   await expect(page.locator('#save-state')).toContainText('Published testing workbook saved');
   expect((await state(page)).book.id).not.toBe(own.id);

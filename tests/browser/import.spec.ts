@@ -17,6 +17,7 @@ function syntheticXlsx():Buffer {
 test('imports shared formulas and cached spills without stale results, retains scoped names and x14 validation',async({page})=>{
   await page.goto('/');
   await page.getByRole('button',{name:'Workbook and backups'}).click();
+  await page.getByText('Import or restore',{exact:true}).click();
   await page.locator('#import').setInputFiles({name:'Synthetic.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:syntheticXlsx()});
   await expect(page.getByRole('grid',{name:'Pantry',exact:true})).toBeVisible();
   await expect(page.locator('td[data-r="1"][data-c="2"]')).toHaveText('100');
@@ -29,5 +30,11 @@ test('imports shared formulas and cached spills without stale results, retains s
   await expect(page.locator('.cell-dropdown')).toContainText('Sample apple');
   await expect(page.locator('.cell-dropdown')).toContainText('Sample pear');
   await page.keyboard.press('Escape');
-  await page.getByRole('button',{name:'Workbook and backups'}).click();await page.getByRole('button',{name:'Compatibility report'}).click();await expect(page.getByRole('dialog')).toContainText('"formulaCount": 3');
+  await page.getByRole('button',{name:'Workbook and backups'}).click();
+  await expect(page.locator('#report, #privacy')).toHaveCount(0);
+  await expect(page.locator('#persist, #original')).toHaveCount(2);
+  expect(await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{return(await store.load())!.book.importReport?.formulaCount;}finally{store.close();}
+  })).toBe(3);
 });

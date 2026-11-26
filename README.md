@@ -136,6 +136,9 @@ remain viewable only in history.
 
 ## Use
 
+- **File > Rename workbook** changes the workbook name; save status sits at the
+  left of the header, with Save and File at the right. Master logging is a
+  sheet-specific sub-toolbar below the spreadsheet tools, within the same margins.
 - **One page / Date pages** in the bottom navigator opens Page settings.
   Master defaults to the most recent 90-calendar-day window, with entries in
   chronological order inside each page; other sheets default to the existing
@@ -889,7 +892,13 @@ visit counts, which are batched with the next actual content edit.
 Real content divergence pauses automatic sync until the user chooses a version.
 Exact remote conflict checkpoints are not substituted with the local journal.
 
-**File > Compare workbooks and backups** opens a read-only, browser-local
+File keeps Download independent full backup and Rename workbook on separate
+full-width rows. Page settings remain in the spreadsheet controls rather than
+being repeated in File.
+Request persistent browser storage is available directly in File; its result
+is shown there. It reduces eviction risk when granted, but is not a backup.
+
+**File > Private GitHub sync > Compare copies** opens a read-only, browser-local
 comparison. Load a native full Fnt backup on either side; this does not restore,
 save or upload it. **Compare with remote version (GitHub)** is always visible;
 it requires configured, authenticated private sync and loads the right side with
@@ -903,6 +912,19 @@ on demand, and scanning yields to the browser. Revision/activity counters are
 ignored. There is no common-base three-way merge: differences do not prove both
 devices changed the same cell. The tool does not merge or replace either copy;
 whole-workbook resolution remains separate and explicit.
+
+**Upload local data to GitHub**, directly below Private GitHub sync in File
+and at the top of the conflict dialog, saves a separate, immutable `.json`
+comparison snapshot in `fnt-snapshots/<workbook-id>/` beside the configured
+sync file. It never replaces that file, acknowledges pending operations, or
+resolves conflicts. It uses the existing private, non-Pages data repository and
+restricted token. A device name is saved separately in this browser; uploaded
+snapshots contain the workbook and its date/device metadata, not credentials
+or original Excel attachments. Keep independent full backups for recovery.
+Comparison offers uploaded copies for either side, sorted newest first, with
+the local upload date/time on the left and `[Device name]` on the right.
+Listing and selecting copies only read GitHub. Snapshot dates do not establish
+which divergent workbook is authoritative, and revisions are not global clocks.
 
 **Publication is not device sync.** An edited local workbook is never replaced
 by a website snapshot. A browser with no private connection is explicitly local-only.
