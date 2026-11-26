@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
+    "preview:comparison": "node scripts/preview-comparison.mjs",
+    "test:comparison": "node scripts/check-comparison-preview.mjs",
     "build": "tsc --noEmit && vite build",
     "build:pages": "tsc --noEmit && vite build --base=/fnt/ --outDir docs",
     "test": "vitest run",

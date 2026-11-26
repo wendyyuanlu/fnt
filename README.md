@@ -928,6 +928,38 @@ the local upload date/time on the left and `[Device name]` on the right.
 Listing and selecting copies only read GitHub. Snapshot dates do not establish
 which divergent workbook is authoritative, and revisions are not global clocks.
 
+### Visual comparison selection prototype
+
+Run `npm run preview:comparison` for the separate, loopback-only prototype.
+Its default inputs are invented sample data, not a personal workbook. It is
+not part of the production/Pages build. `npm run test:comparison` checks the
+selection workflow and responsive layout using only invented data.
+
+Each source card offers **GitHub copies** (read an existing uploaded snapshot)
+and **Local JSON** (open a local file without uploading it). GitHub access
+requires a restricted token in this tab only; it is not persisted. Source
+changes clear the selection draft only after a successful comparison.
+
+**Bulk choices** is collapsed above the sheet heading. Its options identify
+the current table/sheet by name and explain exactly what is included:
+selected change types in the current table, changes listed beside the current
+preview, every difference in the table, every difference on the sheet,
+toolbar/other workbook-wide settings, or all differences across both copies.
+Table/sheet-wide choices ignore the change-type filters; the selected-change
+types option respects them. Counts update with the current target.
+Column-level **Keep** buttons override bulk choices for one difference.
+Undo, reset and the review dialog affect only the in-memory draft.
+Reloading or switching sources clears it. Structural dependency validation,
+merged-workbook generation, saving and uploading are **not implemented**.
+
+For private local review, set `FNT_COMPARISON_DATA_DIR` to an absolute directory
+**outside this repository** containing `left.json`, `right.json` (native Fnt
+workbooks/backups/sync files) and `source-meta.json` (display labels). Only those
+three files and compiled UI assets are served, under a random access path on
+`127.0.0.1`. Never put private inputs in the repository or Pages assets.
+Optional `FNT_COMPARISON_PORT` changes port 5188; `FNT_COMPARISON_LOCATION` writes
+the current URL to an external local file. The server has no write endpoints.
+
 **Publication is not device sync.** An edited local workbook is never replaced
 by a website snapshot. A browser with no private connection is explicitly local-only.
 Tokens stay in tab memory by default. **Remember on this trusted device** stores

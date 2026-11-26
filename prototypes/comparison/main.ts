@@ -1,0 +1,493 @@
+import {parseArchive,decompressArchive} from '../../src/archive';
+import {allSheets,allTables,letters,isFault,type Workbook,type Sheet,type Cell,type Group} from '../../src/model';
+import {Engine,scalar,displayFormula} from '../../src/formula';
+import {validateBook} from '../../src/storage';
+import {displayExcelDate,parseDateInput} from '../../src/dates';
+import {displayFraction} from '../../src/quantity';
+import {dateFormatContext} from '../../src/display-values';
+import {hypotheticalProjection} from '../../src/grouping';
+import {comparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,snapshotDate,type ComparisonSnapshot} from '../../src/github-snapshots';
+import {mountSelectDropdown} from '../../src/dropdown-ui';
+import type {SyncConfig} from '../../src/storage';
+import {compare,scopes,chunks,anchorLabel,anchorMismatchLabel,anchorErrorLabel,isDateAnchorLabel,dayDateCells,type Scope,type Difference,type Category,type Chunk} from './comparison-model';
+
+const el=<T extends HTMLElement=HTMLElement>(id:string)=>document.getElementById(id) as T;
+let left:Workbook,right:Workbook,engines:Engine[],areas:Scope[]=[],differences:Difference[]=[],scope:Scope;
+let category:Category|'all'='all',regions:Chunk[]=[],region=0,selected:number|undefined,request=0;
+let specific='';
+let sourcesBusy=true;
+type Pick='left'|'right';
+const choices=new Map<number,Pick>(),choiceHistory:Map<number,Pick>[]=[];
+let lastChoiceMessage='';
+function sourceName(side:Pick):string{
+  const name=el(side+'-kind').textContent,other=el((side==='left'?'right':'left')+'-kind').textContent;
+  return name&&name!==other?name:side==='left'?'left copy':'right copy';
+}
+function filteredChanges():Difference[]{return scope?.differences.filter(d=>(category==='all'||d.category===category)&&(!specific||d.label===specific))??[];}
+function choiceTargets():Difference[]{
+  const target=el<HTMLSelectElement>('choice-scope').value;
+  return target==='workbook'?differences:target==='settings'?differences.filter(d=>d.sheet==='@workbook'):
+    target==='sheet'?differences.filter(d=>d.sheet===scope?.sheetId):target==='scope'?scope?.differences??[]:
+    target==='area'?regions[region]?.differences??[]:filteredChanges();
+}
+function pickButtons(container:HTMLElement,targets:Difference[],sides:readonly (Pick|undefined)[]=['left','right',undefined]){
+  container.replaceChildren();
+  for(const side of sides){
+    const button=document.createElement('button');
+    button.textContent=side?(container.id.startsWith('keep-')?'Keep':`Keep ${sourceName(side)}`):'Decide later';
+    if(side)button.setAttribute('aria-label',`Keep ${side} copy: ${sourceName(side)}`);
+    button.dataset.pick=side??'later';button.disabled=!targets.length;
+    button.setAttribute('aria-pressed',String(!!targets.length&&targets.every(d=>choices.get(d.id)===side)));
+    button.onclick=()=>applyChoices(targets,side);container.append(button);
+  }
+}
+function applyChoices(targets:Difference[],pick:Pick|undefined){
+  if(!targets.some(d=>choices.get(d.id)!==pick))return;
+  choiceHistory.push(new Map(choices));
+  for(const d of targets)if(pick)choices.set(d.id,pick);else choices.delete(d.id);
+  lastChoiceMessage=`${targets.length} ${targets.length===1?'change':'changes'} ${pick?`set to ${sourceName(pick)}`:'returned to undecided'}.`;
+  updateChoices();
+}
+function updateChoices(){
+  const leftCount=[...choices.values()].filter(p=>p==='left').length,rightCount=choices.size-leftCount;
+  el('selection-progress').textContent=`${choices.size} of ${differences.length} chosen · ${differences.length-choices.size} undecided`;
+  el('selection-progress').title=`${sourceName('left')}: ${leftCount}; ${sourceName('right')}: ${rightCount}. ${lastChoiceMessage}`;
+  el<HTMLButtonElement>('undo-choice').disabled=!choiceHistory.length;
+  el<HTMLButtonElement>('reset-choices').disabled=!choices.size;
+  const targets=choiceTargets(),count=targets.filter(d=>choices.has(d.id)).length;
+  el('choice-target-count').textContent=`${targets.length} changes · ${count} chosen`;
+  const place=scope?.leftTable||scope?.rightTable?`${scope.name} table`:scope?.sheetId==='@workbook'?'workbook settings':`${scope?.sheetName??'current sheet'} outside tables`;
+  const sheetName=scope?.sheetName??'current sheet',selector=el<HTMLSelectElement>('choice-scope');
+  const targetDescriptions:Record<string,{label:string;description:string}>={
+    filtered:{label:`Selected change types in ${place}`,description:`Only the categories and change types selected below, across ${place}. Includes matching changes in other preview areas; excludes other tables and sheets.`},
+    area:{label:`Changes listed beside this preview (area ${regions.length?region+1:0}/${regions.length})`,description:'Only the changes in the "Changes in this area" list beside the spreadsheet. Excludes changes in other preview areas.'},
+    scope:{label:`Every difference in ${place}`,description:`All differences in ${place}, including change types hidden by the filters below. Excludes other tables and sheets.`},
+    sheet:{label:`Every difference on ${sheetName} sheet`,description:`All tables and outside-table changes on the ${sheetName} sheet. Ignores change-type filters; excludes other sheets.`},
+    settings:{label:'Toolbar and other workbook-wide settings',description:'Toolbar order/dividers, named formulas, reference settings, hypothetical appearance and sheet-tab groups. Does not select spreadsheet cells.'},
+    workbook:{label:'Every difference in both copies',description:'All sheets, all tables, outside-table changes and workbook-wide settings. Ignores every change-type filter.'},
+  };
+  for(const option of selector.options){
+    const target=targetDescriptions[option.value];
+    if(target)option.textContent=target.label;
+  }
+  const target=targetDescriptions[selector.value];
+  el('choice-target-description').textContent=target?.description??'';
+  el('bulk-summary-target').textContent=`${target?.label??''} · ${targets.length} differences`;
+  pickButtons(el('bulk-buttons'),targets);
+  el('bulk-choice-note').textContent=el<HTMLSelectElement>('choice-scope').value==='settings'&&!targets.length?
+    'No workbook-setting differences in this pair. Toolbar order and dividers are compared separately from sheet data.':
+    'Replaces earlier choices only in this scope. Individual choices can override a bulk choice. Undo reverses the whole batch.';
+  const d=differences.find(d=>d.id===selected),pick=d?choices.get(d.id):undefined;
+  el('individual-status').textContent=pick?`Keeping ${sourceName(pick)}`:'Undecided';
+  pickButtons(el('individual-buttons'),d?[d]:[],[undefined]);
+  pickButtons(el('keep-left'),d?[d]:[],['left']);
+  pickButtons(el('keep-right'),d?[d]:[],['right']);
+  el('dependency-note').hidden=!d||d.category!=='structure';
+  el('dependency-note').textContent='Structure choice: membership, groups and formula references may depend on other changes. This draft records your preference; dependency-safe merge validation is not implemented.';
+  document.querySelectorAll<HTMLElement>('.change-item[data-id]').forEach(button=>{
+    const pick=choices.get(Number(button.dataset.id));button.dataset.choice=pick??'';
+    const badge=button.querySelector('.choice-badge');
+    if(badge)badge.textContent=pick?`Keep ${pick==='left'?'left':'right'}`:'Undecided';
+  });
+  document.querySelectorAll<HTMLElement>('td[data-changes]').forEach(cell=>{
+    const ids=cell.dataset.changes!.split(',').map(Number),picks=ids.map(id=>choices.get(id));
+    cell.dataset.choice=picks.every(p=>p==='left')?'left':picks.every(p=>p==='right')?'right':picks.some(Boolean)?'mixed':'';
+  });
+  document.querySelectorAll<HTMLElement>('.scope-button[data-scope]').forEach(button=>{
+    const area=areas.find(a=>a.id===button.dataset.scope);if(!area)return;
+    const count=area.differences.filter(d=>choices.has(d.id)).length;
+    const badge=button.querySelector('.count');if(badge)badge.textContent=count?`${count}/${area.differences.length}`:String(area.differences.length);
+  });
+}
+function jumpToDifference(difference:Difference){
+  scope=areas.find(a=>a.differences.includes(difference))!;category='all';specific='';selected=difference.id;region=0;
+  document.querySelectorAll<HTMLElement>('[data-category]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.category==='all')));
+  drawNavigation();drawScope();
+  region=Math.max(0,regions.findIndex(chunk=>chunk.differences.includes(difference)));drawRegion();
+  el('inspector').scrollIntoView({block:'nearest'});
+}
+function showChoiceReview(){
+  const dialog=el<HTMLDialogElement>('choice-review'),groups=el('review-groups');groups.replaceChildren();
+  const structural=differences.filter(d=>d.category==='structure'&&choices.has(d.id)).length;
+  el('review-summary').textContent=`${choices.size} chosen · ${differences.length-choices.size} undecided · ${structural} structural choices need dependency review.`;
+  for(const area of areas){
+    const section=document.createElement('details'),summary=document.createElement('summary');
+    const decided=area.differences.filter(d=>choices.has(d.id));
+    summary.textContent=`${area.sheetName} / ${area.name} — ${decided.length}/${area.differences.length} chosen`;section.append(summary);
+    for(const d of area.differences){
+      const row=document.createElement('button'),pick=choices.get(d.id);
+      row.className='review-row';row.dataset.choice=pick??'';
+      const label=document.createElement('span');label.textContent=`${d.label} · ${address(area.left??area.right,d.rows,d.columns)}`;
+      const badge=document.createElement('b');badge.textContent=pick?`Keep ${sourceName(pick)}`:'Undecided';
+      row.append(label,badge);row.onclick=()=>{dialog.close();jumpToDifference(d);};section.append(row);
+    }
+    groups.append(section);
+  }
+  el<HTMLButtonElement>('next-unresolved').disabled=choices.size===differences.length;
+  dialog.showModal();
+}
+const grids=[el('left-grid'),el('right-grid')];
+const escape=(value:unknown)=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+const positionCache=new WeakMap<Sheet,{rows:Map<string,number>;columns:Map<string,number>}>();
+function positions(sheet:Sheet){
+  let maps=positionCache.get(sheet);
+  if(!maps){maps={rows:new Map(sheet.rows.map((r,i)=>[r.id,i])),columns:new Map(sheet.columns.map((c,i)=>[c.id,i]))};positionCache.set(sheet,maps);}
+  return maps;
+}
+function address(sheet:Sheet|undefined,rows:string[],columns:string[]):string{
+  if(!sheet)return 'Not present';
+  const indexes=positions(sheet),r=rows.map(id=>indexes.rows.get(id)).filter((v):v is number=>v!==undefined),c=columns.map(id=>indexes.columns.get(id)).filter((v):v is number=>v!==undefined);
+  if(rows.length&&!r.length)return 'Row not present';
+  if(columns.length&&!c.length)return 'Column not present';
+  const row=r.length?(r.length===1?`${r[0]+1}`:`${Math.min(...r)+1}-${Math.max(...r)+1}`):'';
+  const col=c.length?(c.length===1?letters(c[0]):`${letters(Math.min(...c))}-${letters(Math.max(...c))}`):'';
+  return col&&row?`${col}${r.length>1?' / rows ':''}${row}`:row?`Rows ${row}`:col?`Columns ${col}`:sheet.name;
+}
+function visibleText(book:Workbook,sheet:Sheet,row:string,column:string,engine:Engine):string{
+  const cell=sheet.cells[`${row}:${column}`]??{},value=scalar(engine.cell(sheet.id,row,column));
+  if(isFault(value))return value.error;
+  const date=['date','date-compact'].includes(cell.format?.number??'')?dateFormatContext(engine,book,sheet.id,row,cell):undefined;
+  if(date?.error)return date.error;
+  if(value===null)return '';
+  if(typeof value==='boolean')return value?'TRUE':'FALSE';
+  if(typeof value==='number'){
+    if(!Number.isFinite(value))return '#NUM!';
+    if(date?.enabled)return displayExcelDate(value,date.year,cell.format?.number==='date-compact')??'#NUM!';
+    if(cell.format?.number==='fraction')return displayFraction(value,cell.fractionInput);
+    if(cell.format?.number==='percent')return `${+(value*100).toFixed(2)}%`;
+    return cell.format?.number==='decimal'?value.toFixed(2):String(+value.toPrecision(11));
+  }
+  if(date?.enabled&&!cell.dateLiteral&&cell.format?.number==='date-compact'){
+    const serial=parseDateInput(value,date.year,true);if(serial!==undefined)return displayExcelDate(serial,date.year,true)!;
+  }
+  return String(value);
+}
+function groupText(group:Group|undefined,sheet:Sheet|undefined):string{
+  if(!group)return 'No group in this copy';
+  return [`${group.kind==='summary'?'Summary':'Range'} group${group.label?`: ${group.label}`:''}`,
+    group.axis==='row'?address(sheet,group.members,[]):address(sheet,[],group.members),
+    `${group.members.length} members; ${group.collapsed?'collapsed':'expanded'}`,
+    group.table?'Table-scoped':'Sheet-scoped'].join('\n');
+}
+function describe(difference:Difference,side:number):string{
+  const value=side?difference.right:difference.left,book=side?right:left,sheet=side?scope.right:scope.left;
+  if(value===undefined)return 'Not present in this copy';
+  if((difference.address&&difference.category==='value')||difference.label==='Added or removed cell'||isDateAnchorLabel(difference.label)){
+    const cell=value as Cell,parts:string[]=[];
+    if(sheet)parts.push(`Displayed: ${visibleText(book,sheet,difference.rows[0],difference.columns[0],engines[side])||'(blank)'}`);
+    if(cell.formula)parts.push(`Formula: ${displayFormula(cell.formula,book)}`);
+    else if(cell.binding){
+      const owner=allTables(book).find(t=>t.id===cell.binding!.table),field=owner?.columns.find(c=>c.id===cell.binding!.column);
+      parts.push(`Linked source: ${owner?.name??'Missing table'}[${field?.name??'Missing field'}]`);
+    }else if(Object.hasOwn(cell,'value'))parts.push(`Saved value: ${typeof cell.value==='string'?cell.value:JSON.stringify(cell.value)}`);
+    if(cell.calculation)parts.push(`Retained original formula (not active): ${displayFormula(cell.calculation,book)}`);
+    if(isDateAnchorLabel(difference.label)&&!cell.formula)parts.push('Fixed day-header date: row moves no longer change this historical date.');
+    if(cell.note)parts.push(`Note: ${cell.note}`);
+    if(cell.link)parts.push(`Link: ${cell.link}`);
+    return parts.join('\n');
+  }
+  if(/Group|Grouping/.test(difference.label))return groupText(value as Group,sheet);
+  if(difference.label==='Hypothetical tag')return value===true?'Hypothetical: on':value===false?'Hypothetical: off (explicit override)':'Inherit from parent';
+  if(difference.label==='Table row membership / order changed'){
+    const ids=value as string[];return `${ids.length} table rows\n${address(sheet,ids,[])}\nMembership / ordering differs; matching row identities stay aligned in the preview.`;
+  }
+  if(difference.label==='Table columns / calculations changed'){
+    const columns=value as {name:string;formulaDefault?:string}[];return columns.map(c=>`${c.name}${c.formulaDefault?`\n  ${c.formulaDefault}`:''}`).join('\n');
+  }
+  if(difference.label==='Dropdown rule changed'){
+    const v=value as {rows:string[];columns:string[];source:string};return `${address(sheet,v.rows,v.columns)}\n${v.rows.length} rows, ${v.columns.length} columns\nSource: ${v.source}`;
+  }
+  if(typeof value==='object'){
+    if(difference.label.startsWith('Row only')||difference.label.startsWith('Column only')){
+      const v=value as Record<string,unknown>;return Object.entries(v).filter(([key])=>key!=='id').map(([key,v])=>`${key}: ${JSON.stringify(v)}`).join('\n')||'Present in this copy';
+    }
+    return JSON.stringify(value,null,2);
+  }
+  return String(value);
+}
+function choose(difference:Difference){
+  selected=difference.id;
+  el('detail-title').textContent=difference.label;
+  el('change-explanation').hidden=!isDateAnchorLabel(difference.label);
+  el('change-explanation').textContent=difference.label===anchorMismatchLabel?'The original formula is preserved, but the displayed calendar dates genuinely differ. Review these dates explicitly; do not treat this as a formatting-only change.':
+    difference.label===anchorErrorLabel?'The original formula is preserved, but a date could not be calculated. Review the displayed error; no cached value is used as proof of equality.':
+    'This is the stable-date update, not a lost formula. One copy stores a fixed day-header date and retains the other copy\'s original formula. Compare the displayed dates below; a later save does not prove that copy contains newer behavior.';
+  const a=address(scope.left,difference.rows,difference.columns),b=address(scope.right,difference.rows,difference.columns);
+  el('detail-location').textContent=a===b?a:`Left: ${a} | Right: ${b}`;
+  el('detail-left').textContent=describe(difference,0);el('detail-right').textContent=describe(difference,1);
+  document.querySelectorAll<HTMLButtonElement>('.change-item').forEach(button=>button.setAttribute('aria-pressed',String(Number(button.dataset.id)===selected)));
+  document.querySelectorAll<HTMLElement>('td[data-changes]').forEach(cell=>cell.classList.toggle('selected-cell',cell.dataset.changes!.split(',').includes(String(selected))));
+  updateChoices();
+}
+function drawNavigation(){
+  const nav=el('navigation');nav.replaceChildren();
+  for(const sheetId of new Set(areas.map(s=>s.sheetId))){
+    const block=document.createElement('div'),heading=document.createElement('p'),sheetAreas=areas.filter(s=>s.sheetId===sheetId);
+    heading.className='sheet-heading';heading.textContent=sheetAreas[0].sheetName;
+    const count=document.createElement('span');count.textContent=String(sheetAreas.reduce((n,s)=>n+s.differences.length,0));heading.append(count);block.append(heading);
+    for(const area of sheetAreas){
+      const button=document.createElement('button');button.className='scope-button';button.dataset.scope=area.id;button.setAttribute('aria-current',String(scope?.id===area.id));
+      const label=document.createElement('span');label.textContent=area.name;const total=document.createElement('span');total.className='count';total.textContent=String(area.differences.length);button.append(label,total);
+      button.onclick=()=>{scope=area;region=0;selected=undefined;drawNavigation();drawScope();};block.append(button);
+    }
+    nav.append(block);
+  }
+}
+function cellDifferences(diffs:Difference[],row:string,column:string):Difference[]{
+  return diffs.filter(d=>(!d.rows.length||d.rows.includes(row))&&(!d.columns.length||d.columns.includes(column)));
+}
+function drawGrid(side:number,chunk:Chunk){
+  const sheet=side?scope.right:scope.left,table=side?scope.rightTable:scope.leftTable,book=side?right:left,engine=engines[side];
+  const rowIds=scope.rows.slice(chunk.r1,chunk.r2+1),colIds=scope.columns.slice(chunk.c1,chunk.c2+1),grid=grids[side];
+  const numbers=sheet?positions(sheet):undefined;
+  const hypoRow=sheet?hypotheticalProjection(book,sheet,'row'):()=>false,hypoColumn=sheet?hypotheticalProjection(book,sheet,'column'):()=>false;
+  const rows=new Map(sheet?.rows.map(r=>[r.id,r])),columns=new Map(sheet?.columns.map(c=>[c.id,c]));
+  const memberRows=table?new Set([table.header,...table.rows]):undefined,memberColumns=table?new Set(table.columns.map(c=>c.column)):undefined;
+  const header=colIds.map(id=>{
+    const index=numbers?.columns.get(id),field=table?.columns.find(c=>c.column===id);
+    return `<th scope="col">${escape(field?.name??columns.get(id)?.label??'Not present')}<small>${index===undefined?'--':letters(index)}</small></th>`;
+  }).join('');
+  engine.beginPass();
+  const body=rowIds.map(row=>{
+    const index=numbers?.rows.get(row),rowDiffs=chunk.differences.filter(d=>d.rows.includes(row)&&!d.columns.length),present=rows.has(row);
+    let flags=rowDiffs.length?'<span class="row-marker">S</span>':'';
+    const cells=colIds.map(column=>{
+      const exists=present&&columns.has(column)&&(!memberRows||memberRows.has(row))&&(!memberColumns||memberColumns.has(column)),changed=cellDifferences(chunk.differences,row,column),hasValue=changed.some(d=>d.category==='value'),hasStructure=changed.some(d=>d.category==='structure');
+      const cell=sheet?.cells[`${row}:${column}`],hypo=exists&&(hypoRow(row,column)||hypoColumn(row,column));
+      if(hypo&&!flags)flags='<span class="row-marker">H</span>';
+      const classes=[exists?'':'missing',hasValue?'changed-value':'',hasStructure?'changed-structure':'',changed.length?'':'context-cell',hypo?'hypo':'',row===table?.header?'table-header':''].filter(Boolean).join(' ');
+      const text=exists&&sheet?visibleText(book,sheet,row,column,engine):'';
+      const styles:string[]=[];
+      if(cell?.format?.bold)styles.push('font-weight:600');if(cell?.format?.italic)styles.push('font-style:italic');
+      if(cell?.format?.background)styles.push(`background-color:${CSS.supports('color',cell.format.background)?cell.format.background:'transparent'}`);
+      if(cell?.format?.color)styles.push(`color:${CSS.supports('color',cell.format.color)?cell.format.color:'inherit'}`);
+      return `<td class="${classes}" data-row="${escape(row)}" data-column="${escape(column)}" ${changed.length?`data-changes="${changed.map(d=>d.id).join(',')}" tabindex="0"`:''} style="${escape(styles.join(';'))}" title="${escape(exists?text:'Row or column not present in this copy / table')}">${escape(text)||'&nbsp;'}</td>`;
+    }).join('');
+    return `<tr><th scope="row" class="row-number">${index===undefined?'--':index+1}${flags}</th>${cells}</tr>`;
+  }).join('');
+  grid.innerHTML=`<table aria-label="${escape(el(side?'right-kind':'left-kind').textContent)} changed area"><thead><tr><th class="row-number" scope="col">#</th>${header}</tr></thead><tbody>${body}</tbody></table>`;
+  grid.querySelectorAll<HTMLElement>('td[data-changes]').forEach(cell=>{
+    const select=()=>{
+      const options=cell.dataset.changes!.split(',').map(Number),difference=chunk.differences.find(d=>options.includes(d.id)&&d.category==='value')??chunk.differences.find(d=>options.includes(d.id));
+      if(difference)choose(difference);
+    };
+    cell.onclick=select;cell.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();select();}};
+  });
+  el(side?'right-range':'left-range').textContent=address(sheet,rowIds,colIds);
+  grid.scrollTop=0;grid.scrollLeft=0;
+}
+function drawRegion(){
+  const chunk=regions[region],list=el('change-list');list.replaceChildren();
+  el<HTMLSelectElement>('region-picker').value=String(region);
+  el<HTMLButtonElement>('previous').disabled=region<=0;el<HTMLButtonElement>('next').disabled=region>=regions.length-1;
+  if(!chunk||scope.sheetId==='@workbook'){
+    el('region').textContent=chunk?'Workbook settings - no cell coordinates':'No changes in this category';
+    grids.forEach(grid=>grid.innerHTML=`<div class="empty">${chunk?'Workbook-level structure has no spreadsheet cell location.':'No affected cells to display.'}</div>`);
+    if(!chunk){selected=undefined;el('detail-title').textContent='No change selected';el('detail-left').textContent='';el('detail-right').textContent='';el('detail-location').textContent='';updateChoices();return;}
+  }else{
+    el('region').textContent=`Area ${region+1} of ${regions.length} - ${chunk.differences.length} changes`;
+    drawGrid(0,chunk);drawGrid(1,chunk);
+  }
+  for(const d of chunk!.differences){
+    const button=document.createElement('button');button.className='change-item';button.dataset.id=String(d.id);button.setAttribute('aria-pressed','false');
+    const dot=document.createElement('i');dot.className=`swatch ${d.category==='value'?'amber':'violet'}`;
+    const label=document.createElement('strong');label.textContent=d.label;const location=document.createElement('small');location.textContent=address(scope.left??scope.right,d.rows,d.columns);
+    const badge=document.createElement('span');badge.className='choice-badge';button.append(dot,label,location,badge);
+    button.onclick=()=>choose(d);list.append(button);
+  }
+  choose(chunk!.differences.find(d=>d.id===selected)??chunk!.differences.find(d=>d.category==='value')??chunk!.differences[0]);
+}
+function drawScope(){
+  el('sheet-name').textContent=scope.sheetName;el('scope-name').textContent=scope.name;
+  const ds=scope.differences;el('all-count').textContent=String(ds.length);el('value-count').textContent=String(ds.filter(d=>d.category==='value').length);el('structure-count').textContent=String(ds.filter(d=>d.category==='structure').length);
+  const available=ds.filter(d=>category==='all'||d.category===category),kinds=new Map<string,number>();
+  for(const d of available)kinds.set(d.label,(kinds.get(d.label)??0)+1);
+  if(specific&&!kinds.has(specific))specific='';
+  const type=el<HTMLSelectElement>('change-kind');type.replaceChildren(new Option(`All change types (${available.length})`,''));
+  for(const [label,count]of kinds)type.append(new Option(`${label} (${count})`,label));
+  if(category!=='value'&&!kinds.has('Hypothetical tag')){const option=new Option('Hypothetical tags (0)','Hypothetical tag');option.disabled=true;type.append(option);}
+  type.value=specific;
+  const included=available.filter(d=>!specific||d.label===specific);
+  regions=scope.sheetId==='@workbook'?(included.length?[{r1:0,r2:0,c1:0,c2:0,differences:included}]:[]):chunks(scope,included,Number(el<HTMLSelectElement>('context').value));
+  const picker=el<HTMLSelectElement>('region-picker');picker.replaceChildren();
+  for(const [i,chunk]of regions.entries())picker.append(new Option(`Area ${i+1}: ${address(scope.left??scope.right,scope.rows.slice(chunk.r1,chunk.r2+1),scope.columns.slice(chunk.c1,chunk.c2+1))} (${chunk.differences.length} changes)`,String(i)));
+  region=Math.min(region,Math.max(0,regions.length-1));drawRegion();
+}
+async function loadComparison(candidateLeft=left,candidateRight=right,onCommit:()=>void=()=>{}):Promise<boolean>{
+  const generation=++request;
+  document.body.dataset.loading='true';el('workspace').setAttribute('aria-busy','true');
+  try{
+    const nextEngines:[Engine,Engine]=[new Engine(candidateLeft),new Engine(candidateRight)];
+    const values=await compare(candidateLeft,candidateRight,checked=>{if(generation===request)el('totals').textContent=`Comparing ${checked.toLocaleString()} saved cells...`;},nextEngines);
+    if(generation!==request)return false;
+    const nextAreas=scopes(candidateLeft,candidateRight,values);
+    left=candidateLeft;right=candidateRight;differences=values;areas=nextAreas;engines=nextEngines;onCommit();
+    choices.clear();choiceHistory.length=0;lastChoiceMessage='';selected=undefined;updateChoices();
+    scope=areas.find(s=>s.id===scope?.id)??areas.find(s=>s.leftTable&&s.differences.some(d=>d.category==='value'))??areas[0];
+    const anchors=differences.filter(d=>isDateAnchorLabel(d.label)).length,mismatches=differences.filter(d=>d.label===anchorMismatchLabel).length,errors=differences.filter(d=>d.label===anchorErrorLabel).length;
+    el('totals').innerHTML=`<b>${differences.length.toLocaleString()}</b> differences &middot; ${differences.filter(d=>d.category==='value').length.toLocaleString()} value / formula &middot; ${differences.filter(d=>d.category==='structure'&&!isDateAnchorLabel(d.label)).length.toLocaleString()} structural${anchors?` &middot; ${anchors.toLocaleString()} date anchors (${mismatches} differing dates${errors?`, ${errors} calculation errors`:''})`:''}`;
+    const summary=(book:Workbook)=>{let fixed=0,formula=0;for(const sheet of allSheets(book))for(const address of dayDateCells(book,sheet)){const cell=sheet.cells[address];if(cell?.formula)formula++;else if(typeof cell?.value==='number'&&cell.calculation)fixed++;}return `${fixed} fixed day dates with retained formulas; ${formula} calculated day dates`;};
+    el('date-summary').textContent=`Left: ${summary(left)}. Right: ${summary(right)}. Revision numbers count independent local edits, not global recency.`;
+    if(!scope){
+      regions=[];region=0;selected=undefined;specific='';
+      el('navigation').replaceChildren();el('sheet-name').textContent='';el('scope-name').textContent='These copies match';
+      grids.forEach(grid=>grid.innerHTML='<div class="empty">No stored differences.</div>');
+      el('region').textContent='No changed areas';el('region-picker').replaceChildren();
+      el('change-kind').replaceChildren(new Option('All change types (0)',''));
+      for(const id of ['previous','next'])el<HTMLButtonElement>(id).disabled=true;
+      el('change-list').replaceChildren();el('detail-title').textContent='No differences';
+      for(const id of ['detail-left','detail-right','detail-location','left-range','right-range'])el(id).textContent='';
+      for(const id of ['all-count','value-count','structure-count'])el(id).textContent='0';
+      el('change-explanation').hidden=true;
+      updateChoices();
+      return true;
+    }
+    region=0;drawNavigation();drawScope();
+    return true;
+  }catch(error){if(generation===request)showError(error);return false;}
+  finally{if(generation===request){document.body.dataset.loading='false';el('workspace').setAttribute('aria-busy','false');}}
+}
+function showError(error:unknown){el('error').hidden=false;el('error').textContent=`Comparison could not be completed. Neither workbook was changed. ${error instanceof Error?error.message:String(error)}`;}
+async function readWorkbook(contents:string):Promise<Workbook>{
+  let root=parseArchive(contents) as Record<string,unknown>;
+  if(root.format==='fnt-comparison-snapshot')return comparisonSnapshot(contents);
+  if(root.format==='fnt-sync-v2')root=decompressArchive(String(root.payload)) as Record<string,unknown>;
+  const book=(root.state as {book?:Workbook}|undefined)?.book??root.book??root;
+  validateBook(book as Workbook);return book as Workbook;
+}
+function setSource(side:'left'|'right',label:string,kind:string){
+  el(`${side}-source`).textContent=label;
+  document.querySelector<HTMLElement>(`.${side}-pane > header b`)!.textContent=kind;
+  el(`${side}-grid`).setAttribute('aria-label',kind+' spreadsheet preview');
+  el(`${side}-kind`).textContent=kind;
+  el('source-freshness').textContent='A comparison source was changed. Only the selected snapshot\'s upload time is known; it is not necessarily the workbook\'s last-edit time.';
+}
+for(const side of ['left','right'] as const)el<HTMLInputElement>(`${side}-file`).onchange=async()=>{
+  if(sourcesBusy)return;
+  const input=el<HTMLInputElement>(`${side}-file`),file=input.files?.[0];if(!file)return;
+  input.value='';
+  setSourcesBusy(true);
+  try{
+    const copy=await readWorkbook(await file.text());
+    if(copy.id!==(side==='left'?right:left).id)throw Error('These copies have different workbook identities. This prototype does not guess row matches.');
+    el('error').hidden=true;
+    await loadComparison(side==='left'?copy:left,side==='right'?copy:right,()=>setSource(side,file.name,'Local JSON'));
+  }catch(error){showError(error);}
+  finally{setSourcesBusy(false);}
+};
+const picker=el<HTMLDialogElement>('snapshot-picker');
+let snapshotSide:'left'|'right'='left';
+for(const side of ['left','right'] as const)el(side+'-github').onclick=()=>{
+  if(sourcesBusy)return;
+  snapshotSide=side;
+  const title=`${side==='left'?'Left':'Right'} copy · GitHub`;
+  el('snapshot-title').textContent=title;picker.setAttribute('aria-label',title);
+  el('snapshot-target-note').textContent=`Changes only the ${side} comparison source. Local JSON opens a file from this device; it does not upload it.`;
+  for(const item of snapshotControls){
+    item.select.closest<HTMLElement>('.snapshot-target')!.hidden=item.side!==side;
+    item.select.disabled=item.side!==side||!uploadedFiles.length;item.control.refresh();
+  }
+  el('snapshot-status').textContent=uploadedFiles.length?`${uploadedFiles.length} uploaded copies, newest first. Choose one for the ${side} side.`:'Connect above to read uploaded snapshots from GitHub. Nothing is uploaded.';
+  picker.showModal();
+};
+el('snapshot-close').onclick=()=>picker.close();
+let snapshotConfig:SyncConfig|undefined,snapshotToken='',uploadedFiles:ComparisonSnapshot[]=[];
+const snapshotControls=(['left','right'] as const).map(side=>{
+  const select=el<HTMLSelectElement>(`uploaded-${side}`);
+  const control=mountSelectDropdown(select,{renderOption:(button,option)=>{
+    if(!option.value)return;
+    const date=document.createElement('span'),device=document.createElement('span');
+    date.textContent=option.dataset.date!;device.textContent=`[${option.dataset.device}]`;date.className='snapshot-date';device.className='snapshot-device';button.classList.add('snapshot-option');button.replaceChildren(date,device);
+  }});
+  select.onchange=async()=>{
+    if(sourcesBusy||side!==snapshotSide)return;
+    const entry=uploadedFiles.find(file=>file.path===select.value);if(!entry)return;
+    setSourcesBusy(true);
+    try{
+      const copy=await readComparisonSnapshot(snapshotConfig,snapshotToken,entry);
+      if(copy.id!==(side==='left'?right:left).id)throw Error('Uploaded copy belongs to another workbook. Neither source was replaced.');
+      el('error').hidden=true;
+      const loaded=await loadComparison(side==='left'?copy:left,side==='right'?copy:right,()=>setSource(side,`${snapshotDate(entry.time)} [${entry.device}]`,'GitHub snapshot'));
+      if(!loaded){el('snapshot-status').textContent='Source selection did not complete. Check the comparison error; no workbook was saved or uploaded.';return;}
+      el('snapshot-status').textContent=`Loaded ${snapshotDate(entry.time)} [${entry.device}] on the ${side}. No workbook was saved or uploaded.`;
+    }catch(error){el('snapshot-status').textContent=`Previous comparison retained. ${error instanceof Error?error.message:String(error)}`;}
+    finally{setSourcesBusy(false);}
+  };
+  return {side,select,control};
+});
+function setSourcesBusy(busy:boolean){
+  sourcesBusy=busy;
+  const unavailable=busy||!left||!right;
+  for(const side of ['left','right']){
+    el<HTMLButtonElement>(side+'-github').disabled=unavailable;
+    el<HTMLInputElement>(side+'-file').disabled=unavailable;
+  }
+  el<HTMLButtonElement>('snapshot-list').disabled=unavailable;
+  document.querySelectorAll<HTMLInputElement>('#snapshot-connect input').forEach(input=>input.disabled=unavailable);
+  for(const {side,select,control}of snapshotControls){
+    select.disabled=unavailable||side!==snapshotSide||!uploadedFiles.length;control.refresh();
+  }
+}
+el<HTMLFormElement>('snapshot-connect').onsubmit=async event=>{
+  event.preventDefault();
+  if(sourcesBusy)return;
+  const read=(name:string)=>el<HTMLInputElement>('snapshot-'+name).value.trim();
+  const config={owner:read('owner'),repo:read('repo'),branch:read('branch'),path:read('path')},token=read('token');
+  setSourcesBusy(true);el('snapshot-status').textContent='Reading private uploaded copies...';
+  try{
+    const files=await listComparisonSnapshots(config,token,left.id);
+    snapshotConfig=config;snapshotToken=token;uploadedFiles=files;
+    for(const {side,select,control}of snapshotControls){
+      select.replaceChildren(new Option('Choose uploaded copy',''));
+      for(const file of files){const option=new Option(`${snapshotDate(file.time)} [${file.device}]`,file.path);option.dataset.date=snapshotDate(file.time);option.dataset.device=file.device;select.append(option);}
+      control.refresh();
+    }
+    el('snapshot-status').textContent=`${files.length} uploaded copies, newest first. Dates use this device's time zone. Upload time is not last-edit time.`;
+  }catch(error){el('snapshot-status').textContent=`Uploaded copies could not be listed. Previous comparison retained. ${error instanceof Error?error.message:String(error)}`;}
+  finally{setSourcesBusy(false);}
+};
+document.querySelectorAll<HTMLButtonElement>('[data-category]').forEach(button=>button.onclick=()=>{
+  category=button.dataset.category as Category|'all';region=0;selected=undefined;
+  document.querySelectorAll('[data-category]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));if(scope)drawScope();
+});
+el('previous').onclick=()=>{if(region>0){region--;drawRegion();}};
+el('next').onclick=()=>{if(region+1<regions.length){region++;drawRegion();}};
+el('context').onchange=()=>{region=0;if(scope)drawScope();};
+el('change-kind').onchange=()=>{specific=el<HTMLSelectElement>('change-kind').value;region=0;if(scope)drawScope();};
+el('region-picker').onchange=()=>{region=Number(el<HTMLSelectElement>('region-picker').value);drawRegion();};
+el('choice-scope').onchange=updateChoices;
+el('undo-choice').onclick=()=>{
+  const previous=choiceHistory.pop();if(!previous)return;
+  choices.clear();for(const [id,pick]of previous)choices.set(id,pick);
+  lastChoiceMessage='Last selection batch undone.';updateChoices();
+};
+el('reset-choices').onclick=()=>{
+  if(!choices.size)return;choiceHistory.push(new Map(choices));choices.clear();lastChoiceMessage='All choices reset. Undo can restore them.';updateChoices();
+};
+el('review-choices').onclick=showChoiceReview;
+el('review-close').onclick=()=>el<HTMLDialogElement>('choice-review').close();
+el('next-unresolved').onclick=()=>{
+  const difference=differences.find(d=>!choices.has(d.id));if(!difference)return;
+  el<HTMLDialogElement>('choice-review').close();jumpToDifference(difference);
+};
+let expected:[number,number][]=[[-1,-1],[-1,-1]];
+grids.forEach((grid,side)=>grid.addEventListener('scroll',()=>{
+  const scroll:[number,number]=[grid.scrollLeft,grid.scrollTop];
+  if(expected[side][0]===scroll[0]&&expected[side][1]===scroll[1]){expected[side]=[-1,-1];return;}
+  if(!el<HTMLInputElement>('linked').checked)return;
+  const other=1-side;grids[other].scrollLeft=scroll[0];grids[other].scrollTop=scroll[1];expected[other]=[grids[other].scrollLeft,grids[other].scrollTop];
+},{passive:true}));
+async function start(){
+  setSourcesBusy(true);
+  try{
+    const responses=await Promise.all(['left.json','right.json','source-meta.json'].map(async path=>{const response=await fetch(path,{cache:'no-store'});if(!response.ok)throw Error(`${path} returned ${response.status}`);return response.text();}));
+    [left,right]=await Promise.all([readWorkbook(responses[0]),readWorkbook(responses[1])]);
+    const meta=JSON.parse(responses[2]);setSource('left',meta.left,meta.leftDevice?`${meta.leftDevice} uploaded snapshot`:'Your backup');setSource('right',meta.right,'GitHub saved copy');
+    const localTime=(time:string)=>new Date(time).toLocaleString(undefined,{timeZone:meta.displayTimeZone,timeZoneName:'short'});
+    el('source-freshness').textContent=meta.leftUploadedAt&&meta.rightCommittedAt?`${meta.leftDevice} snapshot uploaded: ${localTime(meta.leftUploadedAt)}. Main GitHub workbook committed: ${localTime(meta.rightCommittedAt)}; fetched: ${localTime(meta.retrievedAt)}. Upload time is not the workbook's last-edit time. Neither divergent copy is automatically authoritative.`:
+      meta.leftSavedAt&&meta.rightCommittedAt?`Backup saved: ${localTime(meta.leftSavedAt)}. GitHub committed: ${localTime(meta.rightCommittedAt)}; fetched: ${localTime(meta.retrievedAt)}. GitHub was saved later but may contain older date behavior. Neither divergent copy is automatically authoritative.`:'Save/commit times are unavailable for these sources; retrieval time alone cannot establish which workbook is newer.';
+    await loadComparison();
+  }catch(error){showError(error);el('totals').textContent='Comparison unavailable';document.body.dataset.loading='false';el('workspace').setAttribute('aria-busy','false');}
+  finally{setSourcesBusy(false);}
+}
+void start();
