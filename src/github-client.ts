@@ -1,5 +1,9 @@
 import type {SyncConfig} from './storage';
 
+export function githubFormDefaults(config?:Partial<SyncConfig>):SyncConfig{
+  return {owner:config?.owner??'wendyyuanlu',repo:config?.repo??'fnt-data',branch:config?.branch??'main',path:config?.path??'fnt-data.json'};
+}
+
 export interface PrivateGitHubClient {
   config:SyncConfig;
   root:string;

@@ -1,10 +1,14 @@
 const boxyH='M7.5 7h3v3.5h3V7h3v10h-3v-3.5h-3V17h-3Z';
 const stampFrame='M2 2h2.5a1.5 1.5 0 0 0 3 0h3a1.5 1.5 0 0 0 3 0h3a1.5 1.5 0 0 0 3 0H22v2.5a1.5 1.5 0 0 0 0 3v3a1.5 1.5 0 0 0 0 3v3a1.5 1.5 0 0 0 0 3V22h-2.5a1.5 1.5 0 0 0-3 0h-3a1.5 1.5 0 0 0-3 0h-3a1.5 1.5 0 0 0-3 0H2v-2.5a1.5 1.5 0 0 0 0-3v-3a1.5 1.5 0 0 0 0-3v-3a1.5 1.5 0 0 0 0-3Z';
+const navigationIconPaths={up:'M12 19V5m-6 6 6-6 6 6',down:'M12 5v14m-6-6 6 6 6-6',newest:'M13 6l-6 6 6 6M20 6l-6 6 6 6',previous:'M15 6l-6 6 6 6',next:'M9 6l6 6-6 6'};
 export const toolbarIconPaths={
   undo:'M9 5l-5 5 5 5M4 10h9a7 7 0 0 1 7 7v2',
   redo:'M15 5l5 5-5 5M20 10h-9a7 7 0 0 0-7 7v2',
   close:'M6 6l12 12M18 6 6 18',
   add:'M12 4v16M4 12h16',
+  previous:navigationIconPaths.previous,
+  next:navigationIconPaths.next,
+  attach:'M7 15l7-7a2.1 2.1 0 0 1 3 3l-8 8a4.2 4.2 0 0 1-6-6l9-9a6.4 6.4 0 0 1 9 9l-8 8',
   references:'M7 16H3V4h5a6 6 0 0 1 4.472 2',
   settings:'M10 2h4l.7 3 2 .9 2.8-.9 2 3.5-2.1 2.1V13l2.1 2.1-2 3.5-2.8-.9-2 .9L14 22h-4l-.7-3-2-.9-2.8.9-2-3.5L4.6 13v-2.4L2.5 8.5l2-3.5 2.8.9 2-.9ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
   'convert-table':'M3 2h18v9H3ZM3 6.5h18M9 2v9M3 19h18v4H3ZM9 19v4M12 17v-4m-3 3 3-3 3 3',
@@ -35,8 +39,7 @@ export const toolbarIconPaths={
   'background-color':'M5 3l10 10M9 5l7 7-6 6-7-7 6-6ZM4 12h12M20 12s-2 3-2 4a2 2 0 0 0 4 0c0-1-2-4-2-4'
 };
 export function navigationIcon(name:'up'|'down'|'newest'|'previous'|'next'):string{
-  const paths={up:'M12 19V5m-6 6 6-6 6 6',down:'M12 5v14m-6-6 6 6 6-6',newest:'M13 6l-6 6 6 6M20 6l-6 6 6 6',previous:'M15 6l-6 6 6 6',next:'M9 6l6 6-6 6'};
-  return `<svg class="navigation-icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><path d="${paths[name]}"/></svg>`;
+  return `<svg class="navigation-icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><path d="${navigationIconPaths[name]}"/></svg>`;
 }
 export function toolbarIcon(name:keyof typeof toolbarIconPaths,color?:string):string{
   const safeColor=color?.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));

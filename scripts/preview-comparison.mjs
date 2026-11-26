@@ -23,7 +23,10 @@ export async function startComparisonPreview({port=5188,dataDir,locationFile}={}
   let server;
   try{
     await build({configFile:false,root:join(repo,'prototypes','comparison'),base:'./',logLevel:'error',
-      build:{outDir:output,emptyOutDir:true,minify:false,sourcemap:false}});
+      build:{outDir:output,emptyOutDir:true,minify:false,sourcemap:false,rollupOptions:{input:{
+        comparison:join(repo,'prototypes','comparison','index.html'),
+        review:join(repo,'prototypes','comparison','review.html'),
+      }}}});
     const files=new Map(),types={'.html':'text/html','.js':'text/javascript','.css':'text/css'};
     async function addFiles(directory,prefix=''){
       for(const entry of await readdir(directory,{withFileTypes:true})){
@@ -50,15 +53,16 @@ export async function startComparisonPreview({port=5188,dataDir,locationFile}={}
       const asset=files.get(name);
       response.writeHead(200,{'Content-Type':(asset?.type??'application/json')+'; charset=utf-8','Cache-Control':'no-store',
         'X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer',
-        'Content-Security-Policy':"default-src 'self'; connect-src 'self' https://api.github.com; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"});
+        'Content-Security-Policy':`default-src 'self'; connect-src 'self' https://api.github.com; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors ${name==='index.html'?"'self'":"'none'"}; base-uri 'none'; form-action 'none'`});
       if(!asset&&!dataDir){response.end(JSON.stringify(sources.get(name)));return;}
       const stream=createReadStream(asset?.file??join(dataDir,name));
       stream.on('error',()=>response.destroy());stream.pipe(response);
     });
     await new Promise((success,fail)=>{server.once('error',fail);server.listen(port,'127.0.0.1',success);});
     const url=`http://127.0.0.1:${server.address().port}${prefix}`;
-    if(locationFile)await writeFile(locationFile,JSON.stringify({url}));
-    return{url,close:async()=>{await new Promise((success,fail)=>server.close(error=>error?fail(error):success()));await rm(output,{recursive:true});}};
+    const reviewUrl=new URL('review.html',url).href;
+    if(locationFile)await writeFile(locationFile,JSON.stringify({url,reviewUrl}));
+    return{url,reviewUrl,close:async()=>{await new Promise((success,fail)=>server.close(error=>error?fail(error):success()));await rm(output,{recursive:true});}};
   }catch(error){
     if(server?.listening)await new Promise(done=>server.close(done));
     await rm(output,{recursive:true});throw error;
@@ -69,7 +73,7 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
     port:process.env.FNT_COMPARISON_PORT===undefined?5188:Number(process.env.FNT_COMPARISON_PORT),
     dataDir:process.env.FNT_COMPARISON_DATA_DIR,locationFile:process.env.FNT_COMPARISON_LOCATION,
   });
-  console.log(`Comparison prototype (${process.env.FNT_COMPARISON_DATA_DIR?'private local sources':'invented sample data'}): ${preview.url}`);
+  console.log(`Comparison prototype (${process.env.FNT_COMPARISON_DATA_DIR?'private local sources':'invented sample data'}): ${preview.reviewUrl}`);
   let closing=false;
   for(const signal of ['SIGINT','SIGTERM'])process.on(signal,async()=>{
     if(closing)return;closing=true;await preview.close();process.exit(0);

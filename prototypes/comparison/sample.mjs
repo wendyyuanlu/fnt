@@ -15,7 +15,7 @@ export function comparisonSample(){
     const t=tables.find(t=>t.sheet===s.id);
     t.columns.forEach((f,i)=>cell(s,0,i,f.name));
   }
-  cell(master,3,0,'11/20');cell(master,3,1,60);cell(master,4,2,'Invented oats');cell(master,4,3,40);
+  cell(master,3,0,'11/20');cell(master,3,1,60);cell(master,4,2,'Invented oats with a deliberately long comparison label');cell(master,4,3,40);
   cell(master,20,2,'Invented apple');cell(master,20,3,120);cell(master,33,7,'Invented note');
   cell(meals,5,0,'Invented lunch');cell(meals,6,1,'Invented beans');cell(meals,6,2,100);
   const left={schema:1,id:'comparison-demo',title:'Invented comparison',revision:1,sheets:[master,meals],tables,names:[],pickerSources:{},toolbarOrder:['action:file','action:save']};
@@ -24,5 +24,7 @@ export function comparisonSample(){
   right.sheets[0].rows[20].hypotheticalTables={'sample-days':true};
   right.sheets[0].groups.push({id:'sample-group',axis:'row',kind:'summary',members:master.rows.slice(3,6).map(r=>r.id),table:'sample-days',label:'Invented day',collapsed:false});
   cell(right.sheets[1],6,2,150);right.toolbarOrder.reverse();
-  return{left,right,meta:{left:'Invented phone copy',right:'Invented desktop copy',leftDevice:'Demo phone'}};
+  return{left,right,meta:{left:'Invented phone copy',right:'Invented desktop copy',leftDevice:'Demo phone',
+    leftUploadedAt:'2026-11-20T18:30:00Z',rightCommittedAt:'2026-11-20T23:00:00Z',
+    rightCommit:'abcdef0123456789abcdef0123456789abcdef01',retrievedAt:'2026-11-20T23:00:01Z',displayTimeZone:'America/Phoenix'}};
 }

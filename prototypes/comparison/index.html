@@ -1,32 +1,28 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fnt - Visual comparison prototype</title><link rel="stylesheet" href="style.css"></head>
-<body>
-<header class="top"><div><span class="brand">fnt</span><span class="divider"></span><strong>Compare copies</strong><span class="pill">Read-only prototype</span></div><span class="private">Private, local preview</span></header>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fnt - Visual comparison prototype</title><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="before-controls.css"></head>
+<body class="compact-controls" data-control-style="after" data-dropdown-style="dd">
+<header class="top"><h1>Compare versions</h1></header>
 <main>
   <section class="sources" aria-label="Comparison sources">
-    <div class="source" id="left-source-card" role="group" aria-label="Left comparison source"><span class="source-dot left-dot"></span><span class="source-description"><span class="source-side">Left</span><b id="left-kind">Left copy</b><small id="left-source">Reading comparison source...</small></span><div class="source-actions"><button id="left-github" aria-label="Choose GitHub copy for left side">GitHub copies</button><label class="file-action">Local JSON<input id="left-file" aria-label="Choose local JSON for left side" type="file" accept=".json"></label></div></div>
+    <div class="source" id="left-source-card" role="group" aria-label="Left comparison source"><span class="source-description"><b id="left-kind">Left copy</b><small id="left-source">Reading comparison source...</small></span><div class="source-actions"><button id="left-github" aria-label="Browse uploaded snapshots for left side">Browse uploads</button><label class="file-action icon-button" title="Attach a local JSON copy"><input id="left-file" aria-label="Choose local JSON for left side" type="file" accept=".json"></label></div></div>
     <span class="versus">vs</span>
-    <div class="source" id="right-source-card" role="group" aria-label="Right comparison source"><span class="source-dot right-dot"></span><span class="source-description"><span class="source-side">Right</span><b id="right-kind">GitHub saved copy</b><small id="right-source">Private repository snapshot</small></span><div class="source-actions"><button id="right-github" aria-label="Choose GitHub copy for right side">GitHub copies</button><label class="file-action">Local JSON<input id="right-file" aria-label="Choose local JSON for right side" type="file" accept=".json"></label></div></div>
+    <div class="source" id="right-source-card" role="group" aria-label="Right comparison source"><span class="source-description"><b id="right-kind">GitHub</b><small id="right-source">Reading comparison source...</small></span><div class="source-actions"><button id="right-github" aria-label="Browse uploaded snapshots for right side">Browse uploads</button><label class="file-action icon-button" title="Attach a local JSON copy"><input id="right-file" aria-label="Choose local JSON for right side" type="file" accept=".json"></label></div></div>
   </section>
-  <details class="source-details"><summary>Source details</summary><p id="source-freshness" class="notice"></p><p id="date-summary" class="notice"></p></details>
-  <dialog id="snapshot-picker" aria-label="Uploaded comparison copies">
-    <div class="snapshot-heading"><h2 id="snapshot-title">Left copy · GitHub</h2><button id="snapshot-close" type="button" aria-label="Close uploaded copies" aria-keyshortcuts="Escape">Close</button></div>
-    <p id="snapshot-target-note">Changes only the left comparison source. Local JSON opens a file from this device; it does not upload it.</p>
+  <details class="source-details"><summary>Source details</summary><p id="source-freshness" class="notice"></p><p id="source-commit" class="notice" hidden></p><p id="date-summary" class="notice"></p></details>
+  <dialog id="snapshot-picker" class="dialog-surface" aria-label="Uploaded comparison copies">
+    <div class="dialog-heading"><h2 id="snapshot-title">Left copy · GitHub</h2><button id="snapshot-close" type="button" aria-label="Close uploaded copies" aria-keyshortcuts="Escape">Close</button></div>
+    <p id="snapshot-target-note">Changes only the left comparison source. Attach opens a JSON file from this device; it does not upload it.</p>
     <p>Read-only access to your existing private data repository. The token stays only in this tab's memory; nothing is uploaded, restored, or synced. This prototype cannot reuse another website's stored sign-in.</p>
     <form id="snapshot-connect"><div class="snapshot-config">
       <label>Owner<input id="snapshot-owner" required></label><label>Private repository<input id="snapshot-repo" required></label>
-      <label>Branch<input id="snapshot-branch" value="main" required></label><label>Sync JSON path<input id="snapshot-path" value="personal-workbook.json" required></label>
+      <label>Branch<input id="snapshot-branch" required></label><label>Sync JSON path<input id="snapshot-path" required></label>
     </div><label>Existing restricted GitHub token<input id="snapshot-token" type="password" autocomplete="off" required></label><button id="snapshot-list">Read / refresh uploaded copies</button></form>
     <div class="snapshot-config snapshot-targets"><label class="snapshot-target" data-side="left">Left copy<select id="uploaded-left" disabled><option value="">Choose uploaded copy</option></select></label><label class="snapshot-target" data-side="right" hidden>Right copy<select id="uploaded-right" disabled><option value="">Choose uploaded copy</option></select></label></div>
     <p id="snapshot-status" role="status">Connect above to list uploaded snapshots. Local backup selection still works without signing in.</p>
   </dialog>
-  <section class="selection-progress" aria-label="Selection progress">
-    <div><b id="selection-progress" role="status">No choices yet</b><small>No workbook is changed. Reloading or changing sources clears this selection draft.</small></div>
-    <div class="selection-actions"><button id="undo-choice" disabled>Undo choice</button><button id="reset-choices" disabled>Reset</button><button id="review-choices" class="primary">Review choices</button></div>
-  </section>
-  <dialog id="choice-review" aria-label="Review selection draft">
-    <div class="snapshot-heading"><div><p class="eyebrow">SELECTION DRAFT</p><h2>Review your choices</h2></div><button id="review-close" aria-label="Close selection review">Close</button></div>
+  <dialog id="choice-review" class="dialog-surface" aria-label="Review selection draft">
+    <div class="dialog-heading"><div><p class="eyebrow">SELECTION DRAFT</p><h2>Review your choices</h2></div><button id="review-close" aria-label="Close selection review">Close</button></div>
     <p id="review-summary"></p>
     <p class="notice">Selection UI only, not a merged workbook. Structural dependencies have not been validated. Nothing here can save, upload, or replace a workbook.</p>
     <div id="review-groups"></div>
@@ -36,32 +32,35 @@
   <div class="workspace" id="workspace" aria-busy="true">
     <aside><div class="aside-heading">AFFECTED SHEETS</div><nav id="navigation" aria-label="Sheets and tables with differences"></nav></aside>
     <section class="comparison">
-      <details class="bulk-disclosure">
-        <summary>Bulk choices <span id="bulk-summary-target"></span></summary>
+      <section class="bulk-panel" aria-label="Selection review and bulk choices">
+        <span class="selection-progress" role="group" aria-label="Selection progress"><span class="selection-counts"><b id="selection-progress" role="status">No choices yet</b><span class="totals" id="totals" role="status">Reading saved cells...</span></span><span class="selection-actions"><button id="undo-choice" disabled>Undo choice</button><button id="reset-choices" disabled>Reset</button><button id="review-choices" class="primary">Review choices</button></span></span>
+        <details class="bulk-disclosure">
+        <summary><span class="bulk-summary-title">Bulk choices <span id="bulk-summary-target"></span></span></summary>
         <section class="bulk-choice" aria-label="Choose multiple changes">
-          <div class="bulk-target"><label>Apply to<select id="choice-scope" aria-label="Selection scope" aria-describedby="choice-target-description"><option value="filtered">Matching change types in this table</option><option value="area">Changes listed in the current preview</option><option value="scope">Every difference in this table</option><option value="sheet">Every difference on this sheet</option><option value="settings">Toolbar and other workbook-wide settings</option><option value="workbook">Every difference in both copies</option></select></label><span id="choice-target-count"></span></div>
+          <div class="bulk-target"><label>Apply to<select id="choice-scope" aria-label="Selection scope" aria-describedby="choice-target-description"><option value="filtered">Matching change types in this table</option><option value="area">Changes listed in the current preview</option><option value="row">Selected row</option><option value="column">Selected column</option><option value="scope">Every difference in this table</option><option value="sheet">Every difference on this sheet</option><option value="settings">Toolbar and other workbook-wide settings</option><option value="workbook">Every difference in both copies</option></select></label><span id="choice-target-count"></span></div>
           <p id="choice-target-description"></p>
           <div id="bulk-buttons" class="pick-buttons" role="group" aria-label="Bulk source choice"></div>
-          <details class="bulk-help"><summary>How bulk choices work</summary><p id="bulk-choice-note">Individual choices can override a bulk choice. Undo reverses the batch.</p></details>
+          <details class="bulk-help"><summary>How bulk choices work</summary><p id="bulk-choice-note">Individual choices can override a bulk choice. Undo reverses the batch.</p><p>No workbook is changed. Reloading or changing sources clears this selection draft.</p></details>
         </section>
       </details>
-      <div class="scope-heading"><div><p class="eyebrow" id="sheet-name">COMPARING</p><h2 id="scope-name">Reading saved cells...</h2></div><label class="context">Context<select id="context" aria-label="Surrounding context"><option value="1">1 row / column</option><option value="2" selected>2 rows / columns</option><option value="3">3 rows / columns</option></select></label></div>
-      <div class="workbook-totals"><span>Workbook total</span><div class="totals" id="totals" role="status">Reading saved cells...</div></div>
-      <div class="categories" role="group" aria-label="Difference category"><button data-category="all" aria-pressed="true">All <span id="all-count">0</span></button><button data-category="value" aria-pressed="false"><i class="swatch amber"></i>Values & formulas <span id="value-count">0</span></button><button data-category="structure" aria-pressed="false"><i class="swatch violet"></i>Structure <span id="structure-count">0</span></button></div>
-      <div class="type-filter"><label>Show <select id="change-kind" aria-label="Specific change type"><option value="">All change types</option></select></label><span id="type-help">Group changes, hypothetical tags, values, formulas and layout are kept distinct.</span></div>
+      </section>
+      <div class="scope-heading"><div><p class="eyebrow" id="sheet-name">COMPARING</p><h2 id="scope-name">Reading saved cells...</h2></div></div>
+      <div class="categories" role="group" aria-label="Difference category"><button data-category="all" aria-pressed="true">All <span id="all-count" class="count">0</span></button><button data-category="value" aria-pressed="false"><i class="swatch amber"></i>Values & formulas <span id="value-count">0</span></button><button data-category="structure" aria-pressed="false"><i class="swatch violet"></i>Structure <span id="structure-count">0</span></button></div>
+      <div class="type-filter"><label>Show <select id="change-kind" aria-label="Specific change type"><option value="">All change types</option></select></label></div>
       <div class="review-layout">
         <div class="review-main">
-          <div class="region-toolbar"><div><button id="previous" aria-label="Previous changed area" disabled>&larr;</button><label class="region-label"><span id="region">Finding changed areas...</span><select id="region-picker" aria-label="Jump to changed area"></select></label><button id="next" aria-label="Next changed area" disabled>&rarr;</button></div><label class="linked"><input id="linked" type="checkbox" checked>Linked scrolling <span aria-hidden="true">&#8644;</span></label></div>
+          <div class="region-toolbar"><div class="navigator"><button id="previous" class="icon-button" data-action="prev" aria-label="Previous changed area" disabled></button><label class="region-label"><select id="region-picker" aria-label="Jump to changed area"></select></label><button id="next" class="icon-button" data-action="next" aria-label="Next changed area" disabled></button></div></div>
           <section id="inspector" class="inspector" aria-label="Selected change details">
             <header><b id="detail-title">Select a highlighted cell</b><span id="detail-location"></span></header>
-            <div class="individual-choice"><span id="individual-status">Undecided</span><div id="individual-buttons" class="pick-buttons" role="group" aria-label="Defer selected change"></div></div>
+            <div class="individual-choice"><span id="individual-status">Undecided</span><label class="context keep-scope">Apply to<select id="keep-scope" aria-label="Inspector choice scope"><option value="difference">Single cell</option><option value="row">Selected row</option><option value="column">Selected column</option></select></label><div id="individual-buttons" class="pick-buttons" role="group" aria-label="Defer inspector choices"></div></div>
             <p id="dependency-note" class="notice" hidden></p><p id="change-explanation" class="notice" hidden></p>
             <div class="previews detail-pair" id="previews">
               <section class="pane left-pane"><header><b>Your backup</b><div id="keep-left" class="pick-buttons" role="group" aria-label="Keep left source"></div></header><pre id="detail-left" class="source-detail"></pre><div class="pane-range" id="left-range"></div><div class="grid-scroll" id="left-grid" tabindex="0" aria-label="Backup spreadsheet preview"></div></section>
-              <section class="pane right-pane"><header><b>GitHub saved copy</b><div id="keep-right" class="pick-buttons" role="group" aria-label="Keep right source"></div></header><pre id="detail-right" class="source-detail"></pre><div class="pane-range" id="right-range"></div><div class="grid-scroll" id="right-grid" tabindex="0" aria-label="GitHub spreadsheet preview"></div></section>
+              <section class="pane right-pane"><header><b>GitHub</b><div id="keep-right" class="pick-buttons" role="group" aria-label="Keep right source"></div></header><pre id="detail-right" class="source-detail"></pre><div class="pane-range" id="right-range"></div><div class="grid-scroll" id="right-grid" tabindex="0" aria-label="GitHub spreadsheet preview"></div></section>
             </div>
           </section>
           <p class="grid-hint"><span class="swatch amber"></span> Value / formula <span class="swatch violet"></span> Structure <span class="ghost-key">///</span> Not in this copy / table <span class="muted">Same stable row and column identities are aligned, even after moves.</span></p>
+          <div class="view-options"><label class="context">Context<select id="context" aria-label="Surrounding context"><option value="1">1 row / column</option><option value="2" selected>2 rows / columns</option><option value="3">3 rows / columns</option></select></label><label class="linked"><input id="linked" type="checkbox" checked>Linked scrolling</label></div>
         </div>
         <section class="decision-rail" aria-label="Comparison choices and change list">
           <div class="area-changes">
@@ -72,7 +71,6 @@
       </div>
     </section>
   </div>
-  <footer class="privacy-footer">Local files and optional read-only GitHub snapshots. No token is persisted in this prototype. Browsing this comparison does not modify your backups or live workbooks.</footer>
 </main>
 <script type="module" src="./main.ts"></script>
 </body></html>

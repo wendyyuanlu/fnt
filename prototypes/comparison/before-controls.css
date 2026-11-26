@@ -1,0 +1,83 @@
+/* Original control styling from 95f4729cfa6c636b95b203d5182491fead918187. Current layout, glyphs and interaction are retained for in-place review. */
+:root body[data-control-style="before"].compact-controls button,:root body[data-control-style="before"].compact-controls input,:root body[data-control-style="before"].compact-controls select{font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+:root body[data-control-style="before"].compact-controls button{background:#fff;border:1px solid #dce4df;border-radius:7px;padding:7px 11px;color:#23372f}
+:root body[data-control-style="before"].compact-controls button:disabled{opacity:.35}
+:root body[data-control-style="before"].compact-controls button:hover:not(:disabled){background:#f1f5f2}
+:root body[data-control-style="before"].compact-controls button:focus-visible,:root body[data-control-style="before"].compact-controls select:focus-visible,:root body[data-control-style="before"].compact-controls input:focus-visible{outline:2px solid #318464;outline-offset:2px}
+:root body[data-control-style="before"].compact-controls .file-action{font-size:11px;color:#25634d;font-weight:600;padding:6px;border-radius:5px;border:1px solid #dce4df}
+:root body[data-control-style="before"].compact-controls .file-action input{opacity:0}
+:root body[data-control-style="before"].compact-controls .scope-button{font-size:11px;border:0;background:transparent;padding:9px 10px;color:#63756a}
+:root body[data-control-style="before"].compact-controls .scope-button[aria-current="true"]{background:#e8f1eb;color:#255a42;font-weight:650}
+:root body[data-control-style="before"].compact-controls .scope-button .count{background:#e7ece8;font-size:10px;padding:1px 6px;border-radius:10px}
+:root body[data-control-style="before"].compact-controls .context select{border:1px solid #dce4df;background:#fff;border-radius:5px;font-size:11px;padding:6px;color:#4f6657}
+:root body[data-control-style="before"].compact-controls .categories button{border:0;font-size:11px;padding:7px 9px;color:#7b887e}
+:root body[data-control-style="before"].compact-controls .categories button[aria-pressed="true"]{background:#edf3ef;color:#304d3c;font-weight:600}
+:root body[data-control-style="before"].compact-controls .categories button span{font-size:10px;background:#e8eeea;border-radius:8px;padding:0 5px;color:#788a7b}
+:root body[data-control-style="before"].compact-controls .region-toolbar button{padding:2px 8px;font-size:16px;border-radius:5px}
+:root body[data-control-style="before"].compact-controls .change-item{font-size:11px;border:1px solid #e7ece8;padding:8px 10px;min-height:34px}
+:root body[data-control-style="before"].compact-controls .change-item[aria-pressed="true"]{border-color:#9bb8a4;background:#f6faf6}
+:root body[data-control-style="before"].compact-controls .change-item strong{font-weight:500}
+:root body[data-control-style="before"].compact-controls .change-item small{font-size:10px;color:#89968c}
+:root body[data-control-style="before"].compact-controls .type-filter select{border:1px solid #dce4df;border-radius:5px;padding:5px;font-size:11px;background:white;color:#586f60}
+:root body[data-control-style="before"].compact-controls .region-label select{opacity:0}
+:root body[data-control-style="before"].compact-controls .source-actions button,:root body[data-control-style="before"].compact-controls .source-actions .file-action{font-size:11px;font-weight:500;line-height:1.4;padding:7px 8px;min-height:32px;border:1px solid #dce4df;border-radius:5px;color:#25634d;background:#fff}
+:root body[data-control-style="before"].compact-controls .source-actions .file-action:focus-within{outline:2px solid #318464;outline-offset:2px}
+@media(max-width:1150px){
+:root body[data-control-style="before"].compact-controls .source-actions button,:root body[data-control-style="before"].compact-controls .source-actions .file-action{min-height:36px}}@media(max-width:650px){
+:root body[data-control-style="before"].compact-controls .source-actions button,:root body[data-control-style="before"].compact-controls .source-actions .file-action{font-size:11px;min-height:38px;padding:10px}}
+@media(max-width:650px){
+:root body[data-control-style="before"].compact-controls .scope-button{font-size:10px;padding:7px}
+:root body[data-control-style="before"].compact-controls .scope-button .count{font-size:9px}
+:root body[data-control-style="before"].compact-controls .context select{font-size:10px;padding:4px}
+:root body[data-control-style="before"].compact-controls .categories button{font-size:10px;padding:7px 6px}
+:root body[data-control-style="before"].compact-controls .categories button span{font-size:9px}
+:root body[data-control-style="before"].compact-controls .change-item{font-size:10px;padding:7px}
+:root body[data-control-style="before"].compact-controls .change-item small{font-size:9px}}
+@media(max-width:650px){
+:root body[data-control-style="before"].compact-controls .type-filter select{font-size:10px}}
+:root body[data-control-style="before"].compact-controls #snapshot-picker input{padding:8px;border:1px solid #dce4df;border-radius:5px}
+:root body[data-control-style="before"].compact-controls .selection-actions button{font-size:11px}
+:root body[data-control-style="before"].compact-controls .bulk-target select{border:1px solid #dce4df;border-radius:5px;padding:6px;background:white;color:#23372f;font-size:11px}
+:root body[data-control-style="before"].compact-controls .pick-buttons button{font-size:11px;min-height:36px;padding:7px 10px}
+:root body[data-control-style="before"].compact-controls .pick-buttons button[data-pick=left][aria-pressed=true]{background:#e2f0e6;border-color:#6e9a7b;color:#245a3c}
+:root body[data-control-style="before"].compact-controls .pick-buttons button[data-pick=right][aria-pressed=true]{background:#e7edf8;border-color:#8b9fc2;color:#435b86}
+:root body[data-control-style="before"].compact-controls .pick-buttons button[data-pick=later][aria-pressed=true]{background:#f0f2ef;border-color:#b4bdb4;color:#596a5c}
+:root body[data-control-style="before"].compact-controls .choice-badge{font-size:9px;border-radius:4px;padding:2px 5px;background:#f2f3ef;color:#899484}
+:root body[data-control-style="before"].compact-controls .change-item[data-choice=left] .choice-badge{background:#e2f0e6;color:#245a3c}
+:root body[data-control-style="before"].compact-controls .change-item[data-choice=right] .choice-badge{background:#e7edf8;color:#435b86}
+@media(max-width:650px){
+:root body[data-control-style="before"].compact-controls .selection-actions button{min-height:38px;font-size:10px}
+:root body[data-control-style="before"].compact-controls .bulk-target select{font-size:10px}
+:root body[data-control-style="before"].compact-controls .pick-buttons button{font-size:10px;min-height:42px;padding:7px 5px}
+:root body[data-control-style="before"].compact-controls .pick-buttons button:last-child{min-height:34px}
+:root body[data-control-style="before"].compact-controls .choice-badge{font-size:8px;padding:2px 3px}}
+:root body[data-control-style="before"].compact-controls .cell-dropdown{background:white;border:1px solid #dce4df;border-radius:6px;padding:5px;box-shadow:0 5px 20px #20382c33}
+:root body[data-control-style="before"].compact-controls .cell-dropdown-options{display:flex;flex-direction:column;gap:3px}
+:root body[data-control-style="before"].compact-controls .cell-dropdown-options button[aria-selected=true]{background:#e8f1eb}
+:root body[data-control-style="before"].compact-controls .decision-rail .bulk-target select{font-size:11px}
+:root body[data-control-style="before"].compact-controls .decision-rail .pick-buttons button{min-height:34px;padding:7px 8px;font-size:10px}
+:root body[data-control-style="before"].compact-controls .decision-rail .change-item{padding:8px;font-size:10px;min-height:48px}
+:root body[data-control-style="before"].compact-controls .decision-rail .change-item small{font-size:9px}
+:root body[data-control-style="before"].compact-controls .decision-rail .choice-badge{font-size:8px}
+:root body[data-control-style="before"].compact-controls .review-main .individual-choice .pick-buttons button{font-size:10px;min-height:32px;padding:6px 8px}
+@media(min-width:1100px){
+:root body[data-control-style="before"].compact-controls .scope-button{padding:8px;font-size:10px}}
+@media(max-width:650px){
+:root body[data-control-style="before"].compact-controls .decision-rail .pick-buttons button{min-height:40px}
+:root body[data-control-style="before"].compact-controls .review-main .individual-choice .pick-buttons button{min-height:40px}}
+:root body[data-control-style="before"].compact-controls .inspector .pane>header .pick-buttons button{font-size:11px;min-height:32px;padding:5px 13px}
+:root body[data-control-style="before"].compact-controls .review-main .inspector .individual-choice button{font-size:10px;min-height:28px;padding:4px 8px}
+@media(max-width:650px){
+:root body[data-control-style="before"].compact-controls .inspector .pane>header .pick-buttons button{min-height:40px;padding:8px 16px}}
+:root body[data-control-style="before"].compact-controls .bulk-disclosure .pick-buttons button{min-height:34px}
+@media(max-width:650px){
+:root body[data-control-style="before"].compact-controls .bulk-disclosure .bulk-target select{font-size:11px}
+:root body[data-control-style="before"].compact-controls .bulk-disclosure .pick-buttons button{min-height:40px}}
+:root body[data-dropdown-style="previous"].compact-controls .cell-dropdown button,:root body[data-dropdown-style="previous"].compact-controls .cell-dropdown input{font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+:root body[data-dropdown-style="previous"].compact-controls .cell-dropdown button{background:#fff;border:1px solid #dce4df;border-radius:7px;padding:7px 11px;color:#23372f}
+:root body[data-dropdown-style="previous"].compact-controls .cell-dropdown button:disabled{opacity:.35}
+:root body[data-dropdown-style="previous"].compact-controls .cell-dropdown button:hover:not(:disabled){background:#f1f5f2}
+:root body[data-dropdown-style="previous"].compact-controls .cell-dropdown button:focus-visible,:root body[data-dropdown-style="previous"].compact-controls .cell-dropdown input:focus-visible{outline:2px solid #318464;outline-offset:2px}
+:root body[data-dropdown-style="previous"].compact-controls .cell-dropdown{background:white;border:1px solid #dce4df;border-radius:6px;padding:5px;box-shadow:0 5px 20px #20382c33}
+:root body[data-dropdown-style="previous"].compact-controls .cell-dropdown-options{display:flex;flex-direction:column;gap:3px}
+:root body[data-dropdown-style="previous"].compact-controls .cell-dropdown-options button[aria-selected=true]{background:#e8f1eb}

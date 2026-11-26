@@ -1,0 +1,32 @@
+:root{font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#233c34;background:#f6f7f2;font-synthesis:none;font-size:13px;--green:#153e36;--line:#dce1d7;--lime:#dfeeaf;--dialog-edge:10px;--dialog-gutter:calc(var(--dialog-edge) * 2);--dialog-max-height:min(1000px,calc(100dvh - var(--dialog-gutter)))}button,input,select,textarea,.file-action,.compact-controls :is(button,.file-action):not(.navigation-choice),:root body[data-dropdown-style="dd"].compact-controls .cell-dropdown .cell-dropdown-options button{font:inherit;color:inherit}button,.file-action,.compact-controls :is(button,.file-action):not(.navigation-choice),:root body[data-dropdown-style="dd"].compact-controls .cell-dropdown .cell-dropdown-options button{cursor:pointer;background:#fff;border:1px solid #d5dccf;border-radius:5px;padding:8px 11px;white-space:nowrap;line-height:1.2}button:hover,.file-action:hover,.compact-controls :is(button,.file-action):not(.navigation-choice):hover,:root body[data-dropdown-style="dd"].compact-controls .cell-dropdown .cell-dropdown-options button:hover{background:#edf1e8;border-color:#789583}button:disabled,:root body[data-dropdown-style="dd"].compact-controls .cell-dropdown .cell-dropdown-options button:disabled{opacity:.4;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.file-action:focus-within,:root body[data-dropdown-style="dd"].compact-controls .cell-dropdown .cell-dropdown-options button:focus-visible{outline:2px solid #42846b;outline-offset:2px}.primary{background:var(--green);border-color:var(--green);color:#fff}.primary:hover{background:#285b4c}.navigator{display:flex;align-items:center;gap:7px}.navigator button{font-size:10px;padding:4px 7px;background:transparent;border-color:transparent}
+@media(max-width:720px){.navigator{gap:1px}}
+@media(max-width:720px){.navigator button{padding:6px}}
+@media(max-width:720px){button,.file-action,.compact-controls :is(button,.file-action):not(.navigation-choice),:root body[data-dropdown-style="dd"].compact-controls .cell-dropdown .cell-dropdown-options button{min-height:30px}}
+.cell-dropdown,:root body[data-control-style][data-dropdown-style="dd"].compact-controls .cell-dropdown{position:fixed;z-index:100;display:flex;flex-direction:column;gap:7px;padding:6px;background:#fff;border:1px solid #b8c9ac;border-radius:6px;box-shadow:0 6px 24px #153e3630;font-size:var(--cell-font-size,12px);cursor:default}
+.cell-dropdown input{min-width:0;width:100%}
+.cell-dropdown-options,:root body[data-dropdown-style="dd"].compact-controls .cell-dropdown .cell-dropdown-options{overflow:auto;min-height:32px;flex:1;display:block;gap:0}
+.cell-dropdown-options button,:root body[data-dropdown-style="dd"].compact-controls .cell-dropdown .cell-dropdown-options button{display:block;width:100%;border:0;text-align:left;padding:9px 8px;white-space:pre-wrap}
+.cell-dropdown-options button[aria-selected=true],:root body[data-dropdown-style="dd"].compact-controls .cell-dropdown .cell-dropdown-options button[aria-selected=true]{background:#e8efdf}
+.dropdown-field{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:10px;border:1px solid #cdd8c2;border-radius:5px;text-align:left}.dropdown-field>span{min-width:0;overflow:hidden;text-overflow:ellipsis}.dropdown-field>svg{flex-shrink:0}
+.find-pagination{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:5px;font-size:10px;flex-shrink:0}
+.navigator{flex-wrap:nowrap;justify-content:flex-end;min-width:0;max-width:100%;overflow-x:auto;scrollbar-width:none;gap:2px}.navigator::-webkit-scrollbar{display:none}
+.navigator button{display:inline-flex;align-items:center;justify-content:center;flex:none;gap:3px;border-radius:0;padding:2px 4px;height:22px;min-height:22px;font:inherit}.navigator .navigation-icon{width:14px;height:14px;flex:none}
+.navigator :is([data-action="newest-date-page"],[data-action="prev"],[data-action="next"]){width:22px;height:22px;padding:3px}
+select[hidden]{display:none!important}dialog::backdrop{background:#16382d60;backdrop-filter:blur(2px)}.dialog-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:var(--dialog-gap);flex-shrink:0}label input,label select,textarea{padding:10px;border:1px solid #cdd8c2;background:#fff;border-radius:5px;min-width:0}.button-row{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:720px){.save-area button,.compact-button,.compact-controls :is(button,.file-action):not(.navigation-choice){padding:7px 10px;font-size:11px}}
+.save-area button,.compact-button,.compact-controls :is(button,.file-action):not(.navigation-choice){font-size:11px;padding:6px 9px}
+@media(max-width:720px){
+  .save-area button,.compact-button,.compact-controls :is(button,.file-action):not(.navigation-choice){padding:5px 7px}
+}
+.compact-controls .navigator button{height:auto;width:auto}.navigation-choice{display:flex;justify-content:space-between;gap:6px;align-items:center;font-size:11px;text-align:left;width:100%;border:0;background:transparent;padding:9px 10px;margin-bottom:3px;color:#63756a;border-radius:6px;line-height:inherit}.navigation-choice[aria-current="true"],.navigation-choice[aria-pressed="true"]{background:#e8f1eb;color:#255a42;font-weight:650}.count{background:var(--pill-background,#0000000a);font-size:10px;padding:1px 6px;border-radius:10px;flex:none;font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-weight:650;line-height:1.45}
+@media(max-width:650px){.navigation-choice{width:auto;white-space:nowrap;margin:0;font-size:10px;padding:7px}}
+@media(max-width:650px){.count{font-size:9px}}
+@media(min-width:1100px){.navigation-choice{padding:8px;font-size:10px}}
+[aria-current=true]>.count,[aria-pressed="true"]>.count{background:var(--pill-active-background,#00000024)}
+.toolbar button.icon-button,.compact-controls :is(button,.file-action).icon-button{display:inline-flex;align-items:center;justify-content:center;gap:5px;width:32px;height:32px;min-height:32px;padding:0}
+.toolbar-icon{display:block;width:18px;height:18px;flex-shrink:0}
+.find-pagination[hidden]{display:none}
+.dropdown-field.dropdown-fit-options{display:grid;grid-template-columns:minmax(0,1fr) auto;width:max-content;max-width:100%}
+.dropdown-field.dropdown-fit-options>span{grid-column:1;grid-row:1}
+.dropdown-field.dropdown-fit-options>svg{grid-column:2;grid-row:1}
+.dropdown-option-size{visibility:hidden;pointer-events:none;white-space:nowrap}

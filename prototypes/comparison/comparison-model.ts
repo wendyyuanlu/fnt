@@ -11,6 +11,18 @@ export interface Scope{
   leftTable?:Table;rightTable?:Table;rows:string[];columns:string[];differences:Difference[];
 }
 export interface Chunk{r1:number;r2:number;c1:number;c2:number;differences:Difference[]}
+export type ChoiceAxis='row'|'column';
+export function axisChoices(differences:readonly Difference[],sheet:string,axis:ChoiceAxis,identity:string|undefined){
+  const dimension=axis==='row'?'rows':'columns';
+  const relevant=identity?differences.filter(d=>d.sheet===sheet&&d[dimension].includes(identity)):[];
+  const confined=(d:Difference)=>d[dimension].length===1&&!d.label.startsWith('Table ');
+  return{targets:relevant.filter(confined),excluded:relevant.filter(d=>!confined(d))};
+}
+export function hasAxisCellPeers(differences:readonly Difference[],sheet:string,identity:Partial<Record<ChoiceAxis,string>>):boolean{
+  return (['row','column'] as const).some(axis=>new Set(
+    axisChoices(differences,sheet,axis,identity[axis]).targets.filter(d=>d.address).map(d=>d.address),
+  ).size>1);
+}
 
 const equality=new WeakMap<object,WeakSet<object>>();
 export function equal(a:unknown,b:unknown):boolean{

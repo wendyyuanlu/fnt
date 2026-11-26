@@ -934,23 +934,82 @@ Run `npm run preview:comparison` for the separate, loopback-only prototype.
 Its default inputs are invented sample data, not a personal workbook. It is
 not part of the production/Pages build. `npm run test:comparison` checks the
 selection workflow and responsive layout using only invented data.
+The review page's **Mobile mode** toggle constrains the comparison to an actual
+390 px iframe viewport (or the available width on smaller screens), exercising
+the same responsive CSS without reloading or clearing your choices. Toggle it
+off to return to full width. This is a prototype-only review control, not a
+production feature or touch/virtual-keyboard emulator.
+Before Mobile mode, **Before / After** switches the full interface's control
+styling in place. Before uses the actual pre-refactor control CSS, while keeping
+the current layout, glyphs and functionality. **Previous / DD picker** separately
+previews original menu options versus the shared spreadsheet dropdown rows.
+Neither switch reloads sources or clears choices, and both work in Mobile mode.
+The default After view retains the approved original category-button styling
+and only the original value-count padding; all other controls use After styling,
+including DD-picker menu rows. The inspector scope picker sizes to its longest
+option and contracts to the available space on narrower screens.
+DD dropdowns use 6 px outer padding and match the grid's cell font size.
+Source-detail boxes fit their text rather than reserving a 70 px row; long
+details retain their scrolling limit, and the paired grid panes stay aligned.
+The left navigation becomes a horizontal strip at 1099 px before the change
+list moves below the grids at 850 px. Context and Linked scrolling share the
+bottom controls row, aligned left and right. Row locations use L:/R: labels;
+scope explanations remain in accessible descriptions/tooltips rather than
+an additional visible notice.
+The inspector's Apply to picker appears only when its current comparison area
+contains distinct changed cells sharing the selected row or column. Multiple
+conflict aspects in one cell do not qualify; hiding the picker restores its
+single-conflict scope. Attachment icons are 14 px, inside buttons matching
+Browse uploads, and the bulk panel clips its content to its rounded border.
+All uses the shared navigation count pill. At 850 px and narrower, page padding
+is reduced by 8 px on each side; the redundant privacy footer is omitted.
+On narrow screens, inspector status and Decide later share the first row;
+the optional Apply to label and picker share the next row.
 
-Each source card offers **GitHub copies** (read an existing uploaded snapshot)
-and **Local JSON** (open a local file without uploading it). GitHub access
+Each source card offers **Browse uploads** (read an existing uploaded snapshot)
+and an **Attach** icon (open a local JSON file without uploading it). GitHub access
 requires a restricted token in this tab only; it is not persisted. Source
 changes clear the selection draft only after a successful comparison.
 
 **Bulk choices** is collapsed above the sheet heading. Its options identify
-the current table/sheet by name and explain exactly what is included:
+the current table/sheet by name; progress, Undo, Reset and Review choices live
+above its collapsible Bulk choices row in the same box. Its options explain exactly what is included:
 selected change types in the current table, changes listed beside the current
 preview, every difference in the table, every difference on the sheet,
 toolbar/other workbook-wide settings, or all differences across both copies.
+Row-only and column-only choices are also available in Bulk choices and the
+inspector's **Apply to** picker above its Keep buttons. They use stable identities
+on the selected sheet, include all cell-conflict types regardless of filters,
+and can include conflicts outside the current preview or table. Changes spanning
+other rows/columns and whole-table/sheet settings are excluded and require
+separate choices. Keep, Decide later and Undo operate on the selected batch.
 Table/sheet-wide choices ignore the change-type filters; the selected-change
 types option respects them. Counts update with the current target.
-Column-level **Keep** buttons override bulk choices for one difference.
+The inspector's **Keep** buttons use its selected conflict/row/column scope and
+can override earlier bulk choices.
 Undo, reset and the review dialog affect only the in-memory draft.
 Reloading or switching sources clears it. Structural dependency validation,
 merged-workbook generation, saving and uploading are **not implemented**.
+Preview columns fit the visible contents of both copies, capped at 160 px.
+Selecting a different change reveals its highlighted cells within both grids;
+manual scrolling is left alone until another change or preview area is selected.
+Controls, dropdowns, navigation icons and dialog surfaces reuse the spreadsheet
+UI's shared styles/components rather than maintaining a separate control design.
+Action buttons use the spreadsheet's compact white Save-button styling. Sheet
+navigation uses the original flat selected style as a shared navigation control,
+with rounded black-alpha number pills and labels constrained to the wider sidebar.
+The comparison panes stay side-by-side even in mobile mode, while the
+source cards and change rail stack. Each grid scrolls independently or in sync.
+Source headings and details use neutral
+surfaces; amber/purple grid highlights still identify value/structural differences.
+Identical displayed/saved values appear once without a label; differently
+formatted values keep both labels so the stored value remains clear.
+GitHub connection forms prefill `wendyyuanlu`, `fnt-data`, branch `main` and
+`fnt-data.json`. Existing saved destinations take precedence, and all fields remain
+editable. Opening a form does not rename a repository/file or redirect active sync;
+no token is prefilled.
+Devices with an existing `personal-workbook.json` destination must reconnect
+using `fnt-data.json`; changing form defaults does not rewrite saved connections.
 
 For private local review, set `FNT_COMPARISON_DATA_DIR` to an absolute directory
 **outside this repository** containing `left.json`, `right.json` (native Fnt

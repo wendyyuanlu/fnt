@@ -34,14 +34,25 @@ export function mountSourcePicker(dialog:HTMLDialogElement,options:{
   refresh();return{refresh};
 }
 
-export function mountSelectDropdown(select:HTMLSelectElement,options?:{renderOption:(button:HTMLButtonElement,option:HTMLOptionElement)=>void}):{refresh:()=>void}{
-  const dialog=select.closest('dialog')!,label=select.labels?.[0],trigger=document.createElement('button');
+export function mountSelectDropdown(select:HTMLSelectElement,options?:{renderOption?:(button:HTMLButtonElement,option:HTMLOptionElement)=>void;fitOptions?:boolean}):{refresh:()=>void}{
+  const dialog=select.closest('dialog')??document.body,label=select.labels?.[0],trigger=document.createElement('button');
   const name=select.getAttribute('aria-label')??[...label?.childNodes??[]].filter(node=>node.nodeType===Node.TEXT_NODE).map(node=>node.textContent).join('').trim();
   trigger.type='button';trigger.id=select.id+'-trigger';trigger.className='dropdown-field';
+  trigger.classList.toggle('dropdown-fit-options',options?.fitOptions===true);
   trigger.setAttribute('role','combobox');trigger.setAttribute('aria-label',name);trigger.setAttribute('aria-haspopup','listbox');trigger.setAttribute('aria-expanded','false');trigger.setAttribute('aria-controls',select.id+'-options');
   select.hidden=true;select.after(trigger);if(label)label.htmlFor=trigger.id;
   let closePopup:(()=>void)|undefined;
-  const refresh=()=>{const text=document.createElement('span');text.textContent=select.selectedOptions[0]?.textContent??'';trigger.replaceChildren(text);if(options&&select.selectedOptions[0])options.renderOption(trigger,select.selectedOptions[0]);trigger.insertAdjacentHTML('beforeend',dropdownArrowHtml);trigger.disabled=select.disabled;};
+  const refresh=()=>{
+    const text=document.createElement('span');text.textContent=select.selectedOptions[0]?.textContent??'';trigger.replaceChildren(text);
+    trigger.title=select.title;
+    const description=select.getAttribute('aria-description');
+    if(description)trigger.setAttribute('aria-description',description);else trigger.removeAttribute('aria-description');
+    if(select.selectedOptions[0])options?.renderOption?.(trigger,select.selectedOptions[0]);
+    if(options?.fitOptions)for(const option of select.options){
+      const size=document.createElement('span');size.className='dropdown-option-size';size.setAttribute('aria-hidden','true');size.textContent=option.textContent;trigger.append(size);
+    }
+    trigger.insertAdjacentHTML('beforeend',dropdownArrowHtml);trigger.disabled=select.disabled;
+  };
   trigger.onclick=()=>{
     if(closePopup){closePopup();return;}
     const popup=document.createElement('div'),panel=document.createElement('div'),controller=new AbortController();

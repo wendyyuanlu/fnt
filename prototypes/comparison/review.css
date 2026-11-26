@@ -1,0 +1,13 @@
+@import '../../src/ui-controls.css';
+*{box-sizing:border-box}
+body{margin:0;height:100dvh;display:grid;grid-template-rows:auto minmax(0,1fr)}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;background:#fff;border-bottom:1px solid #ccd9d2}
+header b{font-size:14px}
+#viewport-size{font-size:12px;color:#586c62}
+#mobile-mode{margin-left:auto}
+.review-modes{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:11px}
+.review-modes .navigation-choice{width:auto;margin:0;padding:6px 9px}
+.review-note{flex-basis:100%;font-size:10px;color:#586c62}
+main{min-height:0;min-width:0;display:flex;justify-content:center}
+iframe{display:block;width:100%;height:100%;border:0;background:#fff}
+body.mobile iframe{width:min(390px,100%);box-shadow:0 0 0 1px var(--line)}

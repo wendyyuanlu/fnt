@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {it} from 'vitest';
 import {blankSheet,key,type Workbook} from '../src/model';
-import {align,compare,scopes,chunks,anchorLabel,anchorMismatchLabel} from '../prototypes/comparison/comparison-model';
+import {align,compare,scopes,chunks,axisChoices,hasAxisCellPeers,anchorLabel,anchorMismatchLabel} from '../prototypes/comparison/comparison-model';
 
 function fixture():Workbook{
   const s=blankSheet('Invented',30,10);
@@ -13,6 +13,48 @@ function fixture():Workbook{
 it('aligns stable identities and retains the left ordering for moved rows',()=>{
   assert.deepEqual(align(['a','b','c'],['x','a','y','b','c','z']),['x','a','y','b','c','z']);
   assert.deepEqual(align(['a','b','c'],['c','a','b']),['a','b','c']);
+});
+it('collects every same-axis cell conflict across tables, excluding broader changes and other sheets',async()=>{
+  const a=fixture(),b=structuredClone(a),s=a.sheets[0],other=b.sheets[0];
+  const row=s.rows[5].id,column=s.columns[1].id,adjacent=s.columns[5].id,later=s.rows[10].id;
+  for(const [r,c]of [[row,column],[row,adjacent],[later,column]]){
+    s.cells[key(r,c)]={value:1};other.cells[key(r,c)]={value:2};
+  }
+  other.cells[key(row,column)].format={bold:true};
+  other.groups.push({id:'wide',axis:'row',kind:'range',members:[row,later],collapsed:false,table:'one',label:'Invented wide group'});
+  b.tables[0].name='Renamed';
+  other.rows.splice(10,0,other.rows.splice(5,1)[0]);
+  const differences=await compare(a,b);
+  const unrelated={...differences.find(d=>d.address===key(row,column))!,id:1000,sheet:'another-sheet'};
+  const all=[...differences,unrelated],rows=axisChoices(all,s.id,'row',row),columns=axisChoices(all,s.id,'column',column);
+  assert.equal(rows.targets.filter(d=>d.address===key(row,column)).length,2);
+  assert.ok(rows.targets.some(d=>d.table==='two'));
+  assert.ok(!rows.targets.some(d=>d.rows.includes(later)||d===unrelated));
+  assert.ok(rows.excluded.some(d=>d.label==='Group added or removed'));
+  assert.equal(columns.targets.filter(d=>d.address).length,3);
+  assert.ok(!columns.targets.some(d=>d.columns.includes(adjacent)||d===unrelated));
+  const header=axisChoices(all,s.id,'row',s.rows[0].id);
+  assert.ok(!header.targets.some(d=>d.label==='Table renamed'));
+  assert.ok(header.excluded.some(d=>d.label==='Table renamed'));
+  assert.deepEqual(axisChoices(all,s.id,'row',undefined),{targets:[],excluded:[]});
+  assert.ok(hasAxisCellPeers(all,s.id,{row,column}));
+  assert.ok(hasAxisCellPeers(all,s.id,{column}));
+  const singleCell=all.filter(d=>d.address===key(row,column));
+  assert.equal(singleCell.filter(d=>d.sheet===s.id).length,2);
+  assert.ok(!hasAxisCellPeers(singleCell,s.id,{row,column}));
+  assert.ok(!hasAxisCellPeers(all,s.id,{}));
+});
+it('retains missing-row conflicts under the same stable row identity in both directions',async()=>{
+  const a=fixture(),s=a.sheets[0],row=s.rows[5].id,column=s.columns[1].id;
+  s.cells[key(row,column)]={value:'Invented removed row'};
+  const b=structuredClone(a);b.sheets[0].rows=b.sheets[0].rows.filter(r=>r.id!==row);delete b.sheets[0].cells[key(row,column)];
+  for(const table of b.tables)table.rows=table.rows.filter(id=>id!==row);
+  for(const [left,right]of [[a,b],[b,a]]){
+    const differences=await compare(left,right),selection=axisChoices(differences,s.id,'row',row);
+    assert.ok(selection.targets.some(d=>d.label==='Added or removed cell'));
+    assert.ok(selection.targets.some(d=>d.label.startsWith('Row only')));
+    assert.ok(selection.excluded.some(d=>d.label==='Table row membership / order changed'));
+  }
 });
 it('separates table changes from adjacent tables and outside-table cells',async()=>{
   const a=fixture(),b=structuredClone(a),s=b.sheets[0];
