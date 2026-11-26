@@ -897,6 +897,8 @@ full-width rows. Page settings remain in the spreadsheet controls rather than
 being repeated in File.
 Request persistent browser storage is available directly in File; its result
 is shown there. It reduces eviction risk when granted, but is not a backup.
+Dialog close buttons keep their accessible label and Escape shortcut without
+opening a tooltip on automatic focus, touch, or hover.
 
 **File > Private GitHub sync > Compare copies** opens a read-only, browser-local
 comparison. Load a native full Fnt backup on either side; this does not restore,

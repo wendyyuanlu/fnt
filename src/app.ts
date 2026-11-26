@@ -1962,7 +1962,7 @@ function dialog(title:string,html:string,onMount?:(d:HTMLDialogElement)=>void): 
   groupManager?.close();
   document.querySelector('dialog')?.remove();
   const d=document.createElement('dialog');d.className='dialog-surface';d.setAttribute('aria-label',title);d.innerHTML=`<div class="dialog-heading"><h1 class="dialog-title">${esc(title)}</h1><button type="button" class="close" aria-label="Close dialog">${toolbarIcon('close')}</button></div>${html}`;
-  document.body.append(d);const close=d.querySelector<HTMLButtonElement>('.close')!;setShortcutHint(close,'Close dialog',['Esc'],'Escape');close.onclick=()=>d.close();d.onclose=()=>{if(hintButton?.closest('dialog')===d)hideShortcutHint();d.remove();};d.showModal();onMount?.(d);return d;
+  document.body.append(d);const close=d.querySelector<HTMLButtonElement>('.close')!;close.setAttribute('aria-keyshortcuts','Escape');close.onclick=()=>d.close();d.onclose=()=>{if(hintButton?.closest('dialog')===d)hideShortcutHint();d.remove();};d.showModal();onMount?.(d);return d;
 }
 function askText(title:string,value:string,fn:(value:string)=>void):void {
   dialog(title,`<form id="ask-form"><label>Name<input id="answer" required value="${esc(value)}"></label><button class="primary">Apply</button></form>`,d=>{

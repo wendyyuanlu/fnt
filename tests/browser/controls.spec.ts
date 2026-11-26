@@ -415,6 +415,22 @@ test('multiple dropdown sources persist for cells and columns and grid previews 
   await page.locator('td[data-r="3"][data-c="2"]').click();await expect(page.locator('.cell-dropdown').getByRole('option')).toHaveText(['Taiwan','Japan','Canada','USA']);await page.getByRole('tab',{name:'Snack / Flavour',exact:true}).click();await expect(page.locator('.cell-dropdown').getByRole('option')).toHaveText(['Savoury','Sweet','Mixed']);
   await page.keyboard.press('Escape');
 });
+test('dialog close controls never show tooltips on opening, focus or hover and retain Escape',async({page,isMobile})=>{
+  await page.goto('/');await expect(page.locator('.grid')).toBeVisible();
+  const fileButton=page.getByRole('button',{name:'Workbook and backups',exact:true});
+  if(isMobile)await fileButton.tap();else await fileButton.click();
+  for(const title of ['Workbook & recovery','Optional private GitHub sync']){
+    const modal=page.getByRole('dialog',{name:title,exact:true}),close=modal.getByRole('button',{name:'Close dialog',exact:true});
+    await expect(close).toBeFocused();await expect(close).toHaveAttribute('aria-keyshortcuts','Escape');
+    await close.hover();await close.focus();await modal.evaluate(el=>{el.scrollTop=30;});
+    await page.waitForTimeout(450);
+    await expect(page.getByRole('tooltip')).toHaveCount(0);
+    await expect(close).not.toHaveAttribute('aria-describedby',/shortcut-hint/);
+    if(title==='Workbook & recovery')await modal.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
+    else{await page.keyboard.press('Escape');await expect(modal).toHaveCount(0);}
+  }
+});
+
 test('formatting shortcuts act on selected cells and expose matching tooltip hints',async({page,isMobile})=>{
   await page.goto('/');const cell=page.locator('td[data-r="1"][data-c="5"]');await cell.click();
   if(isMobile)await page.keyboard.press('Escape');
