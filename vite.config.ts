@@ -13,6 +13,7 @@ function publishedId():string{
 }
 export default defineConfig({
   base: process.env.FNT_BASE_PATH ?? './', server: { host: '127.0.0.1', watch: { ignored: ['**/docs/**'] } },
+  build:{rollupOptions:{input:{main:resolve('index.html'),comparison:resolve('comparison.html')}}},
   plugins:[{
     name:'fnt-offline-shell',
     configResolved(config){publicDirectory=config.publicDir;},

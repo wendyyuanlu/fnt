@@ -900,10 +900,13 @@ is shown there. It reduces eviction risk when granted, but is not a backup.
 Dialog close buttons keep their accessible label and Escape shortcut without
 opening a tooltip on automatic focus, touch, or hover.
 
-**Recovery > Compare versions for merge conflict** opens the same read-only,
-browser-local inspector as **Recovery > Private GitHub sync > Compare copies**.
-The polished visual comparison prototype remains separate from the deployed
-site; neither interface currently applies merged workbooks.
+**Recovery > Compare versions for merge conflict**, **Private GitHub sync >
+Compare copies**, and the conflict dialog all open the polished visual comparison.
+It replaces the old text-list inspector with aligned spreadsheet previews,
+affected sheets/tables, change-type filters, individual and bulk choices,
+Undo and selection review. Choices are browser-memory drafts, not merged
+workbooks: closing or changing sources clears them. They cannot save, upload,
+or replace either workbook.
 Load a native full Fnt backup on either side; this does not restore,
 save or upload it. **Compare with remote version (GitHub)** is always visible;
 it requires configured, authenticated private sync and loads the right side with
@@ -912,8 +915,8 @@ are pending. The conflict dialog also offers **Compare versions or a
 backup**, initially comparing this device with the received GitHub version.
 Cells match by stable identities, not current row/column positions. Values,
 formulas, notes, formatting, rows/columns, table definitions, groups, dropdowns
-and settings are compared; results are searchable and paged. Long values expand
-on demand, and scanning yields to the browser. Revision/activity counters are
+and settings are compared; changed areas have their own navigator and long values
+remain readable in the inspector. Scanning yields to the browser. Revision/activity counters are
 ignored. There is no common-base three-way merge: differences do not prove both
 devices changed the same cell. The tool does not merge or replace either copy;
 whole-workbook resolution remains separate and explicit.
@@ -931,11 +934,18 @@ the local upload date/time on the left and `[Device name]` on the right.
 Listing and selecting copies only read GitHub. Snapshot dates do not establish
 which divergent workbook is authoritative, and revisions are not global clocks.
 
-### Visual comparison selection prototype
+### Visual comparison and private review harness
 
-Run `npm run preview:comparison` for the separate, loopback-only prototype.
-Its default inputs are invented sample data, not a personal workbook. It is
-not part of the production/Pages build. `npm run test:comparison` checks the
+The deployed comparison uses the same renderer and styles as the reviewed prototype.
+It opens full-window within the workbook, with **Back to workbook** returning
+without restoring a copy. Authenticated source reads reuse the website's current
+private-sync configuration; tokens are not copied into the comparison frame or
+its URL. Automatic sync pauses while comparing. Local JSON selection works offline;
+the comparison page and its assets are included in the offline shell.
+
+Run `npm run preview:comparison` for the separate, loopback-only review harness.
+Its default inputs are invented sample data, not a personal workbook. The build
+never publishes personal source JSON or the private review wrapper. `npm run test:comparison` checks the
 selection workflow and responsive layout using only invented data.
 The review page's **Mobile mode** toggle constrains the comparison to an actual
 390 px iframe viewport (or the available width on smaller screens), exercising

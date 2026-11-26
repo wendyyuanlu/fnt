@@ -60,6 +60,10 @@ function moved(left:string[],right:string[]):string[]{
 function present(value:Record<string,unknown>):unknown{
   return Object.values(value).some(v=>v!==undefined)?value:undefined;
 }
+function changedProperties(a:object|undefined,b:object|undefined,skip:string[]):[string,unknown,unknown][]{
+  const before:Record<string,unknown>=Object.fromEntries(Object.entries(a??{})),after:Record<string,unknown>=Object.fromEntries(Object.entries(b??{}));
+  return [...new Set([...Object.keys(before),...Object.keys(after)])].filter(key=>!skip.includes(key)&&!equal(before[key],after[key])).map(key=>[key,before[key],after[key]]);
+}
 const meaningful=(cell:Cell|undefined):unknown=>cell?present({
   value:cell.value===null?undefined:cell.value,formula:cell.formula,binding:cell.binding,note:cell.note,link:cell.link,
   dateLiteral:cell.dateLiteral,fractionInput:cell.fractionInput,fractionLiteral:cell.fractionLiteral,
@@ -110,6 +114,7 @@ export async function compare(left:Workbook,right:Workbook,progress:(checked:num
     if(!a||!b)add('structure',a?'Sheet only in left copy':'Sheet only in right copy',sheetId,[],[],a?.name,b?.name);
     if(a&&b&&a.name!==b.name)add('structure','Sheet renamed',sheetId,[],[],a.name,b.name);
     for(const property of ['dayLogging','pagination'] as const)if(!equal(a?.[property],b?.[property]))add('structure',property==='dayLogging'?'Day logging settings':'Date navigation settings',sheetId,[],[],a?.[property],b?.[property]);
+    for(const [property,before,after]of changedProperties(a,b,['id','name','cells','rows','columns','groups','validations','dayLogging','pagination']))add('structure',`Sheet ${property} changed`,sheetId,[],[],before,after);
     for(const address of new Set([...Object.keys(a?.cells??{}),...Object.keys(b?.cells??{})])){
       const ca=a?.cells[address],cb=b?.cells[address];checked++;
       if(!equal(ca,cb)){
@@ -172,14 +177,21 @@ export async function compare(left:Workbook,right:Workbook,progress:(checked:num
     if(!a||!b)add('structure','Table added or removed',t.sheet,[t.header,...t.rows],t.columns.map(c=>c.column),a,b,id);
     else{
       if(a.name!==b.name)add('structure','Table renamed',t.sheet,[t.header],t.columns.map(c=>c.column),a.name,b.name,id);
+      if(a.sheet!==b.sheet)add('structure','Table sheet changed',t.sheet,[t.header],t.columns.map(c=>c.column),a.sheet,b.sheet,id);
       for(const axis of ['rows','columns','header'] as const)if(!equal(a[axis],b[axis])){
         const rows=axis==='rows'?[...new Set([...a.rows.filter(r=>!b.rows.includes(r)),...b.rows.filter(r=>!a.rows.includes(r))])]:[t.header];
         add('structure',`Table ${axis==='rows'?'row membership / order':axis==='columns'?'columns / calculations':'header'} changed`,t.sheet,rows.length?rows:[t.header],axis==='columns'?t.columns.map(c=>c.column):[],a[axis],b[axis],id);
       }
     }
   }
-  for(const property of ['names','references','hypotheticalStyle','sheetTabGroups','toolbarOrder','toolbarDividers'] as const){
-    if(!equal(left[property],right[property]))add('structure',`Workbook ${property} changed`,'@workbook',[],[],left[property],right[property]);
+  for(const [property,before,after]of changedProperties(left,right,['sheets','tables','dropdownData','revision','tableActivity']))add('structure',`Workbook ${property} changed`,'@workbook',[],[],before,after);
+  for(const [label,before,after]of [
+    ['sheet order',left.sheets,right.sheets],
+    ['DD sheet order',left.dropdownData?.sheets??[],right.dropdownData?.sheets??[]],
+    ['table order',allTables(left),allTables(right)],
+  ] as const){
+    const a=before.map(item=>item.id),b=after.map(item=>item.id);
+    if(!equal(a,b))add('structure',`Workbook ${label} changed`,'@workbook',[],[],a,b);
   }
   progress(checked);return differences;
 }

@@ -16,7 +16,7 @@
   <dialog id="snapshot-picker" class="dialog-surface" aria-label="Uploaded comparison copies">
     <div class="dialog-heading"><h2 id="snapshot-title">Left copy · GitHub</h2><button id="snapshot-close" type="button" aria-label="Close uploaded copies" aria-keyshortcuts="Escape">Close</button></div>
     <p id="snapshot-target-note">Changes only the left comparison source. Attach opens a JSON file from this device; it does not upload it.</p>
-    <p>Read-only access to your existing private data repository. The token stays only in this tab's memory; nothing is uploaded, restored, or synced. This prototype cannot reuse another website's stored sign-in.</p>
+    <p id="snapshot-auth-note">Read-only access to your existing private data repository. The token stays only in this tab's memory; nothing is uploaded, restored, or synced. This prototype cannot reuse another website's stored sign-in.</p>
     <form id="snapshot-connect"><div class="snapshot-config">
       <label>Owner<input id="snapshot-owner" required></label><label>Private repository<input id="snapshot-repo" required></label>
       <label>Branch<input id="snapshot-branch" required></label><label>Sync JSON path<input id="snapshot-path" required></label>

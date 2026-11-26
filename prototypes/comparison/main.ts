@@ -11,9 +11,11 @@ import {mountSelectDropdown} from '../../src/dropdown-ui';
 import {navigationIcon,toolbarIcon} from '../../src/icons';
 import {githubFormDefaults} from '../../src/github-client';
 import type {SyncConfig} from '../../src/storage';
+import type {ComparisonFrame,ComparisonSource} from '../../src/comparison-host';
 import {compare,scopes,chunks,axisChoices,hasAxisCellPeers,anchorLabel,anchorMismatchLabel,anchorErrorLabel,isDateAnchorLabel,type Scope,type Difference,type Category,type Chunk,type ChoiceAxis} from './comparison-model';
 
 const el=<T extends HTMLElement=HTMLElement>(id:string)=>document.getElementById(id) as T;
+const host=(window.frameElement as ComparisonFrame|null)?.comparisonHost;
 let left:Workbook,right:Workbook,engines:Engine[],areas:Scope[]=[],differences:Difference[]=[],scope:Scope;
 let category:Category|'all'='all',regions:Chunk[]=[],region=0,selected:number|undefined,request=0;
 let specific='';
@@ -470,6 +472,7 @@ async function loadComparison(candidateLeft=left,candidateRight=right,onCommit:(
     if(generation!==request)return false;
     const nextAreas=scopes(candidateLeft,candidateRight,values);
     left=candidateLeft;right=candidateRight;differences=values;areas=nextAreas;engines=nextEngines;onCommit();
+    el<HTMLButtonElement>('review-choices').disabled=false;
     choices.clear();choiceHistory.length=0;lastChoiceMessage='';selected=undefined;focus=undefined;updateChoices();
     scope=areas.find(s=>s.id===scope?.id)??areas.find(s=>s.leftTable&&s.differences.some(d=>d.category==='value'))??areas[0];
     const anchors=differences.filter(d=>isDateAnchorLabel(d.label)).length,mismatches=differences.filter(d=>d.label===anchorMismatchLabel).length,errors=differences.filter(d=>d.label===anchorErrorLabel).length;
@@ -522,6 +525,23 @@ function setSource(side:'left'|'right',label:string,kind:string,commit?:string){
   }
   el(`${side}-source-freshness`).textContent=kind.endsWith(' upload')?`Uploaded: ${label}.`:label;
 }
+function setHostSource(side:'left'|'right',source:ComparisonSource){
+  setSource(side,source.label,source.kind);
+  if(source.freshness)el(`${side}-source-freshness`).textContent=source.freshness;
+  if(side==='right'){
+    el('right-source-commit').textContent=source.revision?`File revision: ${source.revision}`:'';
+    el('right-source-commit').hidden=!source.revision;
+  }
+}
+function waitForCopy(){
+  el('scope-name').textContent='Choose a comparison copy';el('sheet-name').textContent='';
+  el('totals').textContent='Choose a right copy to begin.';
+  el('detail-title').textContent='No compared copy loaded';
+  grids.forEach(grid=>grid.innerHTML='<div class="empty">Attach a local JSON copy or read a GitHub copy.</div>');
+  el<HTMLButtonElement>('review-choices').disabled=true;
+  updateChoices();
+  document.body.dataset.loading='false';el('workspace').setAttribute('aria-busy','false');
+}
 for(const side of ['left','right'] as const)el<HTMLInputElement>(`${side}-file`).onchange=async()=>{
   if(sourcesBusy)return;
   const input=el<HTMLInputElement>(`${side}-file`),file=input.files?.[0];if(!file)return;
@@ -529,8 +549,10 @@ for(const side of ['left','right'] as const)el<HTMLInputElement>(`${side}-file`)
   setSourcesBusy(true);
   try{
     const copy=await readWorkbook(await file.text());
-    if(copy.id!==(side==='left'?right:left).id)throw Error('These copies have different workbook identities. This prototype does not guess row matches.');
+    const other=side==='left'?right:left;
+    if(other&&copy.id!==other.id)throw Error('These copies have different workbook identities. Row matches are not guessed.');
     el('error').hidden=true;
+    if(side==='left'&&!right){left=copy;setSource(side,file.name,'Local JSON');waitForCopy();return;}
     await loadComparison(side==='left'?copy:left,side==='right'?copy:right,()=>setSource(side,file.name,'Local JSON'));
   }catch(error){showError(error);}
   finally{setSourcesBusy(false);}
@@ -551,6 +573,7 @@ for(const side of ['left','right'] as const)el(side+'-github').onclick=()=>{
   }
   el('snapshot-status').textContent=uploadedFiles.length?`${uploadedFiles.length} uploaded copies, newest first. Choose one for the ${side} side.`:'Connect above to read uploaded snapshots from GitHub. Nothing is uploaded.';
   picker.showModal();
+  if(host?.uploads)el<HTMLFormElement>('snapshot-connect').requestSubmit();
 };
 el('snapshot-close').onclick=()=>picker.close();
 let snapshotConfig:SyncConfig|undefined,snapshotToken='',uploadedFiles:ComparisonSnapshot[]=[];
@@ -566,10 +589,14 @@ const snapshotControls=(['left','right'] as const).map(side=>{
     const entry=uploadedFiles.find(file=>file.path===select.value);if(!entry)return;
     setSourcesBusy(true);
     try{
-      const copy=await readComparisonSnapshot(snapshotConfig,snapshotToken,entry);
-      if(copy.id!==(side==='left'?right:left).id)throw Error('Uploaded copy belongs to another workbook. Neither source was replaced.');
+      const source=host?.uploads?await host.uploads.read(entry):undefined;
+      const copy=source?.book??await readComparisonSnapshot(snapshotConfig,snapshotToken,entry);
+      const other=side==='left'?right:left;
+      if(other&&copy.id!==other.id)throw Error('Uploaded copy belongs to another workbook. Neither source was replaced.');
       el('error').hidden=true;
-      const loaded=await loadComparison(side==='left'?copy:left,side==='right'?copy:right,()=>setSource(side,sourceTime(entry.time),`${entry.device} upload`));
+      const commit=()=>source?setHostSource(side,source):setSource(side,sourceTime(entry.time),`${entry.device} upload`);
+      if(side==='left'&&!right){left=copy;commit();waitForCopy();el('snapshot-status').textContent='Left source loaded. Choose a right copy to begin.';return;}
+      const loaded=await loadComparison(side==='left'?copy:left,side==='right'?copy:right,commit);
       if(!loaded){el('snapshot-status').textContent='Source selection did not complete. Check the comparison error; no workbook was saved or uploaded.';return;}
       el('snapshot-status').textContent=`Loaded ${snapshotDate(entry.time)} [${entry.device}] on the ${side}. No workbook was saved or uploaded.`;
     }catch(error){el('snapshot-status').textContent=`Previous comparison retained. ${error instanceof Error?error.message:String(error)}`;}
@@ -579,12 +606,13 @@ const snapshotControls=(['left','right'] as const).map(side=>{
 });
 function setSourcesBusy(busy:boolean){
   sourcesBusy=busy;
-  const unavailable=busy||!left||!right;
+  const unavailable=busy||!left||(!host&&!right);
   for(const side of ['left','right']){
-    el<HTMLButtonElement>(side+'-github').disabled=unavailable;
+    el<HTMLButtonElement>(side+'-github').disabled=unavailable||!!host&&!host.uploads;
     el<HTMLInputElement>(side+'-file').disabled=unavailable;
   }
-  el<HTMLButtonElement>('snapshot-list').disabled=unavailable;
+  el<HTMLButtonElement>('snapshot-list').disabled=unavailable||!!host&&!host.uploads;
+  const remote=el<HTMLButtonElement>('comparison-github');if(remote)remote.disabled=unavailable||!host?.readRemote;
   document.querySelectorAll<HTMLInputElement>('#snapshot-connect input').forEach(input=>input.disabled=unavailable);
   for(const {side,select,control}of snapshotControls){
     select.disabled=unavailable||side!==snapshotSide||!uploadedFiles.length;control.refresh();
@@ -597,7 +625,7 @@ el<HTMLFormElement>('snapshot-connect').onsubmit=async event=>{
   const config={owner:read('owner'),repo:read('repo'),branch:read('branch'),path:read('path')},token=read('token');
   setSourcesBusy(true);el('snapshot-status').textContent='Reading private uploaded copies...';
   try{
-    const files=await listComparisonSnapshots(config,token,left.id);
+    const files=host?.uploads?await host.uploads.list(left.id):await listComparisonSnapshots(config,token,left.id);
     snapshotConfig=config;snapshotToken=token;uploadedFiles=files;
     for(const {side,select,control}of snapshotControls){
       select.replaceChildren(new Option('Choose uploaded copy',''));
@@ -657,6 +685,15 @@ grids.forEach((grid,side)=>grid.addEventListener('scroll',()=>{
 async function start(){
   setSourcesBusy(true);
   try{
+    if(document.body.dataset.production==='true'&&!host)throw Error('Open Compare versions from Recovery in your workbook. No private sources are loaded by this standalone page.');
+    if(host){
+      left=host.local.book;setHostSource('left',host.local);
+      setSource('right','Attach a local JSON copy or read the saved GitHub version.','Compared copy');
+      waitForCopy();
+      const source=host.remote??(host.readRemote?await host.readRemote():undefined);
+      if(source){right=source.book;setHostSource('right',source);await loadComparison();}
+      return;
+    }
     const responses=await Promise.all(['left.json','right.json','source-meta.json'].map(async path=>{const response=await fetch(path,{cache:'no-store'});if(!response.ok)throw Error(`${path} returned ${response.status}`);return response.text();}));
     [left,right]=await Promise.all([readWorkbook(responses[0]),readWorkbook(responses[1])]);
     const meta=JSON.parse(responses[2]);
@@ -670,5 +707,28 @@ async function start(){
     await loadComparison();
   }catch(error){showError(error);el('totals').textContent='Comparison unavailable';document.body.dataset.loading='false';el('workspace').setAttribute('aria-busy','false');}
   finally{setSourcesBusy(false);}
+}
+if(host){
+  const back=document.createElement('button');back.type='button';back.className='icon-button';
+  back.setAttribute('aria-label','Back to workbook');back.title='Back to workbook';back.innerHTML=toolbarIcon('previous');
+  back.onclick=host.close;document.querySelector('.top')!.append(back);
+  window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!document.querySelector('dialog[open]')){event.preventDefault();host.close();}});
+  el('snapshot-auth-note').textContent=host.uploads?'Uses this website\'s existing private GitHub sign-in. Reads only; nothing is uploaded, restored, or synced.':'Configure Private GitHub sync from Recovery first. Local JSON comparisons work offline.';
+  el('snapshot-connect').querySelector<HTMLElement>('.snapshot-config')!.hidden=true;
+  el('snapshot-token').closest<HTMLElement>('label')!.hidden=true;
+  el('snapshot-connect').querySelectorAll<HTMLInputElement>('input').forEach(input=>input.required=false);
+  const remote=document.createElement('button');remote.type='button';remote.id='comparison-github';remote.textContent='Read GitHub';
+  remote.setAttribute('aria-label','Compare with remote version (GitHub)');
+  remote.onclick=async()=>{
+    if(sourcesBusy||!host.readRemote)return;
+    setSourcesBusy(true);
+    try{
+      const source=await host.readRemote();
+      if(source.book.id!==left.id)throw Error('The GitHub copy belongs to a different workbook. Neither comparison source was replaced.');
+      el('error').hidden=true;await loadComparison(left,source.book,()=>setHostSource('right',source));
+    }catch(error){showError(error);}
+    finally{setSourcesBusy(false);}
+  };
+  document.querySelector('#right-source-card .source-actions')!.prepend(remote);
 }
 void start();

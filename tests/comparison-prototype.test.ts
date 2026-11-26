@@ -14,6 +14,14 @@ it('aligns stable identities and retains the left ordering for moved rows',()=>{
   assert.deepEqual(align(['a','b','c'],['x','a','y','b','c','z']),['x','a','y','b','c','z']);
   assert.deepEqual(align(['a','b','c'],['c','a','b']),['a','b','c']);
 });
+it('retains workbook and sheet metadata differences when replacing the old inspector',async()=>{
+  const a=fixture(),b=structuredClone(a);
+  b.title='Renamed workbook';b.pickerSources={ingredient:'changed-source'};b.sheets[0].outlineView={tree:true};
+  b.sheetTabCollapsed=['Example'];b.revision++;b.tableActivity={one:{editedAt:3,visits:4}};
+  const differences=await compare(a,b),labels=differences.map(d=>d.label);
+  for(const label of ['Workbook title changed','Workbook pickerSources changed','Workbook sheetTabCollapsed changed','Sheet outlineView changed'])assert.ok(labels.includes(label));
+  assert.ok(!labels.some(label=>/revision|tableActivity/.test(label)));
+});
 it('collects every same-axis cell conflict across tables, excluding broader changes and other sheets',async()=>{
   const a=fixture(),b=structuredClone(a),s=a.sheets[0],other=b.sheets[0];
   const row=s.rows[5].id,column=s.columns[1].id,adjacent=s.columns[5].id,later=s.rows[10].id;

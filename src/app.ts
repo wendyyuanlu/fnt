@@ -1,5 +1,6 @@
 import './style.css';
 import {mountWorkbookComparison} from './sync-comparison';
+import type {ComparisonSource} from './comparison-host';
 import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,snapshotDate,type ComparisonSnapshot} from './github-snapshots';
 import {githubFormDefaults} from './github-client';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
@@ -736,17 +737,18 @@ async function compactSavedChanges():Promise<void>{
 }
 let privateSyncTimer:ReturnType<typeof setTimeout>|undefined;
 let privateSyncConflict=false;
+let comparisonActive=false;
 let rememberPrivateSync=false;
 function schedulePrivateSync(delay=15000):void{
   clearTimeout(privateSyncTimer);
   if(!state?.sync||!token||privateSyncConflict||!navigator.onLine)return;
   privateSyncTimer=setTimeout(()=>{
-    if(document.visibilityState!=='visible'||busy||draft!==undefined||touchCell||appendDraft||colorPicker?.pending||document.querySelector('dialog[open]')){schedulePrivateSync();return;}
+    if(document.visibilityState!=='visible'||busy||comparisonActive||draft!==undefined||touchCell||appendDraft||colorPicker?.pending||document.querySelector('dialog[open]')){schedulePrivateSync();return;}
     void manualSave(true);
   },delay);
 }
 async function manualSave(automatic=false): Promise<void> {
-  if(automatic&&(!state?.sync||!token||!navigator.onLine||privateSyncConflict)){schedulePrivateSync();return;}
+  if(automatic&&(!state?.sync||!token||!navigator.onLine||privateSyncConflict||comparisonActive)){schedulePrivateSync();return;}
   if(busy){flash('Wait for the current save or sync to finish.');return;}
   if(!commitDraft())return;
   busy=true;renderStatus();
@@ -848,55 +850,39 @@ function openSnapshotUpload(back:()=>void):void{
   d.addEventListener('close',back,{once:true});
 }
 function openComparison(conflict?:SyncConflict):void{
-  const connected=!!(state.sync&&token);
-  const d=dialog('Compare workbooks and backups',`<div class="button-row"><button id="comparison-github" ${connected?'':'disabled'}>Compare with remote version (GitHub)</button><button id="snapshot-refresh" ${connected?'':'disabled'}>Refresh uploaded copies</button></div>${connected?'':`<p class="muted">${state.sync?'Reconnect':'Configure'} Private GitHub sync from Recovery first to authenticate a remote read. Backup comparisons work offline.</p>`}<div class="snapshot-selectors">${(['left','right'] as const).map(side=>`<label>Uploaded copy — ${side}<select id="snapshot-${side}" disabled><option value="">Choose uploaded copy</option></select></label>`).join('')}</div><p id="snapshot-list-status" role="status"></p><section id="workbook-comparison"></section>`);
-  const comparison=mountWorkbookComparison(d.querySelector<HTMLElement>('#workbook-comparison')!,book,conflict?.remote,flash);
-  let files:ComparisonSnapshot[]=[],listGeneration=0;
-  const decorate=(button:HTMLButtonElement,option:HTMLOptionElement)=>{
-    if(!option.value)return;
-    button.classList.add('snapshot-option');const date=document.createElement('span'),device=document.createElement('span');
-    date.className='snapshot-date';device.className='snapshot-device';date.textContent=option.dataset.date!;device.textContent=`[${option.dataset.device}]`;button.replaceChildren(date,device);
-  };
-  const selectors=(['left','right'] as const).map(side=>{
-    const select=d.querySelector<HTMLSelectElement>(`#snapshot-${side}`)!,control=mountSelectDropdown(select,{renderOption:decorate});
-    let generation=0;
-    select.onchange=async()=>{
-      const entry=files.find(file=>file.path===select.value);if(!entry)return;
-      const current=++generation;select.disabled=true;control.refresh();
-      try{const copy=await readComparisonSnapshot(state.sync,token,entry);if(d.isConnected&&current===generation)comparison.setCopy(side,copy,`${snapshotDate(entry.time)} [${entry.device}]`);}
-      catch(error){if(d.isConnected){d.querySelector('#snapshot-list-status')!.textContent=String(error);flash(error);}}
-      finally{if(d.isConnected&&current===generation){select.disabled=false;control.refresh();}}
-    };
-    return {select,control};
+  if(comparisonActive)return;
+  if(busy){flash('Wait for the current save or sync to finish before comparing.');return;}
+  const captured={...state,book:clone(book),pending:clone(state.pending)},config=state.sync,credential=token;
+  const source=(copy:Workbook,kind:string,label:string,revision?:string):ComparisonSource=>({
+    book:clone(copy),kind,label,revision,freshness:`Comparison copy captured: ${new Date().toLocaleString()}.`,
   });
-  const refresh=d.querySelector<HTMLButtonElement>('#snapshot-refresh')!;
-  refresh.onclick=async()=>{
-    const generation=++listGeneration;refresh.disabled=true;d.querySelector('#snapshot-list-status')!.textContent='Reading uploaded copies...';
-    try{
-      const received=await listComparisonSnapshots(state.sync,token,book.id);
-      if(!d.isConnected||generation!==listGeneration)return;
-      files=received;
-      for(const {select,control}of selectors){
-        const selected=select.value;select.replaceChildren(new Option('Choose uploaded copy',''));
-        for(const file of files){const date=snapshotDate(file.time),option=new Option(`${date} [${file.device}]`,file.path);option.dataset.date=date;option.dataset.device=file.device;select.append(option);}
-        select.value=files.some(file=>file.path===selected)?selected:'';select.disabled=!files.length;control.refresh();
-      }
-      d.querySelector('#snapshot-list-status')!.textContent=files.length?`${files.length} uploaded copies, newest first. Times use this device’s time zone.`:'No uploaded copies for this workbook yet.';
-    }catch(error){if(d.isConnected){d.querySelector('#snapshot-list-status')!.textContent=`Could not list uploaded copies. ${String(error)}`;flash(error);}}
-    finally{if(d.isConnected&&generation===listGeneration)refresh.disabled=false;}
-  };
-  if(connected)refresh.click();
-  const load=d.querySelector<HTMLButtonElement>('#comparison-github');
-  if(load)load.onclick=async()=>{
-    load.disabled=true;load.textContent='Reading GitHub copy…';
-    try{
-      const received=await syncGitHub(state,token,fetch,[],{readOnly:true});
+  const view=document.createElement('section');view.className='comparison-view';view.setAttribute('aria-label','Compare versions');
+  const wasInert=root.inert;comparisonActive=true;root.inert=true;
+  document.querySelectorAll<HTMLDialogElement>('dialog[open]').forEach(dialog=>dialog.close());
+  document.body.classList.add('comparison-open');document.body.append(view);
+  let files:ComparisonSnapshot[]=[];
+  const dispose=mountWorkbookComparison(view,{
+    local:source(captured.book,'This device','Current local workbook'),
+    remote:conflict?source(conflict.remote,'GitHub','Preserved sync-conflict copy',conflict.sha):undefined,
+    readRemote:config&&credential?async()=>{
+      const received=await syncGitHub(captured,credential,fetch,[],{readOnly:true});
       if(!received.remote)throw Error('The saved GitHub workbook was not returned. Neither copy was changed.');
-      if(d.isConnected)comparison.setRemote(received.remote);
-    }catch(e){if(d.isConnected)flash(e);}
-    finally{load.disabled=false;load.textContent='Compare with remote version (GitHub)';}
-  };
-  d.addEventListener('close',()=>{comparison.dispose();if(conflict)openConflict(conflict);},{once:true});
+      return source(received.remote,'GitHub',config.path,received.sha);
+    }:undefined,
+    uploads:config&&credential?{
+      list:async workbook=>{files=await listComparisonSnapshots(config,credential,workbook);return files;},
+      read:async entry=>{
+        const listed=files.find(file=>file.path===entry.path&&file.sha===entry.sha);
+        if(!listed)throw Error('This uploaded copy is not in the current snapshot list. Refresh the list first.');
+        return source(await readComparisonSnapshot(config,credential,listed),`${listed.device} upload`,snapshotDate(listed.time),listed.sha);
+      },
+    }:undefined,
+    close:()=>{
+      dispose();view.remove();root.inert=wasInert;comparisonActive=false;document.body.classList.remove('comparison-open');
+      if(conflict)openConflict(conflict);else root.querySelector<HTMLButtonElement>('[data-action="file"]')?.focus();
+      schedulePrivateSync();
+    },
+  });
 }
 function renderStatus(): void {
   updateCalculationState();
@@ -4088,7 +4074,7 @@ document.addEventListener('keydown',e=>{
 document.addEventListener('keydown',e=>{
   if(e.defaultPrevented||e.isComposing||e.keyCode===229)return;
   if(resizing){if(e.key==='Escape'){e.preventDefault();finishResize(false);}return;}
-  if(!book||document.querySelector('dialog[open]:not(.color-picker)'))return;
+  if(!book||comparisonActive||document.querySelector('dialog[open]:not(.color-picker)'))return;
   if(busy)return;
   const target=e.target as HTMLElement,editing=['INPUT','TEXTAREA','SELECT'].includes(target.tagName)||target.isContentEditable;
   if(target.closest('.sheet-tab,.tab-context-menu'))return;
@@ -4124,7 +4110,7 @@ document.addEventListener('keydown',e=>{
 });
 document.addEventListener('paste',e=>{
   const own=e.clipboardData?.getData('application/x-fnt-copy')===clipboardId&&!!copied;
-  if(!book||['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)&&!(own&&emptyDropdownSearch(e.target))||document.querySelector('dialog[open]'))return;
+  if(!book||comparisonActive||['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)&&!(own&&emptyDropdownSearch(e.target))||document.querySelector('dialog[open]'))return;
   const text=e.clipboardData?.getData('text/plain');if(!text)return;e.preventDefault();
   if(!requireRectangle('Paste'))return;
   if(own){closeCellDropdown?.();pasteCells();return;}
@@ -4153,7 +4139,7 @@ document.addEventListener('paste',e=>{
   });
 });
 document.addEventListener('cut',e=>{
-  if(!book||['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)||document.querySelector('dialog[open]'))return;
+  if(!book||comparisonActive||['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)||document.querySelector('dialog[open]'))return;
   if(!commitDraft())return;e.preventDefault();if(!copyCells(true))return;
   e.clipboardData?.setData('application/x-fnt-copy',clipboardId);
   e.clipboardData?.setData('text/plain',copiedText(copied!));

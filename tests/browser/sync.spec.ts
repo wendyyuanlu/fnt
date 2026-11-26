@@ -88,14 +88,14 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
     await expect(page.locator('#save-state')).toHaveText('CONFLICT - both versions in recovery');
     expect((await local(page)).value).toBe(901);expect((await local(second)).value).toBe(902);expect(revision).toBe(before);
     await page.getByRole('button',{name:'Compare versions or a backup',exact:true}).click();
-    await expect(page.locator('#comparison-status')).toContainText('Comparison complete.');
-    await page.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true}).click();
-    await expect(page.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeEnabled();
-    await expect(page.locator('#comparison-status')).toContainText('Comparison complete.');
-    await page.locator('#comparison-search').fill('901');
-    await expect(page.locator('.sync-comparison-table tbody')).toContainText('901');
-    await expect(page.locator('.sync-comparison-table tbody')).toContainText('902');
-    await page.getByRole('button',{name:'Close dialog',exact:true}).click();
+    const comparison=page.frameLocator('iframe.comparison-frame');
+    await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
+    await comparison.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true}).click();
+    await expect(comparison.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeEnabled();
+    await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
+    await expect(comparison.locator('#left-grid')).toContainText('901');
+    await expect(comparison.locator('#right-grid')).toContainText('902');
+    await comparison.getByRole('button',{name:'Back to workbook',exact:true}).click();
     await expect(page.getByRole('dialog',{name:'Sync conflict - choose deliberately',exact:true})).toBeVisible();
     expect(revision).toBe(before);
     await page.reload();await expect(page.locator('#save-state')).toContainText('sign in to resume private sync');
@@ -109,7 +109,7 @@ test('independent browsers auto-sync saved edits, refresh on resume, retain fail
   }finally{await page.context().setOffline(false);await other.close();}
 });
 
-test('backup comparison is local, searchable, paged and never restores or syncs either source',async({page})=>{
+test('visual backup comparison supports choices and changed areas without restoring or syncing either source',async({page})=>{
   let requests=0;page.on('request',request=>{if(request.url().startsWith('https://api.github.com/'))requests++;});
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
   const fixture=await page.evaluate(async()=>{
@@ -126,26 +126,31 @@ test('backup comparison is local, searchable, paged and never restores or syncs 
   await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
   await page.getByRole('button',{name:'Compare copies',exact:true}).click();
-  const dialog=page.getByRole('dialog',{name:'Compare workbooks and backups',exact:true});
-  await expect(dialog.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeVisible();
-  await expect(dialog.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeDisabled();
-  await expect(dialog).toContainText('Configure Private GitHub sync from Recovery first');
-  await expect(page.locator('#comparison-status')).toContainText('Choose a full Fnt backup');
-  await page.locator('#comparison-right').setInputFiles({name:'invented.fnt.json',mimeType:'application/json',buffer:Buffer.from(fixture.contents)});
-  await expect(page.locator('#comparison-status')).toContainText('Comparison complete.');
-  await page.locator('#comparison-search').fill('Backup only');
-  await expect(page.locator('#comparison-page')).toHaveText('60 matching · Page 1 of 2');
-  await expect(page.locator('.sync-comparison-table tbody tr')).toHaveCount(30);
-  await page.locator('#comparison-next').click();await expect(page.locator('.sync-comparison-table tbody')).toContainText('Backup only 60');
-  await page.locator('#comparison-right').setInputFiles({name:'invalid.json',mimeType:'application/json',buffer:Buffer.from('{"bad":true}')});
-  await expect(page.locator('#comparison-error')).toContainText('Backup not loaded; previous comparison retained.');
-  await expect(page.locator('.sync-comparison-table tbody')).toContainText('Backup only 60');
+  const comparison=page.frameLocator('iframe.comparison-frame');
+  await expect(comparison.getByRole('heading',{name:'Compare versions',exact:true})).toBeVisible();
+  await expect(comparison.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeDisabled();
+  await expect(comparison.locator('#totals')).toContainText('Choose a right copy');
+  await comparison.locator('#right-file').setInputFiles({name:'invented.fnt.json',mimeType:'application/json',buffer:Buffer.from(fixture.contents)});
+  await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
+  await expect(comparison.locator('#navigation')).toContainText('Invented comparison');
+  await comparison.locator('[data-category="structure"]').click();
+  await expect(comparison.locator('#right-grid')).toContainText('Backup only 1');
+  const areas=await comparison.locator('#region-picker option').count();
+  for(let area=1;area<areas;area++)await comparison.locator('#next').click();
+  await expect(comparison.locator('#right-grid')).toContainText('Backup only 60');
+  await comparison.locator('#keep-right button').click();
+  await expect(comparison.locator('#selection-progress')).toContainText('1 of');
+  await comparison.locator('#undo-choice').click();
+  await expect(comparison.locator('#selection-progress')).toContainText('0 of');
+  await comparison.locator('#right-file').setInputFiles({name:'invalid.json',mimeType:'application/json',buffer:Buffer.from('{"bad":true}')});
+  await expect(comparison.locator('#error')).toContainText('Neither workbook was changed.');
+  await expect(comparison.locator('#right-grid')).toContainText('Backup only 60');
   expect(await page.evaluate(async()=>{
     const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path),store=await Store.open();
     try{const state=(await store.load())!;return{book:state.book.id,version:state.version};}finally{store.close();}
   })).toEqual({book:fixture.book,version:fixture.version});
   expect(requests).toBe(0);
-  await dialog.getByRole('button',{name:'Close dialog',exact:true}).click();
+  await comparison.getByRole('button',{name:'Back to workbook',exact:true}).click();
 });
 
 test('sync holds a source-edit lock until remote acknowledgment, then restores editing',async({page})=>{
