@@ -15,6 +15,7 @@ test('an older autosave cannot report newer pending edits as saved',async({page}
   const formula=page.locator('#formula');
   await formula.fill('First pending value');await formula.press('Enter');
   await expect(page.locator('html')).toHaveAttribute('data-autosave-pending','1');
+  await page.locator('td[data-r="0"][data-c="0"]').click();
   await formula.fill('Latest pending value');await formula.press('Enter');
   await page.evaluate(()=>{
     const status=document.querySelector('#save-state')!;

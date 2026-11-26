@@ -170,7 +170,8 @@ remain viewable only in history.
   headers to the plain and/or summary groups immediately above or to the left.
   It preserves cells and axis order, inherits group Hypo tagging, and uses
   one Undo step. Table selection confines it to that table's groups.
-- Master has a separate **New day / Food / New day settings** bar. Its saved
+- Master has a separate **Meal log / + Day / + Food** bar; **New day settings**
+  and hypothetical days are in the right-hand + Day split menu. Its saved
   next logging date and Forward/Backward direction are independent of existing
   days; Reset to today changes only the settings draft until Apply. Only a newly
   created real day advances the cursor. New day options creates an immediate,
@@ -180,6 +181,21 @@ remain viewable only in history.
   day date chronologically moves its complete block, preserving identities,
   grouping, notes and overrides. Food and ordinary grid entry remain available
   without a required logging dialog.
+- **Meal log** edits the same Master cells live, using the existing autosave,
+  Undo/Redo, Food dropdown and retained calculations. Desktop uses a 450px
+  side panel; touch uses the space between the app header and sheet tabs, with
+  a keyboard-aware footer and Next field action. Opening follows the selected
+  day/field, or the most recent day if nothing was selected. Today and the
+  calendar open an existing day or create one without advancing the logging
+  cursor. Inline + Food inserts below that food and joins its day summary.
+  Manual Food expands nutrition fields and can add an Ingredients reference:
+  blank amount/unit inherit entered weight and `g`, while completely blank
+  quantities stay blank. This requires the Ingredients serving, conversion
+  and nutrition fields; missing fields or duplicate names produce explicit
+  errors. Field mappings use stable identities across column moves/renames.
+  Logged overrides are not rewritten when adding an ingredient. Returning to a
+  linked Food restores untouched nutrition snapshots from this panel, but keeps
+  explicitly edited nutrition overrides; their calculations remain restorable.
 - **123 > Fraction quantity** accepts `1/2`, `1 1/2`, `1½`, `⅛`, and signed
   fractions. Quantities are numeric for arithmetic, lookups and nutrition
   calculations; the editor retains exactly what you typed. Display uses reduced

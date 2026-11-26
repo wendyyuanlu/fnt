@@ -41,6 +41,8 @@ import {createTextSearch} from './find';
 import {loadPublishedTesting,publishedTestingId,untouchedStarter} from './published';
 import {migrateDropdownData} from './dd-storage';
 import {numericKeyboardFields,numericKeyboardCell} from './touch-keyboard';
+import {addMealIngredient,mealFields,mealLogConfig,mealLogContext,moveMealFood,type MealField} from './meal-log';
+import {mountMealLog,type MealLogView} from './meal-log-ui';
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
@@ -155,6 +157,146 @@ let tableSelectionControl:ReturnType<typeof mountTableSelection>|undefined;
 let stickyTableHeaders:ReturnType<typeof mountStickyTableHeaders>|undefined;
 const toolbarSelection:{ids:Set<string>;anchor?:string}={ids:new Set()};
 let closeCellDropdown:(()=>void)|undefined;
+let mealPanel:ReturnType<typeof mountMealLog>|undefined,mealDay='',mealSheet='',mealSelected=false;
+const mealManual=new Set<string>(),mealIngredients=new Map<string,{table:string;row:string}>();
+const mealCalculated=new Map<string,Map<string,{calculation:string;value:Cell['value']}>>();
+document.addEventListener('pointerdown',event=>{if(event.target instanceof Element&&event.target.closest('#grid-scroll td,#grid-scroll th'))mealSelected=true;},{capture:true});
+function mealView():MealLogView{
+  const s=sheet(),context=mealLogContext(book,s,engine),block=context.blocks.find(block=>block.header===mealDay)??[...context.blocks].sort((a,b)=>(b.date??-1)-(a.date??-1))[0];
+  if(!block)throw Error('Create a day before opening Meal log.');
+  mealDay=block.header;
+  const value=(row:string,field:MealField)=>{
+    const column=context.fields.get(field);if(!column)return'';
+    const cell=getCell(s,row,column.column);
+    const result=cell.formula||cell.binding?scalar(engine.cell(s.id,row,column.column)):cell.value??null;
+    return isFault(result)?result.error:cell.fractionInput??String(result??'');
+  };
+  const totals=(row:string)=>`${value(row,'calories')||'0'} cal · ${value(row,'protein')||'0'}P`;
+  const numeric=numericKeyboardFields(book);
+  return{header:block.header,date:block.date===undefined?'Undated':displayExcelDate(block.date)??'Undated',totals:totals(block.header),undo:!!undo.length,redo:!!redo.length,busy,
+    fields:Object.fromEntries([...context.fields].map(([field,column])=>[field,{name:column.name,numeric:field==='weight'||field==='amount'||numeric.has(`${context.table.id}:${column.id}`)}])),
+    rows:block.rows.slice(1).map(row=>{
+      const food=getCell(s,row,context.fields.get('food')!.column),added=mealIngredients.get(row);
+      return{id:row,values:Object.fromEntries(mealFields.map(field=>[field,value(row,field)])),manual:mealManual.has(row)||!food.binding&&!food.formula&&food.value!==undefined&&food.value!==null&&food.value!=='',
+        added:!!added&&!!allTables(book).find(table=>table.id===added.table)?.rows.includes(added.row),totals:totals(row)};
+    })};
+}
+function selectMealField(row:string,field:MealField,repaint=false):void{
+  const s=sheet(),column=mealLogContext(book,s,engine).fields.get(field);
+  if(!column||!s.rows.some(item=>item.id===row))return;
+  const next={r:s.rows.findIndex(item=>item.id===row),c:s.columns.findIndex(item=>item.id===column.column)},changed=selected.r!==next.r||selected.c!==next.c;
+  selected=next;
+  mealSelected=true;
+  anchor={...selected};selectionKind='cells';extraSelections=[];scrollTarget={row:selected.r,contextRows:0,align:'nearest'};
+  if(repaint||changed)render({preserveViewport:true});else refreshSelection(false);
+}
+function closeMealLog():void{
+  closeCellDropdown?.();mealPanel?.dispose();mealPanel=undefined;document.body.classList.remove('meal-log-open');render({preserveViewport:true});root.querySelector<HTMLElement>('#grid-scroll')?.focus({preventScroll:true});
+}
+function chooseMealDay(date:number):void{
+  const s=sheet();
+  if(mutate('Open meal logging day',()=>{
+    mealDay=createMasterDay(book,s,false,tableSelectionMode,{date,advance:false}).row;
+    const {label}=masterLogging(book,s);selected={r:s.rows.findIndex(row=>row.id===mealDay),c:s.columns.findIndex(column=>column.id===label.column)};anchor={...selected};scrollTarget=selected.r;
+  }))mealPanel?.refresh();
+}
+function addMealFood(after?:string):void{
+  const s=sheet();let row='';
+  if(mutate('Add food',()=>{
+    row=addMasterFood(book,s,mealDay,after?{after}:undefined);
+    const field=masterLogging(book,s).food!;
+    selected={r:s.rows.findIndex(item=>item.id===row),c:s.columns.findIndex(column=>column.id===field.column)};anchor={...selected};selectionKind='cells';extraSelections=[];scrollTarget={row:selected.r,contextRows:0,align:'nearest'};
+  })){mealPanel?.refresh();mealPanel?.reveal(row,'food',true);}
+}
+function openMealCalendar(button:HTMLButtonElement):void{
+  closeCellDropdown?.();
+  const block=mealLogContext(book,sheet(),engine).blocks.find(block=>block.header===mealDay),popup=document.createElement('div'),controller=new AbortController();
+  popup.className='cell-dropdown cell-date-picker';popup.setAttribute('aria-label','Meal log date picker');
+  popup.innerHTML=`<label>Log date<input type="date" aria-label="Log date" min="1900-01-01" max="9999-12-31" value="${esc(block?.date?excelDateText(block.date):'')}"></label><button type="button" class="icon-button group-control summary-chevron" aria-label="Close date picker">${toolbarIcon('close')}</button>`;
+  const close=()=>{controller.abort();popup.remove();if(closeCellDropdown===close)closeCellDropdown=undefined;};closeCellDropdown=close;
+  const position=()=>{const rect=button.getBoundingClientRect(),viewport=visualViewport,top=viewport?.offsetTop??0,height=viewport?.height??innerHeight;popup.style.width=Math.min(336,innerWidth-20)+'px';popup.style.left=Math.max(10,Math.min(rect.left,innerWidth-popup.offsetWidth-10))+'px';popup.style.top=Math.max(top+10,Math.min(rect.bottom+4,top+height-popup.offsetHeight-10))+'px';};
+  popup.querySelector<HTMLInputElement>('input')!.onchange=event=>{
+    const input=event.target as HTMLInputElement,date=parseDateInput(input.value);
+    if(typeof date!=='number'||!input.reportValidity()){flash('Choose a valid log date.');return;}
+    close();chooseMealDay(date);
+  };
+  popup.querySelector<HTMLButtonElement>('button')!.onclick=close;
+  popup.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();close();}event.stopPropagation();};
+  document.body.append(popup);position();
+  document.addEventListener('pointerdown',event=>{if(event.target instanceof Node&&!popup.contains(event.target)&&!button.contains(event.target))close();},{capture:true,signal:controller.signal});
+  window.visualViewport?.addEventListener('resize',position,{signal:controller.signal});
+}
+function openMealLog():void{
+  if(mealPanel){closeMealLog();return;}
+  if(!commitDraft())return;
+  try{
+    const s=sheet(),context=mealLogContext(book,s,engine),row=s.rows[selected.r]?.id;
+    const block=(mealSelected?context.blocks.find(block=>block.rows.includes(row)):undefined)??[...context.blocks].sort((a,b)=>(b.date??-1)-(a.date??-1))[0];
+    if(!block){chooseMealDay(localToday());if(mealLogContext(book,s,engine).blocks.length)openMealLog();return;}
+    mealDay=block.header;mealSheet=s.id;
+    const initialField=mealSelected?[...context.fields].find(([,field])=>field.column===s.columns[selected.c]?.id)?.[0]:undefined;
+    const initialRow=mealSelected&&block.rows.slice(1).includes(row)?row:undefined;
+    const config=mealLogConfig(book,s),collapsed=s.groups.filter(group=>group.axis==='row'&&group.collapsed&&block.rows.some(row=>group.members.includes(row)));
+    if(!mutateMetadata('Remember Meal log field identities',()=>{s.mealLog=config;for(const group of collapsed)group.collapsed=false;},[[...sheetPath(s),'mealLog'],...collapsed.map(group=>[...sheetPath(s),'groups',s.groups.indexOf(group),'collapsed'])],false,false))return;
+    mealPanel=mountMealLog({
+      view:mealView,close:closeMealLog,today:()=>chooseMealDay(localToday()),
+      day:direction=>{const days=[...mealLogContext(book,sheet(),engine).blocks].sort((a,b)=>(a.date??Infinity)-(b.date??Infinity)),at=days.findIndex(block=>block.header===mealDay),next=days[at+direction];if(next){mealDay=next.header;selectMealField(next.header,'food',true);}},
+      date:openMealCalendar,select:selectMealField,
+      write:(row,field,text)=>{
+        const s=sheet(),column=mealLogContext(book,s,engine).fields.get(field);
+        if(!column){flash('This Meal log field was removed. Restore it before editing.');return false;}
+        const cell=getCell(s,row,column.column),value=cell.formula||cell.binding?scalar(engine.cell(s.id,row,column.column)):cell.value??null;
+        if(text===(cell.fractionInput??(isFault(value)?value.error:String(value??''))))return true;
+        const ok=mutateCell(s,row,column.column,()=>writeGridCell(book,s,row,column.column,text,field==='food'||field==='unit'));
+        if(ok)mealPanel?.refresh();return ok;
+      },
+      dropdown:(row,field,anchor)=>{
+        selectMealField(row,field);
+        openCellDropdown(anchor,true,undefined,{row,column:mealLogContext(book,sheet(),engine).fields.get(field)!.column,
+          manual:()=>{
+            const s=sheet(),context=mealLogContext(book,s,engine),food=context.fields.get('food')!;
+            const calculated=new Map<string,{calculation:string;value:Cell['value']}>();
+            if(mutate('Use manual food input',()=>{
+              if(field==='food'){
+                const value=scalar(engine.cell(s.id,row,food.column));
+                for(const metric of mealFields.slice(1,7)){
+                  const column=context.fields.get(metric);if(!column)continue;
+                  const current=getCell(s,row,column.column);
+                  if(current.formula){
+                    const result=scalar(engine.cell(s.id,row,column.column));
+                    if(isFault(result))throw Error(`Fix the ${column.name} error before using manual nutrition.`);
+                    writeGridCell(book,s,row,column.column,value===null||value===''?'':String(result??''));
+                    calculated.set(column.column,{calculation:JSON.stringify(current.formula),value:getCell(s,row,column.column).value});
+                  }
+                }
+                writeGridCell(book,s,row,food.column,String(value??''),true);
+              }
+            })){if(field==='food'){mealManual.add(row);if(calculated.size)mealCalculated.set(row,calculated);}mealPanel?.refresh();mealPanel?.reveal(row,field,true);}
+          },linked:()=>{
+            if(field!=='food')return;
+            for(const [column,snapshot]of mealCalculated.get(row)??[]){
+              const s=sheet(),current=getCell(s,row,column);
+              if(current.calculation&&!current.formula&&!current.binding&&JSON.stringify(current.calculation)===snapshot.calculation&&current.value===snapshot.value)restoreCalculation(book,s,row,column,current.calculation);
+            }
+          },chosen:()=>{if(field==='food')mealManual.delete(row);mealPanel?.refresh();mealPanel?.reveal(row,field,true);}
+        });
+      },
+      add:addMealFood,move:(row,direction)=>{if(mutate('Move logged food',()=>moveMealFood(book,sheet(),row,direction))){mealPanel?.refresh();mealPanel?.reveal(row);}},
+      remove:row=>{mutate('Delete logged food',()=>{
+        const s=sheet(),context=mealLogContext(book,s,engine);
+        if(!context.blocks.find(block=>block.header===mealDay)?.rows.slice(1).includes(row))throw Error('This food no longer belongs to the selected day.');
+        if(allTables(book).some(table=>table.sheet===s.id&&table.id!==context.table.id&&[table.header,...table.rows].includes(row)))throw Error('This row also belongs to another table. Delete its table cells in the spreadsheet instead.');
+        if(s.groups.some(group=>group.axis==='row'&&group.kind==='summary'&&group.members[0]===row))throw Error('Remove this nested food summary in the spreadsheet instead.');
+        deleteRows(book,s,[row]);
+      });},
+      ingredient:row=>{let added:{table:string;row:string}|undefined;if(mutate('Add logged food to Ingredients',()=>{added=addMealIngredient(book,sheet(),row);})){mealIngredients.set(row,added!);mealPanel?.refresh();}},
+      history:name=>{void action(name);},error:e=>{mealPanel?.dispose();mealPanel=undefined;document.body.classList.remove('meal-log-open');flash(e);}
+    });
+    document.body.classList.add('meal-log-open');
+    selectMealField(block.header,'food');render({preserveViewport:true});mealPanel.refresh();
+    if(initialRow)mealPanel.reveal(initialRow,initialField,!!initialField);
+  }catch(error){flash(error);}
+}
 let groupControls:ReturnType<typeof mountGroupControls>|undefined,groupMenuOpen=false,groupMenuSheet='';
 let groupManager:{refresh:()=>void;paint:()=>void;close:()=>void}|undefined;
 let expandedEditor:{input:HTMLTextAreaElement;controller:AbortController;position:()=>void}|undefined;
@@ -263,6 +405,7 @@ function openPageSettings():void{
 }
 function openDaySettings():void{
   if(referenceId||!isMasterSheet(book,sheet()))return;
+  const menu=root.querySelector<HTMLDetailsElement>('.day-create details');if(menu)menu.open=false;
   const s=sheet();
   let context:ReturnType<typeof masterLogging>;
   try{context=masterLogging(book,s);}catch(error){flash(error);return;}
@@ -986,6 +1129,7 @@ function renderStatus(): void {
     tag.dataset.shortcutLabel=`${all?'Remove':'Add'} ${label} tag`;
     tag.title=mixed?`Add ${label} to the selection (mixed tags)`:`${all?'Remove':'Add'} ${label} tag`;
   }
+  mealPanel?.refresh();
 }
 function categoryTabHtml(kind:'sheet'|'reference',group:string,label:string,expanded:boolean,source?:ReferenceSource):string{
   return`<button type="button" class="sheet-tab tab-category${source?.archived?' archived':''}" data-${kind}-group="${esc(group)}"${source?` data-reference="${source.id}"`:''} aria-expanded="${expanded}">${esc(label)}<span class="category-chevron">${dropdownArrowHtml}</span></button>`;
@@ -1011,6 +1155,7 @@ function workbookTabsHtml():string{
 }
 let captureViewport:(()=>{row:string;index:number;offset:number}|undefined)|undefined;
 function render(options?:{preserveViewport:boolean}): void {
+  const mealFocus=!!mealPanel&&document.activeElement instanceof HTMLInputElement&&mealPanel.element.contains(document.activeElement);
   const restoreTouchFocus=!!touchCell&&document.activeElement?.id==='formula';
   hideTouchEditor();
   if(touchInputDevice)rememberTouchNumericFields();
@@ -1037,6 +1182,7 @@ function render(options?:{preserveViewport:boolean}): void {
   const view=gridReference();
   if(view?.sheet)sheetId=view.sheet.id;
   const s = sheet();
+  if(mealPanel&&(referenceId||s.id!==mealSheet||!isMasterSheet(book,s))){mealPanel.dispose();mealPanel=undefined;document.body.classList.remove('meal-log-open');}
   if (!s.rows.length || !s.columns.length) return;
   const pageConfig=pagination();calendarPlan=undefined;calendarRows=undefined;calendarTail=[];masterLandingScroll=undefined;
   if(pageConfig?.mode==='calendar'){
@@ -1198,7 +1344,8 @@ function render(options?:{preserveViewport:boolean}): void {
       ${referenceId?'':`<div class="tool-set"><button class="icon-button" data-action="convert-table" aria-label="Convert to table" title="Create a table, or join selected rows/columns to their surrounding table">${toolbarIcon('convert-table')}</button><button class="icon-button" data-action="move-to-top" data-toolbar-before="action:tables" aria-label="Move to top" title="Move selected rows or a summary group below the table header">${toolbarIcon('move-to-top')}</button><button class="icon-button" data-action="tables" aria-label="Table manager" title="Table manager; rename the table containing the selected cell">${toolbarIcon('tables')}</button><button data-action="block">Meal / day</button></div>`}
       <div class="tool-set toolbar-layout-controls"><button class="icon-button" data-action="toolbar-layout" aria-label="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar'}" aria-pressed="${arrangingToolbar}" title="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar: drag tools or use Alt+Left/Right'}">${toolbarIcon('toolbar-layout')}</button></div>
     </nav>
-    ${master?`<nav class="master-toolbar" aria-label="Master logging"><div class="day-create"><button id="new-day" class="primary" data-action="new-day">New day</button><details><summary aria-label="New day options">${dropdownArrowHtml}</summary><div class="day-kind-menu"><button data-action="new-hypothetical-day">New hypothetical day</button></div></details></div><button id="add-food" data-action="add-food">Food</button><button id="date-settings" class="next" data-action="date-settings">New day settings</button></nav>`:''}
+    ${master?`<nav class="master-toolbar" aria-label="Master logging"><button id="meal-log" class="icon-button group-control summary-chevron outline-text" data-action="meal-log" aria-pressed="${!!mealPanel}">Meal log</button><div class="day-create"><button id="new-day" class="icon-button group-control summary-chevron outline-text" data-action="new-day">+ Day</button><details><summary aria-label="New day options"><span class="format-caret">${dropdownArrowHtml}</span></summary><div class="day-kind-menu"><button data-action="new-hypothetical-day">New hypothetical day</button><button id="date-settings" data-action="date-settings">New day settings</button></div></details></div><button id="add-food" class="icon-button group-control summary-chevron outline-text" data-action="add-food">+ Food</button></nav>`:''}
+    <div class="meal-log-workspace"><div class="meal-log-slot"></div><div class="meal-log-spreadsheet">
     <form class="formula-bar" id="formula-form"><span class="address">${letters(selected.c)}${selected.r+1}</span><span class="fx">fx</span><input id="formula" aria-label="Cell value or formula" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(draft??inputText(current()))}"><button type="button" class="touch-keyboard-toggle" aria-label="Use full keyboard" hidden>ABC</button><button type="button" class="icon-button touch-dropdown-toggle" aria-label="Show cell choices" aria-expanded="false" hidden><span class="format-caret">${dropdownArrowHtml}</span></button><span id="calculation-state"></span></form>
     ${view&&(view.error||referenceNotice)?`<div class="reference-notice" id="reference-notice" role="${view.error?'alert':'status'}">${esc(view.error||referenceNotice)}</div>`:''}
     <div class="grid-shell"><div id="grid-scroll" class="grid-scroll" tabindex="0" aria-label="Spreadsheet, use arrow keys to navigate">
@@ -1206,7 +1353,8 @@ function render(options?:{preserveViewport:boolean}): void {
     <thead><tr><th class="corner"><div class="table-selection-control" role="group" aria-label="Table selection"><button type="button" data-action="table-selection" aria-label="Table-constrained header selection" aria-pressed="${tableSelectionMode}"></button><button type="button" id="table-selection-target" aria-label="Table selection target"></button></div><button class="boundary-control first-column" data-insert-column="0" aria-label="Insert column before A">+</button></th>${columns.map(c=>`<th data-col="${c.i}" style="${pinnedStyle(c.id,true)}" class="${c.i>=b.c1&&c.i<=b.c2?'column-selected ':''}${movingColumns?'move-target':''}" title="Double-click to rename column"><span class="column-index">${letters(c.i)}</span><span>${esc(t?.columns.find(x=>x.column===c.id)?.name??c.label)}</span><button class="move-control" data-move-column="${c.i}" draggable="true" aria-label="Move selected columns" title="Drag, or tap then tap a destination boundary">${grip(true)}</button><button class="boundary-control" data-insert-column="${c.i+1}" aria-label="${movingColumns?'Move columns':'Insert column'} after ${letters(c.i)}">+</button><button class="resize-edge resize-column" data-resize-column="${c.i}" aria-label="Resize column ${letters(c.i)}" title="Drag to resize; double-click to fit"></button></th>`).join('')}</tr></thead>
     <tbody></tbody></table></div></div>
     <div class="grid-footer"><div><button class="selection-count" data-action="range" title="Select a cell range, including on mobile">${selectionCount(selectedRanges)} cells</button><span id="selection-scope-label"></span></div><div class="navigator">${referenceId?'':`<button data-action="page-mode" aria-pressed="${pageConfig?.mode==='calendar'}" title="Switch between one page and calendar date pages">${pageConfig?.mode==='calendar'?datePagesIcon:onePageIcon}<span>${pageConfig?.mode==='calendar'?'Date pages':'One page'}</span></button>`}${calendarPlan?`<button data-action="top" aria-label="Jump to top">${navigationIcon('up')} Top</button><button data-action="bottom" aria-label="Jump to bottom">${navigationIcon('down')} Bottom</button><button data-action="newest-date-page" aria-label="Newest date page" title="Newest date page" ${datePage===0&&!master?'disabled':''}>${navigationIcon('newest')}</button><button data-action="prev" aria-label="Newer dates" title="Newer dates">${navigationIcon('previous')}</button><button class="date-page-label" data-action="date-range" aria-label="Choose date page" title="${datePage===calendarPlan.pages.length?'Choose a dated page':`Page ${datePage+1} of ${calendarPlan.pages.length} — choose a date`}" ${calendarPlan.ranges.length?'':'disabled'}>${datePage===calendarPlan.pages.length?'Undated':`${displayExcelDate(calendarPlan.ranges[datePage].start)}–${displayExcelDate(calendarPlan.ranges[datePage].end)}`}</button><button data-action="next" aria-label="Older dates" title="Older dates">${navigationIcon('next')}</button>${calendarPlan.unassigned.length&&datePage!==calendarPlan.pages.length?`<button data-action="unassigned-date-rows" title="Records without assigned dates">Undated (${calendarPlan.unassigned.length})</button>`:''}`:`<button data-action="top" aria-label="Jump to top">${navigationIcon('up')} Top</button><button data-action="bottom">${navigationIcon('down')} Bottom</button><button data-action="prev" aria-label="Previous rows">${navigationIcon('previous')}</button><input id="row-jump" type="number" min="1" max="${s.rows.length}" aria-label="Jump to row"><span>/ ${s.rows.length}</span><button data-action="next" aria-label="Next rows">${navigationIcon('next')}</button>`}</div></div>
-    <footer class="sheet-bar" aria-label="${referenceId?'Dropdown sources':'Workbook sheets'}">${referenceId?referenceTabsHtml():workbookTabsHtml()}<div class="tab-actions"><button type="button" data-action="${referenceId?'reference-settings':'sheet-settings'}" title="${referenceId?'Dropdown settings':'Sheet settings'}" aria-label="${referenceId?'Dropdown settings':'Sheet settings'}">${toolbarIcon('settings')}</button></div><button class="reference-manager" data-action="references" title="Dropdown sources" aria-label="DD">${toolbarIcon('references')}</button></footer>`;
+    </div></div><footer class="sheet-bar" aria-label="${referenceId?'Dropdown sources':'Workbook sheets'}">${referenceId?referenceTabsHtml():workbookTabsHtml()}<div class="tab-actions"><button type="button" data-action="${referenceId?'reference-settings':'sheet-settings'}" title="${referenceId?'Dropdown settings':'Sheet settings'}" aria-label="${referenceId?'Dropdown settings':'Sheet settings'}">${toolbarIcon('settings')}</button></div><button class="reference-manager" data-action="references" title="Dropdown sources" aria-label="DD">${toolbarIcon('references')}</button></footer>`;
+  if(mealPanel){root.querySelector('.meal-log-slot')!.append(mealPanel.element);mealPanel.refresh();}
   const grid=root.querySelector<HTMLElement>('#grid-scroll')!,body=grid.querySelector('tbody')!;
   captureViewport=()=>{const at=layout.at(grid.scrollTop),row=rows[at];return row?{row:row.id,index:row.i,offset:grid.scrollTop-layout.offsets[at]}:undefined;};
   grid.dataset.firstRow=String(rows[0]?.i??0);grid.dataset.firstColumn=String(columns[0]?.i??0);
@@ -1307,6 +1455,7 @@ function render(options?:{preserveViewport:boolean}): void {
   groupControls?.positionMenu();
   rememberView();
   primeSearchValues();
+  if(mealFocus)mealPanel?.restoreFocus();
 }
 function safeLink(value: string): boolean {
   try { return ['https:','http:','mailto:'].includes(new URL(value).protocol); } catch { return false; }
@@ -1463,14 +1612,14 @@ function writeLinkedCell(s:Sheet,row:string,column:string,binding:NonNullable<Ce
   const previous=getCell(s,row,column);
   s.cells[key(row,column)]={...previous,value:undefined,formula:undefined,original:undefined,calculation:previous.formula??previous.calculation,binding};
 }
-function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
+function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{row:string;column:string;manual:()=>void;linked?:()=>void;chosen:()=>void}):void{
   closeCellDropdown?.();
-  if(busy||!editableReference()||!inGrid(selected.r,selected.c))return;
-  const s=sheet(),row=s.rows[selected.r].id,column=s.columns[selected.c].id,validation=cellValidation(s,row,column);
+  if(busy||!editableReference()||!external&&!inGrid(selected.r,selected.c))return;
+  const s=sheet(),row=external?.row??s.rows[selected.r].id,column=external?.column??s.columns[selected.c].id,validation=cellValidation(s,row,column);
   cell??=root.querySelector<HTMLElement>(`td[data-r="${selected.r}"][data-c="${selected.c}"]`)??undefined;
-  if(!validation||!cell)return;
-  if(touchInputDevice&&!touchCell&&!beginTouchEdit())return;
-  const sharedInput=touchCell?root.querySelector<HTMLInputElement>('#formula')!:undefined;
+  if(!validation||!cell){if(external)flash('No dropdown is assigned to this field. Assign its DD in the spreadsheet; typed input is still available.');return;}
+  if(!external&&touchInputDevice&&!touchCell&&!beginTouchEdit())return;
+  const sharedInput=!external&&touchCell?root.querySelector<HTMLInputElement>('#formula')!:undefined;
   if(!sharedInput&&!commitDraft())return;
   const preferenceKey=`default:${s.id}:${column}`,listKey=`list:${s.id}:${column}`,previous=getCell(s,row,column);
   if(!force&&book.pickerSources[preferenceKey]==='manual'&&!previous.binding&&!previous.formula&&(previous.value===undefined||previous.value===null||previous.value==='')){
@@ -1504,6 +1653,11 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
     const manual=popup.querySelector<HTMLButtonElement>('.dropdown-manual-action')!,options=groups.map(g=>({id:g.id,name:g.name==='Dropdown'?'Options':g.name}));
     const position=()=>{
       if(!popup.isConnected)return;
+      if(external){
+        const rect=cell!.getBoundingClientRect(),viewport=visualViewport,top=viewport?.offsetTop??0,height=viewport?.height??innerHeight;
+        popup.style.width=Math.min(450,innerWidth-20)+'px';popup.style.maxHeight=Math.min(360,height-20)+'px';
+        popup.style.left=Math.max(10,Math.min(rect.left,innerWidth-popup.offsetWidth-10))+'px';popup.style.top=Math.max(top+10,Math.min(rect.bottom+4,top+height-popup.offsetHeight-10))+'px';return;
+      }
       if(sharedInput){
         if(!touchTargetSelected()){close();return;}
         const viewport=window.visualViewport,left=viewport?.offsetLeft??0,top=viewport?.offsetTop??0,width=viewport?.width??innerWidth;
@@ -1525,11 +1679,11 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
       close();
       const ok=mutate('Choose dropdown option',()=>{
         if(!s.rows.some(r=>r.id===row)||!s.columns.some(c=>c.id===column)||cellValidation(s,row,column)?.id!==validation.id)throw Error('The dropdown target changed. Open it again.');
-        if(choice.binding)writeLinkedCell(s,row,column,choice.binding);
+        if(choice.binding){writeLinkedCell(s,row,column,choice.binding);external?.linked?.();}
         else writeGridCell(book,s,row,column,String(choice.raw??''),typeof choice.raw==='string');
       });
       if(!ok&&sharedInput&&previousDraft!==undefined){syncDraft(previousDraft,true,previousLiteral);return;}
-      root.querySelector<HTMLElement>('#grid-scroll')?.focus({preventScroll:true});
+      if(ok&&external)external.chosen();else if(!external)root.querySelector<HTMLElement>('#grid-scroll')?.focus({preventScroll:true});
     };
     const draw=()=>{
       tabs.replaceChildren();
@@ -1549,7 +1703,7 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string):void{
         const mounted=mountDropdownOptions(panel,{choices:group.choices,value:choice=>choice.value,name:group.name,choose,position,sharedInput,initialQuery:sharedInput?query??draft??'':undefined,empty:'No available options. Edit the source DD.',
           selected:choice=>{const previous=getCell(s,row,column);return!!choice.binding&&previous.binding?.table===choice.binding.table&&previous.binding?.row===choice.binding.row&&previous.binding?.column===choice.binding.column;}});
         disposeOptions=mounted.dispose;if(sharedInput)mounted.list.id='touch-cell-options';
-        manual.onclick=()=>{remember('manual');close();syncDraft(sharedInput?(draft??inputText(current())):cellText(current(),s,selected.r,selected.c),true,true);};
+        manual.onclick=()=>{remember('manual');close();if(external){external.manual();return;}syncDraft(sharedInput?(draft??inputText(current())):cellText(current(),s,selected.r,selected.c),true,true);};
       }
       position();
     };
@@ -2181,6 +2335,7 @@ async function action(name:string):Promise<void> {
   if(['select-all','range','top','bottom','next','prev','undo','redo'].includes(name)){extraSelections=[];if(!['range','undo','redo'].includes(name))selectionScope=undefined;}
   if(referenceId&&!editableReference()&&!['back-workbook','reference-settings','references','new-reference','copy','save','file','find','hypothetical-settings','undo','redo','range','top','bottom','next','prev','dropdown-source','table-selection'].includes(name)){flash('This is a read-only live list. Edit its source table or change its connection.');return;}
   switch(name) {
+    case 'meal-log':openMealLog();break;
     case 'table-selection':
       tableSelectionMode=!tableSelectionMode;
       selectionScope=undefined;extendHeaderSelection=false;extraSelections=[];selectionKind='cells';anchor={...selected};movingRows=movingColumns=undefined;clearMovePreview();
@@ -2283,6 +2438,7 @@ async function action(name:string):Promise<void> {
     }
     case 'add-food':{
       if(!isMasterSheet(book,sheet())||referenceId)break;
+      if(mealPanel){addMealFood();break;}
       const s=sheet();
       if(mutate('Add food',()=>{
         const row=addMasterFood(book,s,s.rows[selected.r]?.id),field=masterLogging(book,s).food!;

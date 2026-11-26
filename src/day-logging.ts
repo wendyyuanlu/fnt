@@ -29,8 +29,9 @@ export function masterLogging(book:Workbook,sheet:Sheet){
   validateDayLogging(config);
   return{table,date,marker,label,food,config};
 }
-export function masterDayBlocks(book:Workbook,sheet:Sheet){
-  const context=masterLogging(book,sheet),engine=new Engine(book),blocks:{header:string;rows:string[];date?:number;isDay:boolean}[]=[];
+export function masterDayBlocks(book:Workbook,sheet:Sheet,engine=new Engine(book)){
+  if(engine.book!==book)throw Error('Day calculation engine belongs to a different workbook.');
+  const context=masterLogging(book,sheet),blocks:{header:string;rows:string[];date?:number;isDay:boolean}[]=[];
   for(const row of context.table.rows){
     const flag=scalar(engine.cell(sheet.id,row,context.marker.column));
     if(isFault(flag))throw Error('A Master day marker has an error. Fix it before changing day organization.');
@@ -132,17 +133,20 @@ export function createMasterDay(book:Workbook,sheet:Sheet,hypothetical=false,tab
   sortMasterDays(book,sheet);
   return{row:header.id,created:true};
 }
-export function addMasterFood(book:Workbook,sheet:Sheet,selectedRow?:string):string{
+export function addMasterFood(book:Workbook,sheet:Sheet,selectedRow?:string,options?:{after:string}):string{
   const {table,date,marker,food,config}=masterLogging(book,sheet);
   if(!food)throw Error('Restore the Master Food field before adding food.');
   const blocks=masterDayBlocks(book,sheet),block=blocks.find(block=>block.isDay&&block.rows.includes(selectedRow??''))??blocks.filter(block=>block.isDay&&block.date!==undefined).sort((a,b)=>b.date!-a.date!)[0];
   if(!block)throw Error('Create or select a day before adding food.');
   if(sheet.rows.length>=100000)throw Error('This sheet has reached its row limit.');
-  const at=sheet.rows.findIndex(row=>row.id===block.rows.at(-1))+1,templates=new Set(blocks.flatMap(block=>block.rows.slice(block.isDay?1:0)));
+  if(options&&!block.rows.slice(1).includes(options.after))throw Error('Choose a food in this day before inserting below it.');
+  const at=sheet.rows.findIndex(row=>row.id===(options?.after??block.rows.at(-1)))+1,templates=new Set(blocks.flatMap(block=>block.rows.slice(block.isDay?1:0)));
   const row=addRow(book,sheet,at,table);
   inheritFood(book,sheet,row.id,templates);
   if(!getCell(sheet,row.id,marker.column).formula)setInput(book,sheet,row.id,marker.column,'FALSE');
   foodDate(sheet,row.id,date.column,block.header,table.id);attachFood(sheet,table.id,block,row.id);
+  const positions=new Map(sheet.rows.map((row,i)=>[row.id,i]));
+  for(const group of sheet.groups)if(group.axis==='row'&&group.members.includes(block.header))group.members.sort((a,b)=>positions.get(a)!-positions.get(b)!);
   sheet.dayLogging??={...config,totals:[...config.totals]};
   return row.id;
 }

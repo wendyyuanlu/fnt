@@ -3,6 +3,7 @@ import { compressArchive, decompressArchive, stringifyArchive } from './archive'
 import {validateHypotheticalStyle} from './hypothetical';
 import {applyUndo,type History,type UndoHistory} from './undo-history';
 import {githubFormDefaults,withPrivateGitHub} from './github-client';
+import {validateMealLog} from './meal-log';
 
 export interface Pending { id: string; label: string; time: string }
 export interface SyncConfig { owner: string; repo: string; branch: string; path: string }
@@ -180,6 +181,7 @@ function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook
     if(s.outlineView!==undefined&&(!s.outlineView||typeof s.outlineView!=='object'||Array.isArray(s.outlineView)||Object.entries(s.outlineView).some(([k,v])=>!['tree','plainGroupHints'].includes(k)||typeof v!=='boolean')))throw Error('Invalid sheet outline preferences.');
     if(s.pagination!==undefined)validatePagination(s.pagination);
     if(s.dayLogging!==undefined)validateDayLogging(s.dayLogging);
+    if(s.mealLog!==undefined)validateMealLog(s.mealLog);
     s.rows.forEach(r => id(r.id)); s.columns.forEach(c => id(c.id));
     if([...s.rows,...s.columns].some(item=>item.hypothetical!==undefined&&typeof item.hypothetical!=='boolean'))throw Error('Invalid hypothetical tag.');
     for(const item of [...s.rows,...s.columns])if(item.hypotheticalTables!==undefined&&(!item.hypotheticalTables||typeof item.hypotheticalTables!=='object'||Array.isArray(item.hypotheticalTables)||Object.entries(item.hypotheticalTables).some(([table,value])=>!safeId(table)||typeof value!=='boolean')))throw Error('Invalid table hypo tag.');

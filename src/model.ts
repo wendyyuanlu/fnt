@@ -59,6 +59,7 @@ export interface Sheet {
   outlineView?:{tree?:boolean;plainGroupHints?:boolean};
   pagination?:import('./date-pagination').DatePagination;
   dayLogging?:import('./day-logging').DayLogging;
+  mealLog?:import('./meal-log').MealLogConfig;
 }
 export interface ReferenceSource {
   id:string;name:string;kind:'list'|'units'|'conversions'|'derived';table?:string;column?:string;
