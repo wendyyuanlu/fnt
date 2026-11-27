@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import {addMasterFood,masterLogging,masterDayBlocks} from '../src/day-logging';
 import {Engine,scalar} from '../src/formula';
-import {addMealIngredient,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealLogConfig,mealLogContext,moveMealFood} from '../src/meal-log';
+import {addMealIngredient,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealLogConfig,mealLogContext,moveMealFood,refreshMealIngredientCalculations} from '../src/meal-log';
 import {addTableColumns,blankSheet,clone,createDemo,getCell,moveColumns,renameColumn,setInput} from '../src/model';
 import {applyUndo,structuralUndo} from '../src/undo-history';
 import {validationChoiceGroups} from '../src/references';
@@ -79,6 +79,34 @@ it('rolls back empty literals and invalid Weight formulas without poisoning day 
   editMealDayWeight(book,sheet,header,'=60+8',engine);
   expect(scalar(engine.cell(sheet.id,header,table.columns[1].column))).toBe(68);
   expect(masterDayBlocks(book,sheet,engine)).toEqual(blocks);validateBook(book);
+});
+it('fills blank linked nutrition including zero and retargets only its own calculations when Food changes',()=>{
+  const {book,sheet,input}=fixture(),row=sheet.rows[3].id;
+  for(let column=4;column<10;column++){input(2,column,'0');input(3,column,'');}
+  input(2,10,'25');input(2,11,'1');input(2,12,'each');
+  const first=addMealIngredient(book,sheet,sheet.rows[2].id);
+  for(const [index,value]of [70,1,2,12,6,10].entries())input(5,index+4,String(value));
+  input(5,10,'25');input(5,11,'1');input(5,12,'each');
+  const second=addMealIngredient(book,sheet,sheet.rows[5].id);
+  const context=mealLogContext(book,sheet),food=context.fields.get('food')!.column;
+  const label=book.tables.find(table=>table.id===first.table)!.columns.find(column=>column.name==='Ingredients')!.id;
+  input(3,11,'2');input(3,12,'each');
+  sheet.cells[`${row}:${food}`]={binding:{...first,column:label}};
+  refreshMealIngredientCalculations(book,sheet,row,context);
+  const read=()=>[4,5,6,7,8,9].map(column=>scalar(new Engine(book).cell(sheet.id,row,sheet.columns[column].id)));
+  expect(read()).toEqual([0,0,0,0,0,0]);
+  const protein=`${row}:${context.fields.get('protein')!.column}`,retained=sheet.cells[protein].formula!;
+  sheet.cells[protein]={value:999,calculation:retained};
+  input(3,7,'=11');
+  const custom=getCell(sheet,row,context.fields.get('carbs')!.column).formula;
+  sheet.cells[`${row}:${food}`]={binding:{...second,column:label}};
+  refreshMealIngredientCalculations(book,sheet,row,context);
+  expect(read()).toEqual([140,999,4,11,12,20]);
+  expect(sheet.cells[protein].calculation).not.toEqual(retained);
+  expect(getCell(sheet,row,context.fields.get('carbs')!.column).formula).toEqual(custom);
+  expect(getCell(sheet,row,context.fields.get('amount')!.column).value).toBe(2);
+  expect(getCell(sheet,row,context.fields.get('unit')!.column).value).toBe('each');
+  validateBook(book);
 });
 it('copies manual nutrition to Ingredients, links the Food cell, and reverses the whole action with Undo',()=>{
   const {book,sheet,input}=fixture();input(2,10,'300');

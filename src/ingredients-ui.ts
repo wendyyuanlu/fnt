@@ -70,10 +70,19 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
   const draw=()=>{
     const book=host.book(),query=search.value.trim().toLocaleLowerCase();
     const matches=records().filter(item=>(filter!=='missing'||item.missing.length)&&(!query||item.values.food?.toLocaleLowerCase().includes(query)));
+    const focused=document.activeElement;
+    const focusedControl=host.table&&(focused instanceof HTMLInputElement||focused instanceof HTMLButtonElement&&focused.hasAttribute('data-ingredient-type'))?focused:undefined;
+    const focusedCard=focusedControl?.closest<HTMLElement>('[data-ingredient-key]');
+    const focus=focusedControl&&focusedCard&&list.contains(focusedCard)?{key:focusedCard.dataset.ingredientKey!,
+      selector:focusedControl instanceof HTMLInputElement?`[data-field="${focusedControl.dataset.field}"]`:'[data-ingredient-type]',
+      selection:focusedControl instanceof HTMLInputElement&&focusedControl.selectionStart!==null?{start:focusedControl.selectionStart,end:focusedControl.selectionEnd,direction:focusedControl.selectionDirection}:undefined}:undefined;
+    let redrawn=false;
     page=Math.min(page,Math.max(0,Math.ceil(matches.length/20)-1));
     let start=page*20,end=(page+1)*20;
     if(host.table){
-      const at=layout.at(list.scrollTop),anchor=ordered[at],offset=list.scrollTop-(layout.offsets[at]??0);
+      const focusedAt=focus?ordered.indexOf(focus.key):-1;
+      const at=focusedAt>=0&&layout.offsets[focusedAt]<list.scrollTop+list.clientHeight&&layout.offsets[focusedAt+1]>list.scrollTop?focusedAt:layout.at(list.scrollTop);
+      const anchor=ordered[at],offset=list.scrollTop-(layout.offsets[at]??0);
       ordered=matches.map(item=>ingredientKey({table:item.table.id,row:item.row}));
       layout=new RowViewport(ordered.map(key=>heights.get(key)??530));
       const next=anchor?ordered.indexOf(anchor):-1;
@@ -82,8 +91,8 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
     }
     const visible=matches.slice(start,end),nextShape=JSON.stringify([filter,query,start,end,visible.map(item=>[item.table.id,item.row,Object.keys(item.mapping.fields)])]);
     if(shape!==nextShape){
-      const focused=document.activeElement;
       if(host.table&&focused instanceof HTMLInputElement&&list.contains(focused)&&!visible.some(item=>ingredientKey({table:item.table.id,row:item.row})===focused.closest<HTMLElement>('[data-ingredient-key]')?.dataset.ingredientKey))focused.blur();
+      redrawn=true;
       shape=nextShape;resize.disconnect();for(const panel of photoPanels)panel.dispose();photoPanels.length=0;
       list.innerHTML=visible.map(item=>{
         const key=ingredientKey({table:item.table.id,row:item.row});
@@ -126,6 +135,11 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
     }else{
       element.querySelector<HTMLButtonElement>('[data-page="-1"]')!.disabled=page===0;
       element.querySelector<HTMLButtonElement>('[data-page="1"]')!.disabled=(page+1)*20>=matches.length;
+    }
+    if(redrawn&&focus){
+      const control=list.querySelector<HTMLInputElement|HTMLButtonElement>(`[data-ingredient-key="${focus.key}"] ${focus.selector}`);
+      control?.focus({preventScroll:true});
+      if(control instanceof HTMLInputElement&&focus.selection)control.setSelectionRange(focus.selection.start,focus.selection.end,focus.selection.direction??undefined);
     }
   };
   const refresh=()=>{if(refreshing)return;refreshing=true;try{draw();}finally{refreshing=false;}};

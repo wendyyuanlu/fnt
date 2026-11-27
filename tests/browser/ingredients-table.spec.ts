@@ -62,6 +62,9 @@ test('TABLE creates actual rows, uses shared Type choices, and preserves real ed
   await expect.poll(async()=>(await local(page)).sheets[0].cells[key(row,f.columns[0].column)]?.value).toBe('New synthetic source');
   const card=f.panel.locator(`[data-row="${row}"]`);
   await card.getByRole('button',{name:'Choose Ingredient Type',exact:true}).click();
+  await page.locator('.cell-dropdown input').press('Escape');
+  await expect(card.getByRole('button',{name:'Choose Ingredient Type',exact:true})).toBeFocused();
+  await card.getByRole('button',{name:'Choose Ingredient Type',exact:true}).click();
   await page.getByRole('option',{name:'Premade',exact:true}).click();
   await expect(card.getByRole('textbox',{name:'Ingredient Type',exact:true})).toHaveValue('Premade');
   await f.panel.getByRole('button',{name:'Undo',exact:true}).click();
@@ -99,10 +102,19 @@ test('TABLE preserves unfinished source edits through reload and shares explicit
 });
 test('TABLE commits the active field on manual Save and Escape without losing focus or source edits',async({page})=>{
   const f=await install(page),row=f.table.rows.at(-1)!,input=f.panel.locator(`[data-row="${row}"] [data-field="food"]`);
-  await input.fill('Saved active source');await page.keyboard.press('Control+s');
+  await input.fill('Saved');
+  for(const character of ' active source'){
+    await page.keyboard.type(character);
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+    await expect(input).toBeFocused();
+  }
+  await expect(input).toHaveValue('Saved active source');
+  await input.evaluate((element:HTMLInputElement)=>element.setSelectionRange(4,9));
+  await page.keyboard.press('Control+s');
   await expect(page.locator('#save-state')).toHaveText('Saved locally + recovery checkpoint');
   expect((await local(page)).sheets[0].cells[key(row,f.columns[0].column)].value).toBe('Saved active source');
   await expect(input).toBeFocused();
+  expect(await input.evaluate((element:HTMLInputElement)=>[element.selectionStart,element.selectionEnd])).toEqual([4,9]);
   await input.fill('Closed active source');await input.press('Escape');
   await expect(f.panel).toHaveCount(0);
   await expect.poll(async()=>(await local(page)).sheets[0].cells[key(row,f.columns[0].column)]?.value).toBe('Closed active source');

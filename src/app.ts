@@ -42,7 +42,7 @@ import {createTextSearch} from './find';
 import {loadPublishedTesting,publishedTestingId,untouchedStarter} from './published';
 import {migrateDropdownData} from './dd-storage';
 import {numericKeyboardFields,numericKeyboardCell,virtualKeyboard as touchKeyboard} from './touch-keyboard';
-import {addMealIngredient,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealFields,mealLogConfig,mealLogContext,moveMealFood,type MealField} from './meal-log';
+import {addMealIngredient,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealFields,mealLogConfig,mealLogContext,moveMealFood,refreshMealIngredientCalculations,type MealField} from './meal-log';
 import {mountMealLog,type MealLogInputField,type MealLogTab,type MealLogView} from './meal-log-ui';
 import {mountDraftPanel} from './draft-ui';
 import {addDraftIngredient,appendNewFood,captureData,changedLinkedNutritionIntents,changedNutritionSnapshots,createFoodCaptureContext,generateNutritionPrompt,ingredientKey,ingredientMapping,ingredientRecord,newNutritionBatch,nutrients,numberValue,refreshNutritionPrompt,rememberIngredients,restoreNameVersion,saveNameVersion,scaledDraft,type FoodValues,type IngredientIdentity,type NameVersion} from './food-capture';
@@ -646,7 +646,8 @@ function openMealLog(tab:MealLogTab='formal'):void{
         dropdown:(identity,anchor)=>{
           const record=ingredientRecord(book,identity,engine),field=record.table.columns.find(column=>column.id===record.mapping.fields.type);
           if(!field){flash('Restore the Ingredient Type field before choosing its dropdown.');return;}
-          openCellDropdown(anchor,true,undefined,{row:identity.row,column:field.column,manual:()=>anchor.closest('.meal-log-input')?.querySelector<HTMLInputElement>('input')?.focus(),chosen:()=>mealPanel?.refresh()});
+          openCellDropdown(anchor,true,undefined,{row:identity.row,column:field.column,manual:()=>anchor.closest('.meal-log-input')?.querySelector<HTMLInputElement>('input')?.focus(),chosen:()=>mealPanel?.refresh(),
+            restoreFocus:()=>mealPanel?.element.querySelector<HTMLButtonElement>(`[data-capture-view="table"] [data-row="${identity.row}"] [data-ingredient-type]`)?.focus({preventScroll:true})});
         },
         history:name=>{void action(name);},historyState:()=>({undo:!busy&&!!undo.length,redo:!busy&&!!redo.length})
       }
@@ -733,7 +734,8 @@ function openMealLog(tab:MealLogTab='formal'):void{
               const s=sheet(),current=getCell(s,row,column);
               if(current.calculation&&!current.formula&&!current.binding&&JSON.stringify(current.calculation)===snapshot.calculation&&current.value===snapshot.value)restoreCalculation(book,s,row,column,current.calculation);
             }
-          },chosen:()=>{if(field==='food'){mealManual.delete(row);mealPanel?.foodMode(row,false);}mealPanel?.refresh();mealPanel?.reveal(row,field,true);}
+          },chosen:()=>{if(field==='food'){mealManual.delete(row);mealPanel?.foodMode(row,false);}mealPanel?.refresh();mealPanel?.reveal(row,field,true);},
+          restoreFocus:()=>mealPanel?.element.querySelector<HTMLInputElement>(`[data-log-card="${row}"] [data-log-field="${field}"]`)?.focus({preventScroll:true})
         });
       },
       add:addMealFood,move:(row,direction)=>{
@@ -1856,7 +1858,10 @@ function workbookTabsHtml():string{
 }
 let captureViewport:(()=>{row:string;index:number;offset:number}|undefined)|undefined;
 function render(options?:{preserveViewport:boolean}): void {
-  const mealFocus=!!mealPanel&&(document.activeElement instanceof HTMLInputElement||document.activeElement instanceof HTMLTextAreaElement)&&mealPanel.element.contains(document.activeElement);
+  const activeInput=document.activeElement;
+  const mealInput=mealPanel&&(activeInput instanceof HTMLInputElement||activeInput instanceof HTMLTextAreaElement)&&mealPanel.element.contains(activeInput)?activeInput:undefined;
+  const mealFocus=!!mealInput;
+  const mealSelection=mealInput&&mealInput.selectionStart!==null?{start:mealInput.selectionStart,end:mealInput.selectionEnd,direction:mealInput.selectionDirection}:undefined;
   mealPanel?.rememberScroll();
   const restoreTouchFocus=!!touchCell&&document.activeElement?.id==='formula';
   hideTouchEditor();
@@ -2160,7 +2165,12 @@ function render(options?:{preserveViewport:boolean}): void {
   groupControls?.positionMenu();
   rememberView();
   primeSearchValues();
-  if(mealFocus&&mealVisible)mealPanel?.restoreFocus();
+  if(mealFocus&&mealVisible){
+    mealPanel?.restoreFocus();
+    const input=document.activeElement;
+    if(mealSelection&&(input instanceof HTMLInputElement||input instanceof HTMLTextAreaElement)&&input.selectionStart!==null)
+      input.setSelectionRange(mealSelection.start,mealSelection.end,mealSelection.direction??undefined);
+  }
 }
 function safeLink(value: string): boolean {
   try { return ['https:','http:','mailto:'].includes(new URL(value).protocol); } catch { return false; }
@@ -2316,7 +2326,7 @@ function writeLinkedCell(s:Sheet,row:string,column:string,binding:NonNullable<Ce
   const previous=getCell(s,row,column);
   s.cells[key(row,column)]={...previous,value:undefined,formula:undefined,original:undefined,calculation:previous.formula??previous.calculation,binding};
 }
-function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{row:string;column:string;manual:()=>void;linked?:()=>void;chosen:()=>void}):void{
+function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{row:string;column:string;manual:()=>void;linked?:()=>void;chosen:()=>void;restoreFocus?:()=>void}):void{
   closeCellDropdown?.();
   if(busy||!editableReference()||!external&&!inGrid(selected.r,selected.c))return;
   const s=sheet(),row=external?.row??s.rows[selected.r].id,column=external?.column??s.columns[selected.c].id,validation=cellValidation(s,row,column);
@@ -2391,7 +2401,12 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{
       close();
       const ok=mutate('Choose dropdown option',()=>{
         if(!s.rows.some(r=>r.id===row)||!s.columns.some(c=>c.id===column)||cellValidation(s,row,column)?.id!==validation.id)throw Error('The dropdown target changed. Open it again.');
-        if(choice.binding){writeLinkedCell(s,row,column,choice.binding);external?.linked?.();}
+        if(choice.binding){
+          writeLinkedCell(s,row,column,choice.binding);external?.linked?.();
+          const config=s.mealLog,table=config&&allTables(book).find(table=>table.id===config.table);
+          if(config&&table?.columns.some(field=>field.id===config.fields.food&&field.column===column))
+            refreshMealIngredientCalculations(book,s,row,mealLogContext(book,s,engine));
+        }
         else writeGridCell(book,s,row,column,String(choice.raw??''),typeof choice.raw==='string');
         if(s.mealLog&&allTables(book).find(table=>table.id===s.mealLog!.table)?.columns.find(field=>field.id===s.mealLog!.fields.food)?.column===column)markMealNeedsNutrition(book,s,row);
       });
@@ -2423,7 +2438,13 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{
     popup.querySelector<HTMLButtonElement>('.dropdown-add-source')!.onclick=()=>{if(!commitDraft())return;hideTouchEditor();close();openDropdownAssignment();};
     if(sharedInput)popup.onpointerdown=e=>{if((e.target as HTMLElement).closest('button'))e.preventDefault();};
     popup.onkeydown=e=>{
-      if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close();root.querySelector<HTMLElement>('#grid-scroll')?.focus({preventScroll:true});return;}
+      if(e.key==='Escape'){
+        e.preventDefault();e.stopPropagation();
+        const target=external?(cell?.matches('button,input,textarea')?cell:cell?.querySelector<HTMLElement>('input,button')):root.querySelector<HTMLElement>('#grid-scroll');
+        close();
+        if(external?.restoreFocus)external.restoreFocus();else target?.focus({preventScroll:true});
+        return;
+      }
       const focused=document.activeElement as HTMLElement|null;
       if(focused?.getAttribute('role')==='tab'&&['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){
         e.preventDefault();const at=options.findIndex(o=>o.id===browsing),next=e.key==='Home'?0:e.key==='End'?options.length-1:(at+(e.key==='ArrowRight'?1:-1)+options.length)%options.length;

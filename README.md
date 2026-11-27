@@ -268,9 +268,10 @@ remain viewable only in history.
   shared Apply/Discard recovery. Add/insert creates an immediate real table row;
   move/delete and Undo/Redo preserve stable identities. Deletion refuses linked,
   shared or uncertain name/dynamic-formula uses rather than silently breaking them.
-  Logged promotion installs live portion calculations only for blank manual
-  nutrient cells, so completing the Ingredient later also completes its Logged
-  nutrition without replacing existing manual values or formulas.
+  Choosing or promoting a Logged Ingredient installs live portion calculations
+  only for blank manual nutrient cells, so completing the Ingredient later also
+  completes its Logged nutrition. These managed calculations follow a changed
+  Ingredient link; existing manual values and unrelated formulas are preserved.
   **Get Nutrition** retains a batch with stable request/source identities:
   choose days, foods and Ingredients, fill missing reference servings, opt Notes
   in or out, edit the template and generate/copy a prompt. Reviewed dish names

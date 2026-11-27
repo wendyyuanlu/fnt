@@ -2,7 +2,7 @@ import {masterDayBlocks,masterLogging} from './day-logging';
 import {compile,Engine,scalar,type Ast} from './formula';
 import {addRow,allSheets,allTables,getCell,isFault,key,moveRows,setInput,uid,type Sheet,type Table,type Workbook} from './model';
 import {validationChoiceGroups} from './references';
-import {captureData,ingredientKey} from './food-capture';
+import {captureData,ingredientKey,nutrients} from './food-capture';
 import {ingredientConsumptionCalculations} from './ingredient-calculation';
 
 export const mealFields=['food','calories','protein','fat','carbs','sugar','sodium','weight','amount','unit','notes'] as const;
@@ -102,6 +102,50 @@ export function moveMealFood(book:Workbook,sheet:Sheet,row:string,direction:-1|1
   const boundary=sheet.rows.findIndex(item=>item.id===neighbor)+(direction===1?1:0);
   moveRows(book,sheet,[row],boundary,table);
 }
+export function refreshMealIngredientCalculations(book:Workbook,sheet:Sheet,row:string,context=mealLogContext(book,sheet)):void{
+  const config=mealLogConfig(book,sheet),food=context.fields.get('food');
+  if(!food||!context.blocks.some(block=>block.rows.slice(1).includes(row)))return;
+  const source=config.ingredients,table=allTables(book).find(table=>table.id===source?.table),origin=allSheets(book).find(item=>item.id===table?.sheet);
+  if(!source||!table||!origin)return;
+  const targetFields=new Map([...context.fields].map(([field,column])=>[field,column.column]));
+  const sourceFields=new Map(mealFields.flatMap(field=>{
+    const column=table.columns.find(column=>column.id===source.fields[field]);
+    return column?[[field,column.column] as const]:[];
+  }));
+  const cache=new Map<string,ReturnType<typeof ingredientConsumptionCalculations>['nutrition']>();
+  const calculations=(sourceRow:string)=>{
+    const saved=cache.get(sourceRow);if(saved)return saved;
+    if(!table.rows.includes(sourceRow))return;
+    const result=ingredientConsumptionCalculations(
+      {sheet:sheet.id,row,fields:targetFields},
+      {sheet:origin.id,row:sourceRow,fields:sourceFields},
+    ).nutrition;
+    cache.set(sourceRow,result);return result;
+  };
+  const binding=getCell(sheet,row,food.column).binding;
+  const next=binding?.table===table.id&&binding.column===source.fields.food?calculations(binding.row):undefined;
+  for(const field of nutrients){
+    const column=context.fields.get(field);if(!column)continue;
+    const cell=getCell(sheet,row,column.column),formula=next?.get(field);
+    const owned=(ast:Ast|undefined)=>{
+      // Match the complete factory AST, including retained calculations after unlinking Food.
+      const condition=ast?.kind==='call'&&ast.name==='IF'?ast.args[0]:undefined;
+      const present=condition?.kind==='call'&&condition.name==='AND'?condition.args[1]:undefined;
+      const reference=present?.kind==='binary'&&present.op==='<>'?present.left:undefined;
+      if(reference?.kind!=='ref'||reference.sheet!==origin.id)return false;
+      const expected=calculations(reference.row)?.get(field);
+      return!!expected&&JSON.stringify(ast)===JSON.stringify(expected);
+    };
+    if(owned(cell.formula))
+      sheet.cells[key(row,column.column)]={...cell,value:undefined,formula,calculation:owned(cell.calculation)?formula:cell.calculation};
+    else if(!cell.formula&&!cell.binding){
+      const calculation=owned(cell.calculation)?formula:cell.calculation;
+      if(formula&&(cell.value===null||cell.value===undefined||cell.value===''))
+        sheet.cells[key(row,column.column)]={...cell,value:undefined,formula:calculation??formula,calculation};
+      else if(calculation!==cell.calculation)sheet.cells[key(row,column.column)]={...cell,calculation};
+    }
+  }
+}
 export function addMealIngredient(book:Workbook,sheet:Sheet,row:string):{table:string;row:string}{
   const config=mealLogConfig(book,sheet),context=mealLogContext(book,sheet);
   if(!context.blocks.some(block=>block.rows.slice(1).includes(row)))throw Error('This food no longer belongs to a day.');
@@ -138,16 +182,7 @@ export function addMealIngredient(book:Workbook,sheet:Sheet,row:string):{table:s
   data.ingredientDetails[ingredientKey({table:table.id,row:next.id})]={notes:values.get('notes')??'',photos:[]};
   const food=context.fields.get('food')!,previous=getCell(sheet,row,food.column);
   sheet.cells[key(row,food.column)]={...previous,value:undefined,formula:undefined,foodDraft:undefined,binding:{table:table.id,row:next.id,column:label.id}};
-  const calculations=ingredientConsumptionCalculations(
-    {sheet:sheet.id,row,fields:new Map([...context.fields].map(([field,column])=>[field,column.column]))},
-    {sheet:destination.id,row:next.id,fields:new Map([...columns].map(([field,column])=>[field,column.column]))},
-  );
-  for(const [field,formula]of calculations.nutrition){
-    const column=context.fields.get(field);if(!column)continue;
-    const cell=getCell(sheet,row,column.column);
-    if(!cell.formula&&!cell.binding&&(cell.value===null||cell.value===undefined||cell.value===''))
-      sheet.cells[key(row,column.column)]={...cell,value:undefined,formula:cell.calculation??formula};
-  }
+  refreshMealIngredientCalculations(book,sheet,row,context);
   markMealNeedsNutrition(book,sheet,row);
   const validation=sheet.validations.find(source=>source.rows.includes(row)&&source.columns.includes(food.column));
   if(!validation||!validationChoiceGroups(book,validation,row,food.column,new Engine(book)).some(group=>group.target?.table===table.id&&group.target.column===label.id)){
