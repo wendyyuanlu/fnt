@@ -36,7 +36,7 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
   const scroll=element.querySelector<HTMLElement>('.meal-log-scroll')!,footer=element.querySelector<HTMLElement>('.meal-log-footer')!;
   if(host.draft)element.querySelector('.meal-log-draft')!.replaceChildren(host.draft.element);
   if(host.restaurants){const button=document.createElement('button');button.type='button';button.textContent='Restaurants';button.onclick=host.restaurants;footer.querySelector('[data-log-add]')!.after(button);}
-  const restaurantFields:RestaurantField[]=[];
+  const restaurantFields=new Map<string,RestaurantField>();
   element.querySelector('#meal-log-formal-tab')!.textContent='Logged';
   const panels={draft:host.draft,ingredients:host.ingredients,table:host.table,nutrition:host.nutrition,gallery:host.gallery};
   const labels={ingredients:'Ingredients',table:'Ingredients TABLE',nutrition:'Get nutrition',gallery:'Photos'};
@@ -82,7 +82,8 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
   let observedHeader:Element|undefined;
   let fullHeight=window.visualViewport?.height??innerHeight;
   const touch=()=>document.body.classList.contains('touch-input-device');
-  const cards=new Map<string,HTMLElement>(),inputs=new Map<string,HTMLInputElement|HTMLTextAreaElement>();
+  const cards=new Map<string,HTMLElement>(),inputs=new Map<string,HTMLInputElement|HTMLTextAreaElement>(),cardShapes=new Map<string,string>();
+  const empty=document.createElement('p');empty.className='muted';empty.textContent='No foods in this day. Use + Food to start logging.';
   const fieldInput=(row:string,field:MealLogInputField)=>inputs.get(row+':'+field);
   scroll.addEventListener('scroll',()=>{savedScroll=scroll.scrollTop;atBottom=scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop<1;},{signal:controller.signal});
   const restoreScroll=()=>{
@@ -139,11 +140,25 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
     if(writing&&focused&&active?.field==='dayWeight')weightEdit={row:view.header,value:view.weight.value};
     const keepWeight=focused&&active?.field==='dayWeight'&&weightEdit?.row===view.header&&weightEdit.value===view.weight.value;
     if(!keepWeight)weightEdit=undefined;
-    const currentShape=JSON.stringify([view.header,view.fields,view.rows.map(row=>[row.id,row.manual,row.meal])]);
+    const currentShape=JSON.stringify([view.header,view.fields]);
     if(currentShape!==shape){
       shape=currentShape;
-      for(const field of restaurantFields)field.dispose();restaurantFields.length=0;
-      scroll.innerHTML=`<label class="meal-log-field meal-log-day-weight"><span>Weight</span><input data-log-row="${view.header}" data-log-field="dayWeight" aria-label="Weight" autocomplete="off" enterkeyhint="next" inputmode="${view.weight.numeric?'decimal':'text'}" value="${esc(view.weight.value)}"></label>`+(view.rows.length?view.rows.map((row,i)=>{
+      for(const field of restaurantFields.values())field.dispose();restaurantFields.clear();
+      cards.clear();inputs.clear();cardShapes.clear();
+      scroll.innerHTML=`<label class="meal-log-field meal-log-day-weight"><span>Weight</span><input data-log-row="${view.header}" data-log-field="dayWeight" aria-label="Weight" autocomplete="off" enterkeyhint="next" inputmode="${view.weight.numeric?'decimal':'text'}" value="${esc(view.weight.value)}"></label>`;
+      inputs.set(view.header+':dayWeight',scroll.querySelector<HTMLInputElement>('[data-log-field="dayWeight"]')!);
+    }
+    const rows=new Set(view.rows.map(row=>row.id));
+    const removeCard=(row:string)=>{
+      restaurantFields.get(row)?.dispose();restaurantFields.delete(row);
+      cards.get(row)?.remove();cards.delete(row);cardShapes.delete(row);
+      for(const field of mealFields)inputs.delete(row+':'+field);
+    };
+    for(const row of cards.keys())if(!rows.has(row))removeCard(row);
+    for(const [i,row] of view.rows.entries()){
+      const cardShape=row.meal??'';
+      if(cards.has(row.id)&&cardShapes.get(row.id)!==cardShape)removeCard(row.id);
+      if(!cards.has(row.id)){
         const field=(name:MealField)=>{
           const info=view.fields[name];if(!info)return'';
           const dropdown=name==='food';
@@ -152,15 +167,22 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
           return`<label class="meal-log-field" title="${esc(info.name)}">${name==='notes'?'':`<span>${captions[name]}${name==='food'?' <span class="count" data-log-needs-nutrition hidden>Needs nutrition</span>':''}</span>`}<span class="meal-log-input">${input}${dropdown?`<button type="button" class="icon-button" data-log-dropdown="${name}" aria-label="Choose ${captions[name]}"><span class="format-caret">${dropdownArrowHtml}</span></button>`:''}</span></label>`;
         };
         const quantities=`<div class="meal-log-fields">${(['weight','amount','unit'] as const).map(field).join('')}</div>`,quantityKey=row.id+':'+row.meal;
-        return`<section class="meal-log-card" data-log-card="${row.id}" aria-label="Food ${i+1}">${host.restaurant?restaurantFieldHtml():''}${field('food')}<details class="meal-log-macros" ${expanded.has(row.id)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Macros</span><span data-log-totals></span></summary><div class="meal-log-fields">${mealFields.slice(1,7).map(field).join('')}</div></details>${row.meal?`<details class="meal-log-quantities" data-quantity-key="${quantityKey}" ${quantitiesExpanded.has(quantityKey)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Grams</span></summary>${quantities}</details>`:quantities}${view.fields.notes?`<details class="meal-log-notes" data-log-notes ${notesExpanded.has(row.id)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Notes</span></summary>${field('notes')}</details>`:''}${row.manual?'<label class="inline meal-log-ingredient"><input type="checkbox" data-log-ingredient>Add to Ingredients</label>':''}<div class="meal-log-row-actions">${icon('Move food up',navigationIcon('up'),i===0)}${icon('Move food down',navigationIcon('down'),i===view.rows.length-1)}<button type="button" data-log-insert>+ Food</button>${icon('Delete food',toolbarIcon('trash'))}</div></section>`;
-      }).join(''):'<p class="muted">No foods in this day. Use + Food to start logging.</p>');
-      cards.clear();inputs.clear();
-      for(const card of scroll.querySelectorAll<HTMLElement>('[data-log-card]'))cards.set(card.dataset.logCard!,card);
-      for(const input of scroll.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('[data-log-row][data-log-field]'))inputs.set(input.dataset.logRow+':'+input.dataset.logField,input);
-      if(host.restaurant)for(const card of scroll.querySelectorAll<HTMLElement>('[data-log-card]'))restaurantFields.push(host.restaurant(card.dataset.logCard!,card));
-      for(const details of scroll.querySelectorAll<HTMLDetailsElement>('details'))details.ontoggle=()=>{const row=details.closest<HTMLElement>('[data-log-card]')!.dataset.logCard!,state=details.classList.contains('meal-log-notes')?notesExpanded:details.classList.contains('meal-log-quantities')?quantitiesExpanded:expanded,id=details.dataset.quantityKey??row;if(details.open)state.add(id);else state.delete(id);};
-      if(focused&&active){const input=fieldInput(active.row,active.field);if(input&&keepWeight&&before)input.value=before.value;input?.focus({preventScroll:true});if(input&&caret?.[0]!=null&&caret[1]!=null)input.setSelectionRange(caret[0],caret[1]);}
+        const template=document.createElement('template');
+        template.innerHTML=`<section class="meal-log-card" data-log-card="${row.id}" aria-label="Food ${i+1}">${host.restaurant?restaurantFieldHtml():''}${field('food')}<details class="meal-log-macros" ${expanded.has(row.id)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Macros</span><span data-log-totals></span></summary><div class="meal-log-fields">${mealFields.slice(1,7).map(field).join('')}</div></details>${row.meal?`<details class="meal-log-quantities" data-quantity-key="${quantityKey}" ${quantitiesExpanded.has(quantityKey)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Grams</span></summary>${quantities}</details>`:quantities}${view.fields.notes?`<details class="meal-log-notes" data-log-notes ${notesExpanded.has(row.id)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Notes</span></summary>${field('notes')}</details>`:''}<div class="meal-log-row-actions">${icon('Move food up',navigationIcon('up'),i===0)}${icon('Move food down',navigationIcon('down'),i===view.rows.length-1)}<button type="button" data-log-insert>+ Food</button>${icon('Delete food',toolbarIcon('trash'))}</div></section>`;
+        const card=template.content.querySelector<HTMLElement>('[data-log-card]')!;
+        cards.set(row.id,card);cardShapes.set(row.id,cardShape);
+        for(const input of card.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('[data-log-row][data-log-field]'))inputs.set(row.id+':'+input.dataset.logField,input);
+        if(host.restaurant)restaurantFields.set(row.id,host.restaurant(row.id,card));
+        for(const details of card.querySelectorAll<HTMLDetailsElement>('details'))details.ontoggle=()=>{const state=details.classList.contains('meal-log-notes')?notesExpanded:details.classList.contains('meal-log-quantities')?quantitiesExpanded:expanded,id=details.dataset.quantityKey??row.id;if(details.open)state.add(id);else state.delete(id);};
+      }
+      const card=cards.get(row.id)!;card.setAttribute('aria-label',`Food ${i+1}`);
+      card.querySelector('[aria-label="Move food up"]')!.toggleAttribute('data-log-boundary',i===0);
+      card.querySelector('[aria-label="Move food down"]')!.toggleAttribute('data-log-boundary',i===view.rows.length-1);
     }
+    if(view.rows.length)empty.remove();else scroll.append(empty);
+    let following:HTMLElement|null=null;
+    for(let i=view.rows.length-1;i>=0;i--){const card=cards.get(view.rows[i].id)!;if(card.parentElement!==scroll||card.nextSibling!==following)scroll.insertBefore(card,following);following=card;}
+    if(focused&&active&&document.activeElement!==fieldInput(active.row,active.field)){const input=fieldInput(active.row,active.field);if(input&&keepWeight&&before)input.value=before.value;input?.focus({preventScroll:true});if(input&&caret?.[0]!=null&&caret[1]!=null)input.setSelectionRange(caret[0],caret[1]);}
     const weight=fieldInput(view.header,'dayWeight')!;
     if(!keepWeight&&weight.value!==view.weight.value)weight.value=view.weight.value;
     weight.disabled=view.busy;weight.classList.toggle('calculated',view.weight.calculated);
@@ -168,6 +190,10 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
       const card=cards.get(row.id)!;
       card.querySelector<HTMLElement>('[data-log-totals]')!.textContent=row.totals;
       card.querySelector<HTMLElement>('[data-log-needs-nutrition]')!.hidden=!row.needsNutrition;
+      const food=card.querySelector<HTMLInputElement>('[data-log-field="food"]')!,ingredient=card.querySelector('.meal-log-ingredient');
+      food.dataset.logManual=String(row.manual);food.readOnly=!row.manual;food.placeholder=row.manual?'Manual input':'';
+      if(row.manual&&!ingredient)card.querySelector('.meal-log-row-actions')!.insertAdjacentHTML('beforebegin','<label class="inline meal-log-ingredient"><input type="checkbox" data-log-ingredient>Add to Ingredients</label>');
+      else if(!row.manual)ingredient?.remove();
       const checkbox=card.querySelector<HTMLInputElement>('[data-log-ingredient]');if(checkbox)checkbox.disabled=view.busy;
       for(const field of mealFields){const input=fieldInput(row.id,field),value=row.values[field]??'';if(input&&(!writing||input!==document.activeElement)&&input.value!==value)input.value=value;if(input){input.disabled=view.busy;input.classList.toggle('calculated',row.calculated.includes(field));}}
     }
@@ -181,7 +207,7 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
     button('Undo').disabled=!view.undo||view.busy;button('Redo').disabled=!view.redo||view.busy;
     footer.querySelector<HTMLButtonElement>('[data-log-add]')!.disabled=view.busy;
     button('Next field').hidden=!touch()||!focusMode;
-    for(const field of restaurantFields)field.refresh(view.busy);
+    for(const field of restaurantFields.values())field.refresh(view.busy);
     if(lastHeader!==view.header){lastHeader=view.header;pendingBottom=true;restoreScroll();}
     position();
   };
@@ -289,7 +315,7 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
     const card=element.querySelector<HTMLElement>(`[data-log-card="${row}"]`);
     for(const details of card?.querySelectorAll<HTMLDetailsElement>(manual?'.meal-log-macros,.meal-log-quantities':'.meal-log-quantities')??[])details.open=false;
   };
-  return{element,get tab(){return tab;},tableMode,commit:()=>host.table?.commit()??true,showTab,refresh:()=>{try{update();}catch(error){host.error(error);}},reveal,startFood,foodMode,tableLast:()=>host.table?.last(),bottom:()=>{pendingBottom=true;restoreScroll();},rememberScroll:()=>{if(element.isConnected&&tab==='formal')savedScroll=scroll.scrollTop;if(element.isConnected&&tab==='table')host.table?.rememberScroll();},restoreScroll:()=>{if(tab==='table')host.table?.restoreScroll();else restoreScroll();},dispose:()=>{morePopup.close();resize.disconnect();for(const field of restaurantFields)field.dispose();for(const panel of Object.values(panels))panel?.dispose();cards.clear();inputs.clear();controller.abort();cancelAnimationFrame(scrollFrame);element.remove();document.body.classList.remove('meal-log-keyboard');},restoreFocus:()=>{
+  return{element,get tab(){return tab;},tableMode,commit:()=>host.table?.commit()??true,showTab,refresh:()=>{try{update();}catch(error){host.error(error);}},reveal,startFood,foodMode,tableLast:()=>host.table?.last(),bottom:()=>{pendingBottom=true;restoreScroll();},rememberScroll:()=>{if(element.isConnected&&tab==='formal')savedScroll=scroll.scrollTop;if(element.isConnected&&tab==='table')host.table?.rememberScroll();},restoreScroll:()=>{if(tab==='table')host.table?.restoreScroll();else restoreScroll();},dispose:()=>{morePopup.close();resize.disconnect();for(const field of restaurantFields.values())field.dispose();restaurantFields.clear();for(const panel of Object.values(panels))panel?.dispose();cards.clear();inputs.clear();cardShapes.clear();controller.abort();cancelAnimationFrame(scrollFrame);element.remove();document.body.classList.remove('meal-log-keyboard');},restoreFocus:()=>{
     if(tab==='formal'&&active&&focusMode)fieldInput(active.row,active.field)?.focus({preventScroll:true});
     else if(tab==='table')host.table?.restoreFocus();
   }};

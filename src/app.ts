@@ -42,7 +42,7 @@ import {createTextSearch} from './find';
 import {loadPublishedTesting,publishedTestingId,untouchedStarter} from './published';
 import {migrateDropdownData} from './dd-storage';
 import {numericKeyboardFields,numericKeyboardCell,virtualKeyboard as touchKeyboard} from './touch-keyboard';
-import {addMealIngredient,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealFields,mealLogConfig,mealLogContext,moveMealFood,refreshMealIngredientCalculations,type MealField} from './meal-log';
+import {addMealIngredient,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealFields,mealLogConfig,mealLogContext,mealLogTable,moveMealFood,refreshMealIngredientCalculations,type MealField} from './meal-log';
 import {mountMealLog,type MealLogInputField,type MealLogTab,type MealLogView} from './meal-log-ui';
 import {mountDraftPanel} from './draft-ui';
 import {addDraftIngredient,appendNewFood,captureData,changedLinkedNutritionIntents,changedNutritionSnapshots,createFoodCaptureContext,generateNutritionPrompt,ingredientKey,ingredientMapping,ingredientRecord,newNutritionBatch,nutrients,numberValue,refreshNutritionPrompt,rememberIngredients,restoreNameVersion,saveNameVersion,scaledDraft,type FoodValues,type IngredientIdentity,type NameVersion} from './food-capture';
@@ -673,7 +673,7 @@ function openMealLog(tab:MealLogTab='formal'):void{
     mealPanel=mountMealLog({
       draft:draftPanel,ingredients:ingredientsPanel,table:tablePanel,nutrition:nutritionPanel,gallery:photoUI.gallery(),
       restaurant:(row,element)=>{
-        const table=mealLogContext(book,s,engine).table,key=`${table.id}:${row}`,bookId=book.id;
+        const table=mealLogTable(book,s),key=`${table.id}:${row}`,bookId=book.id;
         return mountRestaurantField({
           book:()=>book,engine:()=>engine,dialog,error:flash,changed:()=>mealPanel?.refresh(),
           write:(label,paths,change)=>{

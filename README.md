@@ -112,6 +112,9 @@ repaints retain the existing toolbar and headers. Structural edits still take
 the conservative reference/conflict path when unrelatedness is not proven.
 Logged day controls are indexed by stable row and field IDs; changing days
 rebuilds that index rather than repeatedly scanning the full panel for each cell.
+Food mode, insertion, deletion and ordering changes retain unrelated row cards,
+live fields and restaurant controls instead of rebuilding the whole day.
+Restaurant controls resolve their configured table without rescanning day blocks.
 Table headers use native sticky bands bounded by their displayed table rows,
 including table-end push-off and naturally pinned columns; table and sheet
 grouping semantics are unchanged. Relevant collapsed-member masks are reused.

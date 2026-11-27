@@ -973,7 +973,7 @@ test('linked foods use current Ingredient reference nutrition without changing l
   const incomplete=await read(page,fixture.sheet);
   expect(incomplete.sheet.cells).toEqual(original.sheet.cells);expect(incomplete.blocks).toEqual(original.blocks);
 });
-test('a populated thousand-food day opens and switches promptly without stale field targets',async({page})=>{
+test('a populated thousand-food day opens promptly and retains unrelated live fields through row changes',async({page})=>{
   const fixture=await setup(page,1000),panel=page.locator('.meal-log-panel');
   const opened=Date.now();await page.locator('#meal-log').click();
   await expect(panel.locator('[data-log-card]')).toHaveCount(1001);
@@ -989,6 +989,29 @@ test('a populated thousand-food day opens and switches promptly without stale fi
   await panel.getByRole('button',{name:'Previous day',exact:true}).click();
   await panel.getByRole('button',{name:'Next day',exact:true}).click();
   await expect(grams).toHaveValue('321');
+  const first=panel.locator('[data-log-card]').first(),retained=await first.elementHandle();
+  await first.getByRole('textbox',{name:'Restaurant',exact:true}).fill('Invented retained cafe');
+  await first.getByRole('textbox',{name:'Restaurant',exact:true}).press('Tab');
+  await first.locator('.meal-log-macros summary').click();
+  await first.locator('.meal-log-notes summary').click();
+  const notes=first.getByRole('textbox',{name:'Notes',exact:true});
+  await notes.fill('literal\nretained notes');await notes.evaluate((input:HTMLTextAreaElement)=>input.setSelectionRange(2,7));
+  const checkRetained=async()=>{
+    expect(await retained!.evaluate(card=>card.isConnected)).toBe(true);
+    await expect(notes).toBeFocused();await expect(notes).toHaveValue('literal\nretained notes');
+    expect(await notes.evaluate((input:HTMLTextAreaElement)=>[input.selectionStart,input.selectionEnd])).toEqual([2,7]);
+    await expect(first.locator('.meal-log-macros')).toHaveAttribute('open','');
+    await expect(first.locator('.meal-log-notes')).toHaveAttribute('open','');
+    await expect(first.getByRole('textbox',{name:'Restaurant',exact:true})).toHaveValue('Invented retained cafe');
+  };
+  await panel.locator('[data-log-card]').last().getByRole('button',{name:'Delete food',exact:true}).dispatchEvent('click');
+  await expect(panel.locator('[data-log-card]')).toHaveCount(1000);await checkRetained();
+  await panel.getByRole('button',{name:'Undo',exact:true}).dispatchEvent('click');
+  await expect(panel.locator('[data-log-card]')).toHaveCount(1001);await checkRetained();await expect(grams).toHaveValue('321');
+  const saved=await read(page,fixture.sheet),table=saved.book.tables.find((table:{id:string})=>table.id===fixture.table)!;
+  expect(saved.sheet.cells[`${fixture.latest}:${table.columns.find((column:{name:string})=>column.name==='Amount (g)')!.column}`].value).toBe(321);
+  await panel.getByRole('button',{name:'Redo',exact:true}).dispatchEvent('click');
+  await expect(panel.locator('[data-log-card]')).toHaveCount(1000);await checkRetained();
 });
 test('public-sized food reordering finishes promptly and keeps stable row identities and Undo',async({page})=>{
   const fixture=await setup(page,6000,true);await page.locator('#meal-log').click();

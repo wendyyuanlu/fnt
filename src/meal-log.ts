@@ -70,9 +70,13 @@ export function markMealNeedsNutrition(book:Workbook,sheet:Sheet,row:string):voi
   if(incomplete)sheet.cells[key(row,foodColumn.column)]={...food,foodDraft:true};
   else if(food.foodDraft){const cell={...food};delete cell.foodDraft;sheet.cells[key(row,foodColumn.column)]=cell;}
 }
-export function mealLogContext(book:Workbook,sheet:Sheet,engine?:Engine){
-  const config=mealLogConfig(book,sheet),table=allTables(book).find(table=>table.id===config.table&&table.sheet===sheet.id);
+export function mealLogTable(book:Workbook,sheet:Sheet,config=mealLogConfig(book,sheet)){
+  const table=allTables(book).find(table=>table.id===config.table&&table.sheet===sheet.id);
   if(!table)throw Error('Restore the Meal log table before logging.');
+  return table;
+}
+export function mealLogContext(book:Workbook,sheet:Sheet,engine?:Engine){
+  const config=mealLogConfig(book,sheet),table=mealLogTable(book,sheet,config);
   const fields=new Map(mealFields.flatMap(field=>{
     const column=table.columns.find(column=>column.id===config.fields[field]);
     return column?[[field,column] as const]:[];
