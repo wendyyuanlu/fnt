@@ -1,3 +1,7 @@
+# Panel blueprint
+
+Use Meal log as the blueprint for all panels. Reuse its components, interactions, behaviors, panel width, and styling unless specified otherwise. Improvements to shared components and field behaviors should benefit all applicable panels unless explicitly scoped otherwise. Ask when unsure whether a panel should inherit a change.
+
 # Icon styling
 
 Keep icon styling consistent throughout fnt, including UI previews. Use the existing custom inline SVG mechanism (`toolbarIcon` and `toolbarIconPaths` in `src/icons.ts`) as the reference, not a separate icon family.
