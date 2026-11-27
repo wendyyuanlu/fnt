@@ -100,23 +100,52 @@ test('TABLE preserves unfinished source edits through reload and shares explicit
   await restored.getByRole('button',{name:'Apply',exact:true}).click();
   await expect.poll(async()=>(await local(page)).sheets[0].cells[key(row,f.columns[0].column)]?.value).toBe('Unfinished synthetic rename');
 });
-test('TABLE commits the active field on manual Save and Escape without losing focus or source edits',async({page})=>{
+test('TABLE keeps staged typing and its caret through a virtual redraw, then commits on scroll-out',async({page})=>{
+  const f=await install(page),row=f.table.rows[0],input=f.panel.locator(`[data-row="${row}"] [data-field="food"]`);
+  await f.list.evaluate(element=>element.scrollTop=0);
+  await input.fill('Edited via TABLE');await input.press('End');
+  const viewport=page.viewportSize()!;
+  await page.keyboard.press('1');
+  await page.setViewportSize({...viewport,height:viewport.height+600});
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  await expect(input).toBeFocused();await expect(input).toHaveValue('Edited via TABLE1');
+  expect(await input.evaluate((element:HTMLInputElement)=>[element.selectionStart,element.selectionEnd])).toEqual([17,17]);
+  await page.keyboard.press('2');
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  await expect(input).toHaveValue('Edited via TABLE12');
+  await expect.poll(async()=>(await local(page)).foodCapture?.ingredientEdits[`${f.table.id}:${row}`]?.values.food).toBe('Edited via TABLE12');
+  expect((await local(page)).sheets[0].cells[key(row,f.columns[0].column)].value).toBe('Invented 0');
+  await f.list.evaluate(element=>element.scrollTop=element.scrollHeight);
+  await expect.poll(async()=>(await local(page)).sheets[0].cells[key(row,f.columns[0].column)].value).toBe('Edited via TABLE12');
+});
+test('TABLE commits the active field on manual Save and Escape without losing focus or source edits',async({page},info)=>{
+  if(info.project.name==='mobile')await page.setViewportSize({width:320,height:780});
   const f=await install(page),row=f.table.rows.at(-1)!,input=f.panel.locator(`[data-row="${row}"] [data-field="food"]`);
+  const save=async(value:string)=>{
+    await input.evaluate((element:HTMLInputElement)=>element.setSelectionRange(4,9));
+    const top=await input.evaluate(element=>element.getBoundingClientRect().top);
+    await page.keyboard.press('Control+s');
+    await expect(page.locator('#save-state')).toHaveText('Saved locally + recovery checkpoint');
+    expect((await local(page)).sheets[0].cells[key(row,f.columns[0].column)].value).toBe(value);
+    await expect(input).toBeFocused();
+    expect(await input.evaluate((element:HTMLInputElement)=>[element.selectionStart,element.selectionEnd])).toEqual([4,9]);
+    expect(Math.abs(await input.evaluate(element=>element.getBoundingClientRect().top)-top)).toBeLessThanOrEqual(1);
+  };
+  await input.fill('First active source');
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  await save('First active source');
   await input.fill('Saved');
+  let text='Saved';
   for(const character of ' active source'){
     await page.keyboard.type(character);
     await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+    text+=character;
+    await expect(input).toHaveValue(text);
     await expect(input).toBeFocused();
+    expect(await input.evaluate((element:HTMLInputElement)=>[element.selectionStart,element.selectionEnd])).toEqual([text.length,text.length]);
   }
   await expect(input).toHaveValue('Saved active source');
-  await input.evaluate((element:HTMLInputElement)=>element.setSelectionRange(4,9));
-  const top=await input.evaluate(element=>element.getBoundingClientRect().top);
-  await page.keyboard.press('Control+s');
-  await expect(page.locator('#save-state')).toHaveText('Saved locally + recovery checkpoint');
-  expect((await local(page)).sheets[0].cells[key(row,f.columns[0].column)].value).toBe('Saved active source');
-  await expect(input).toBeFocused();
-  expect(await input.evaluate((element:HTMLInputElement)=>[element.selectionStart,element.selectionEnd])).toEqual([4,9]);
-  expect(Math.abs(await input.evaluate(element=>element.getBoundingClientRect().top)-top)).toBeLessThanOrEqual(1);
+  await save('Saved active source');
   await input.fill('Closed active source');await input.press('Escape');
   await expect(f.panel).toHaveCount(0);
   await expect.poll(async()=>(await local(page)).sheets[0].cells[key(row,f.columns[0].column)]?.value).toBe('Closed active source');

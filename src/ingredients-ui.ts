@@ -45,7 +45,7 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
     element.querySelector('.capture-footer')!.innerHTML=`<button type="button" data-ingredient-add>+ Ingredient</button><span data-count></span>${glyph('Undo',toolbarIcon('undo'),'data-ingredient-history="undo"')}${glyph('Redo',toolbarIcon('redo'),'data-ingredient-history="redo"')}`;
   }
   let filter='all',page=0,shape='',frame=0;
-  let layout=new RowViewport([]),ordered:string[]=[],savedScroll=0,refreshing=false,active:{key:string;field:string}|undefined;
+  let layout=new RowViewport([]),ordered:string[]=[],savedScroll=0,refreshing=false,replacingCards=false,active:{key:string;field:string}|undefined;
   type ScrollAnchor={key:string;selector?:string;offset:number};
   let savedAnchor:ScrollAnchor|undefined;
   const scrollAnchor=():ScrollAnchor|undefined=>{
@@ -112,17 +112,20 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
     }
     const visible=matches.slice(start,end),nextShape=JSON.stringify([filter,query,start,end,visible.map(item=>[item.table.id,item.row,Object.keys(item.mapping.fields)])]);
     if(shape!==nextShape){
-      if(host.table&&focused instanceof HTMLInputElement&&list.contains(focused)&&!visible.some(item=>ingredientKey({table:item.table.id,row:item.row})===focused.closest<HTMLElement>('[data-ingredient-key]')?.dataset.ingredientKey))focused.blur();
+      if(host.table&&focused instanceof HTMLInputElement&&list.contains(focused)&&!visible.some(item=>ingredientKey({table:item.table.id,row:item.row})===focused.closest<HTMLElement>('[data-ingredient-key]')?.dataset.ingredientKey)){
+        focused.blur();schedule();return;
+      }
       redrawn=true;
       shape=nextShape;resize.disconnect();for(const panel of photoPanels)panel.dispose();photoPanels.length=0;
-      list.innerHTML=visible.map(item=>{
+      replacingCards=true;
+      try{list.innerHTML=visible.map(item=>{
         const key=ingredientKey({table:item.table.id,row:item.row});
         const editable=(Object.keys(fields) as (keyof typeof fields)[]).filter(field=>(!host.table||field!=='notes')&&(field==='notes'||item.mapping.fields[field]));
         const at=matches.indexOf(item);
         const pending=`<div class="button-row" ${host.table?'data-pending-edit hidden':''}><button type="button" class="primary" data-apply>Apply</button><button type="button" data-discard>Discard draft edits</button></div>`;
         const actions=pending+(host.table?`<div class="meal-log-row-actions">${glyph('Move Ingredient up',navigationIcon('up'),`data-ingredient-move="-1" ${at===0?'disabled':''}`)}${glyph('Move Ingredient down',navigationIcon('down'),`data-ingredient-move="1" ${at===matches.length-1?'disabled':''}`)}${glyph('Insert Ingredient',toolbarIcon('add'),'data-ingredient-insert')}${glyph('Delete Ingredient',toolbarIcon('trash'),'data-ingredient-delete')}</div>`:'');
         return`<section class="meal-log-card" data-ingredient-key="${key}" data-table="${item.table.id}" data-row="${item.row}"><h3 data-name ${host.table?'hidden':''}></h3><p class="muted" data-missing role="status"></p><div class="meal-log-fields">${editable.map(field=>fieldHtml(field,!!host.table)).join('')}</div>${actions}</section>`;
-      }).join('')||'<p class="muted">No matching Ingredients.</p>';
+      }).join('')||'<p class="muted">No matching Ingredients.</p>';}finally{replacingCards=false;}
       if(host.table){
         list.insertAdjacentHTML('afterbegin','<div data-ingredient-spacer="before" aria-hidden="true"></div>');
         list.insertAdjacentHTML('beforeend','<div data-ingredient-spacer="after" aria-hidden="true"></div>');
@@ -180,10 +183,12 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
   };
   list.addEventListener('scroll',()=>{savedScroll=list.scrollTop;if(host.table)schedule();},{signal:controller.signal});
   element.addEventListener('focusin',event=>{const input=event.target;if(!(input instanceof HTMLInputElement||input instanceof HTMLTextAreaElement)||!input.dataset.field)return;const card=input.closest<HTMLElement>('[data-ingredient-key]');if(card)active={key:card.dataset.ingredientKey!,field:input.dataset.field};},{signal:controller.signal});
-  element.addEventListener('change',event=>{
-    const input=event.target;if(!host.table||!(input instanceof HTMLInputElement)||!input.dataset.field)return;
+  const commitField=(event:Event)=>{
+    const input=event.target;if(!host.table||replacingCards||!(input instanceof HTMLInputElement)||!input.dataset.field)return;
     try{commit();refresh();}catch(error){host.error(error);}
-  },{signal:controller.signal});
+  };
+  element.addEventListener('change',commitField,{signal:controller.signal});
+  element.addEventListener('focusout',commitField,{signal:controller.signal});
   element.addEventListener('keydown',event=>{
     if(!host.table||event.isComposing)return;
     try{

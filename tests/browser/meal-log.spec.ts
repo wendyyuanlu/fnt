@@ -91,7 +91,7 @@ async function connectPrivateGallery(page:Page,automatic=false){
 
 test('Logged and Draft share the two-bar header without changing logged foods or losing Logged state',async({page,isMobile})=>{
   const fixture=await setup(page,80),toolbar=page.getByRole('navigation',{name:'Master logging'});
-  expect(await toolbar.locator(':scope > button,.day-create > button').allTextContents()).toEqual(['Meal log','Draft','+ Day','+ Food']);
+  expect(await toolbar.locator(':scope > button,.day-create > button').evaluateAll(buttons=>buttons.map(button=>button.textContent?.trim()||button.getAttribute('aria-label')))).toEqual(['Meal log','Draft','+ Day','Convert table','+ Food']);
   await expect(page.locator('#meal-draft')).toHaveClass(/icon-button/);await page.locator('#meal-log').click();
   const panel=page.locator('.meal-log-panel'),formal=panel.getByRole('tab',{name:'Logged',exact:true}),draft=panel.getByRole('tab',{name:'Draft',exact:true});
   await expect(formal).toHaveAttribute('aria-selected','true');await expect(panel.getByRole('button',{name:'Get Nutrition',exact:true})).toBeEnabled();

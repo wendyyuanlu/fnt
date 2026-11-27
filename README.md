@@ -265,7 +265,9 @@ remain viewable only in history.
   The Ingredients sheet's phone button opens **TABLE**, a continuous,
   virtualized view of those same rows, initially at the last Ingredient.
   Edits commit on Enter or leaving a field; unfinished edits persist and retain
-  shared Apply/Discard recovery. Add/insert creates an immediate real table row;
+  shared Apply/Discard recovery. Virtual redraws keep typing staged and preserve
+  the caret; Save retains the active field, selection and visible position.
+  Add/insert creates an immediate real table row;
   move/delete and Undo/Redo preserve stable identities. Deletion refuses linked,
   shared or uncertain name/dynamic-formula uses rather than silently breaking them.
   Choosing or promoting a Logged Ingredient installs live portion calculations

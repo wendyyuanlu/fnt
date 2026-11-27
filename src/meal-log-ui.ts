@@ -79,6 +79,7 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
   };
   drawTab();
   let weightEdit:{row:string;value:string}|undefined;
+  let observedHeader:Element|undefined;
   let fullHeight=window.visualViewport?.height??innerHeight;
   const touch=()=>document.body.classList.contains('touch-input-device');
   const fieldInput=(row:string,field:MealLogInputField)=>element.querySelector<HTMLInputElement|HTMLTextAreaElement>(`[data-log-row="${row}"][data-log-field="${field}"]`);
@@ -89,7 +90,9 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
   };
   const position=()=>{
     if(!element.isConnected||!touch()){element.style.removeProperty('top');element.style.removeProperty('height');return;}
-    const viewport=window.visualViewport,top=Math.max(viewport?.offsetTop??0,document.querySelector('.app-header')?.getBoundingClientRect().bottom??0);
+    const header=document.querySelector('.app-header');
+    if(header!==observedHeader){if(observedHeader)resize.unobserve(observedHeader);observedHeader=header??undefined;if(header)resize.observe(header);}
+    const viewport=window.visualViewport,top=Math.max(viewport?.offsetTop??0,header?.getBoundingClientRect().bottom??0);
     const height=viewport?.height??innerHeight;if(!focusMode)fullHeight=height;
     const viewportBottom=(viewport?.offsetTop??0)+height,bounds=virtualKeyboard?.boundingRect,overlay=!!bounds&&bounds.height>0&&bounds.top<viewportBottom&&bounds.bottom>top;
     const bottom=overlay?Math.max(top,bounds.top):viewportBottom,keyboard=overlay||innerHeight-height>80||focusMode&&fullHeight-height>80;
@@ -98,7 +101,8 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
     element.style.top=top+'px';element.style.height=Math.max(0,bottom-top-tabs)+'px';
   };
   const resize=new ResizeObserver(()=>{
-    if(!element.isConnected||tab!=='formal')return;
+    if(!element.isConnected)return;
+    if(tab!=='formal'){position();return;}
     if(atBottom){pendingBottom=true;restoreScroll();}else position();
   });
   resize.observe(scroll);
