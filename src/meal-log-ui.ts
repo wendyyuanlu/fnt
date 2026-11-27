@@ -28,6 +28,7 @@ export function mountMealLog(host:MealLogHost){
   const scroll=element.querySelector<HTMLElement>('.meal-log-scroll')!,footer=element.querySelector<HTMLElement>('.meal-log-footer')!;
   const button=(label:string)=>element.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
   let shape='',active:{row:string;field:MealLogInputField}|undefined,lastHeader='',focusMode=false,writing=false,savedScroll=0,pendingBottom=true,scrollFrame=0;
+  let weightEdit:{row:string;value:string}|undefined;
   let fullHeight=window.visualViewport?.height??innerHeight;
   const touch=()=>document.body.classList.contains('touch-input-device');
   const fieldInput=(row:string,field:MealLogInputField)=>element.querySelector<HTMLInputElement|HTMLTextAreaElement>(`[data-log-row="${row}"][data-log-field="${field}"]`);
@@ -73,6 +74,9 @@ export function mountMealLog(host:MealLogHost){
   };
   const update=()=>{
     const view=host.view(),before=active&&fieldInput(active.row,active.field),focused=before===document.activeElement,caret=before?[before.selectionStart,before.selectionEnd]:undefined;
+    if(writing&&focused&&active?.field==='dayWeight')weightEdit={row:view.header,value:view.weight.value};
+    const keepWeight=focused&&active?.field==='dayWeight'&&weightEdit?.row===view.header&&weightEdit.value===view.weight.value;
+    if(!keepWeight)weightEdit=undefined;
     const currentShape=JSON.stringify([view.header,view.fields,view.rows.map(row=>[row.id,row.manual,row.meal])]);
     if(currentShape!==shape){
       shape=currentShape;
@@ -88,10 +92,10 @@ export function mountMealLog(host:MealLogHost){
         return`<section class="meal-log-card" data-log-card="${row.id}" aria-label="Food ${i+1}">${field('food')}<details class="meal-log-macros" ${expanded.has(row.id)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Macros</span><span data-log-totals></span></summary><div class="meal-log-fields">${mealFields.slice(1,7).map(field).join('')}</div></details>${row.meal?`<details class="meal-log-quantities" data-quantity-key="${quantityKey}" ${quantitiesExpanded.has(quantityKey)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Grams</span></summary>${quantities}</details>`:quantities}${view.fields.notes?`<details class="meal-log-notes" ${notesExpanded.has(row.id)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Notes</span></summary>${field('notes')}</details>`:''}${row.manual?'<label class="inline meal-log-ingredient"><input type="checkbox" data-log-ingredient>Add to Ingredients</label>':''}<div class="meal-log-row-actions">${icon('Move food up',navigationIcon('up'),i===0)}${icon('Move food down',navigationIcon('down'),i===view.rows.length-1)}<button type="button" data-log-insert>+ Food</button>${icon('Delete food',toolbarIcon('trash'))}</div></section>`;
       }).join(''):'<p class="muted">No foods in this day. Use + Food to start logging.</p>');
       for(const details of scroll.querySelectorAll<HTMLDetailsElement>('details'))details.ontoggle=()=>{const row=details.closest<HTMLElement>('[data-log-card]')!.dataset.logCard!,state=details.classList.contains('meal-log-notes')?notesExpanded:details.classList.contains('meal-log-quantities')?quantitiesExpanded:expanded,id=details.dataset.quantityKey??row;if(details.open)state.add(id);else state.delete(id);};
-      if(focused&&active){const input=fieldInput(active.row,active.field);input?.focus({preventScroll:true});if(input&&caret?.[0]!=null&&caret[1]!=null)input.setSelectionRange(caret[0],caret[1]);}
+      if(focused&&active){const input=fieldInput(active.row,active.field);if(input&&keepWeight&&before)input.value=before.value;input?.focus({preventScroll:true});if(input&&caret?.[0]!=null&&caret[1]!=null)input.setSelectionRange(caret[0],caret[1]);}
     }
     const weight=fieldInput(view.header,'dayWeight')!;
-    if((!writing||weight!==document.activeElement)&&weight.value!==view.weight.value)weight.value=view.weight.value;
+    if(!keepWeight&&weight.value!==view.weight.value)weight.value=view.weight.value;
     weight.disabled=view.busy;weight.classList.toggle('calculated',view.weight.calculated);
     for(const row of view.rows){
       element.querySelector<HTMLElement>(`[data-log-card="${row.id}"] [data-log-totals]`)!.textContent=row.totals;

@@ -41,7 +41,7 @@ import {createTextSearch} from './find';
 import {loadPublishedTesting,publishedTestingId,untouchedStarter} from './published';
 import {migrateDropdownData} from './dd-storage';
 import {numericKeyboardFields,numericKeyboardCell,virtualKeyboard as touchKeyboard} from './touch-keyboard';
-import {addMealIngredient,markMealDraft,mealFields,mealLogConfig,mealLogContext,moveMealFood,type MealField} from './meal-log';
+import {addMealIngredient,editMealDayWeight,markMealDraft,mealFields,mealLogConfig,mealLogContext,moveMealFood,type MealField} from './meal-log';
 import {mountMealLog,type MealLogInputField,type MealLogView} from './meal-log-ui';
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
@@ -173,8 +173,8 @@ function mealFieldText(s:Sheet,row:string,field:MealField,fields:ReturnType<type
 function mealView():MealLogView{
   const s=book.sheets.find(sheet=>sheet.id===mealSheet);
   if(!s)throw Error('The Meal log sheet was removed. Restore it before logging.');
-  const context=mealLogContext(book,s,engine),block=context.blocks.find(block=>block.header===mealDay)??[...context.blocks].sort((a,b)=>(b.date??-1)-(a.date??-1))[0];
-  if(!block)throw Error('Create a day before opening Meal log.');
+  const context=mealLogContext(book,s,engine),block=context.blocks.find(block=>block.header===mealDay);
+  if(!block)throw Error('The selected Meal log day header changed. Undo the change or reopen the correct day.');
   mealDay=block.header;
   const value=(row:string,field:MealField)=>mealFieldText(s,row,field,context.fields);
   const rounded=(row:string,field:MealField)=>{
@@ -227,19 +227,23 @@ function openMealCalendar(button:HTMLButtonElement):void{
   closeCellDropdown?.();
   const block=mealLogContext(book,sheet(),engine).blocks.find(block=>block.header===mealDay),popup=document.createElement('div'),controller=new AbortController();
   popup.className='cell-dropdown cell-date-picker';popup.setAttribute('aria-label','Meal log date picker');
-  popup.innerHTML=`<label>Log date<input type="date" aria-label="Log date" min="1900-01-01" max="9999-12-31" value="${esc(block?.date?excelDateText(block.date):'')}"></label><button type="button" class="icon-button group-control summary-chevron" aria-label="Close date picker">${toolbarIcon('close')}</button>`;
+  popup.innerHTML=`<div class="dropdown-panel"><form><div class="button-row"><input type="date" aria-label="Log date" min="1900-01-01" max="9999-12-31" value="${esc(block?.date?excelDateText(block.date):'')}" required><button type="button" class="icon-button group-control summary-chevron" aria-label="Close date picker">${toolbarIcon('close')}</button></div><p class="dropdown-source-error" role="alert" hidden></p></form></div>`;
   const close=()=>{controller.abort();popup.remove();if(closeCellDropdown===close)closeCellDropdown=undefined;};closeCellDropdown=close;
   const position=()=>{const rect=button.getBoundingClientRect(),viewport=visualViewport,top=viewport?.offsetTop??0,height=viewport?.height??innerHeight;popup.style.width=Math.min(336,innerWidth-20)+'px';popup.style.left=Math.max(10,Math.min(rect.left,innerWidth-popup.offsetWidth-10))+'px';popup.style.top=Math.max(top+10,Math.min(rect.bottom+4,top+height-popup.offsetHeight-10))+'px';};
-  popup.querySelector<HTMLInputElement>('input')!.onchange=event=>{
-    const input=event.target as HTMLInputElement,date=parseDateInput(input.value);
+  const input=popup.querySelector<HTMLInputElement>('input')!,message=popup.querySelector<HTMLElement>('[role="alert"]')!;
+  const choose=()=>{
+    const date=parseDateInput(input.value);
     if(typeof date!=='number'||!input.reportValidity()){flash('Choose a valid log date.');return;}
     close();chooseMealDay(date);
   };
+  input.onchange=choose;popup.querySelector('form')!.onsubmit=event=>{event.preventDefault();choose();};
   popup.querySelector<HTMLButtonElement>('button')!.onclick=close;
   popup.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();close();}event.stopPropagation();};
   document.body.append(popup);position();
   document.addEventListener('pointerdown',event=>{if(event.target instanceof Node&&!popup.contains(event.target)&&!button.contains(event.target))close();},{capture:true,signal:controller.signal});
   window.visualViewport?.addEventListener('resize',position,{signal:controller.signal});
+  input.focus({preventScroll:true});
+  if(input.showPicker)try{input.showPicker();}catch(error){message.hidden=false;message.textContent=`Calendar could not open automatically. Use the date field. ${error instanceof Error?error.message:String(error)}`;position();}
 }
 function openMealLog():void{
   if(mealPanel){closeMealLog();return;}
@@ -260,9 +264,10 @@ function openMealLog():void{
       write:(row,field,text)=>{
         const s=sheet(),context=field==='dayWeight'?undefined:mealLogContext(book,s,engine),column=field==='dayWeight'?masterLogging(book,s).label:context!.fields.get(field);
         if(!column){flash('This Meal log field was removed. Restore it before editing.');return false;}
+        if(field==='dayWeight'&&row!==mealDay){flash('The selected logging day changed. Reopen its Weight field before editing.');return false;}
         const cell=getCell(s,row,column.column),value=cell.formula||cell.binding?scalar(engine.cell(s.id,row,column.column)):cell.value??null;
         if(text===(field==='dayWeight'?cell.fractionInput??(isFault(value)?value.error:String(value??'')):mealFieldText(s,row,field,context!.fields)))return true;
-        const ok=field==='dayWeight'&&!text.trim()?mutate('Edit day Weight',()=>editMasterDayInput(book,s,row,column.column,()=>writeGridCell(book,s,row,column.column,text))):mutateCell(s,row,column.column,()=>writeGridCell(book,s,row,column.column,text,field==='food'||field==='unit'||field==='notes'));
+        const ok=mutateCell(s,row,column.column,()=>field==='dayWeight'?editMealDayWeight(book,s,row,text,engine):writeGridCell(book,s,row,column.column,text,field==='food'||field==='unit'||field==='notes'));
         if(ok)mealPanel?.refresh();return ok;
       },
       dropdown:(row,field,anchor)=>{

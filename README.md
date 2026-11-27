@@ -196,6 +196,12 @@ remain viewable only in history.
   hidden while the keyboard is open, including overlay-keyboard layouts.
   Large option sets scroll continuously without a pager.
   **Weight**, above the foods, maps to the selected day-summary row's `Weight`.
+  Clearing Weight keeps the existing `x` placeholder underneath, so retyping
+  never removes a day boundary or moves its foods; original marker/date/total
+  formulas and groups remain intact. Direct spreadsheet edits retain their
+  intentional day-boundary behavior. Today uses the device's local calendar
+  date without consuming the next-day cursor; the date button opens the shared
+  native date picker to navigate or create that day.
   **Grams** maps to Master `Amount (g)`; choosing a linked Meals entry collapses
   Grams/Amount/Unit behind a shared chevron.
   An inherited Grams formula's zero is shown as blank while Amount/Unit are

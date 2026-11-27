@@ -1,8 +1,8 @@
 import {expect,test,type Page} from '@playwright/test';
 
-async function setup(page:Page,extraFoods=0,splitDays=false){
+async function setup(page:Page,extraFoods=0,splitDays=false,firstDay=20){
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
-  const fixture=await page.evaluate(async({extraFoods,splitDays})=>{
+  const fixture=await page.evaluate(async({extraFoods,splitDays,firstDay})=>{
     const load=(name:string)=>import(/* @vite-ignore */'/src/'+name+'.ts');
     const {Store}=await load('storage') as typeof import('../../src/storage'),{addTableColumns,blankSheet,renameColumn,setInput,uid}=await load('model') as typeof import('../../src/model');
     const {masterLogging}=await load('day-logging') as typeof import('../../src/day-logging'),{defaultHeaderFormula}=await load('meal-block') as typeof import('../../src/meal-block'),store=await Store.open();
@@ -13,7 +13,7 @@ async function setup(page:Page,extraFoods=0,splitDays=false){
       book.tables.push(table);table.columns.forEach(field=>setInput(book,s,table.header,field.column,field.name));
       const input=(r:number,c:number,value:string)=>setInput(book,s,s.rows[r].id,s.columns[c].id,value);
       for(let r=1;r<6;r++)input(r,2,'=[@Weight]<>""');
-      for(const r of [1,4]){input(r,1,'x');input(r,0,`=DATE(2026,11,${r===1?20:21})`);for(let c=4;c<10;c++)input(r,c,defaultHeaderFormula(book,table,table.columns[c].id));}
+      for(const r of [1,4]){input(r,1,'x');input(r,0,`=DATE(2026,11,${r===1?firstDay:firstDay+1})`);for(let c=4;c<10;c++)input(r,c,defaultHeaderFormula(book,table,table.columns[c].id));}
       const ingredients=book.tables.find(table=>table.name==='Ingredients')!;
       const source=book.sheets.find(sheet=>sheet.id===ingredients.sheet)!;renameColumn(book,ingredients,ingredients.columns[0].id,'Ingredients');
       const extra=source.columns.slice(6,11);
@@ -33,16 +33,16 @@ async function setup(page:Page,extraFoods=0,splitDays=false){
       await store.save(book,state.version,'Synthetic meal log');
       return{sheet:s.id,table:table.id,first:s.rows[2].id,latest:s.rows[5+extraFoods].id,ingredient:ingredients.id};
     }finally{store.close();}
-  },{extraFoods,splitDays});
+  },{extraFoods,splitDays,firstDay});
   await page.reload();await page.getByRole('button',{name:'Log test',exact:true}).click();return fixture;
 }
-async function read(page:Page,sheet:string){
+async function read(page:Page,sheet:string,source=''){
   await expect(page.locator('#save-state')).toContainText(/^Saved/);
-  return page.evaluate(async id=>{
-    const storage='/src/storage.ts',logging='/src/day-logging.ts';
+  return page.evaluate(async({id,source})=>{
+    const storage=source+'/src/storage.ts',logging=source+'/src/day-logging.ts';
     const {Store}=await import(/* @vite-ignore */storage),{masterDayBlocks}=await import(/* @vite-ignore */logging),store=await Store.open();
     try{const state=(await store.load())!,sheet=state.book.sheets.find((s:{id:string})=>s.id===id)!;return{book:state.book,sheet,blocks:masterDayBlocks(state.book,sheet)};}finally{store.close();}
-  },sheet);
+  },{id:sheet,source});
 }
 
 test('newest log opens at the bottom, stays open across sheets, and reuses toggled, calculated and square-button styles',async({page})=>{
@@ -244,6 +244,108 @@ test('Weight writes the summary row, not food Grams, and linked Meals quantities
   await read(page,fixture.sheet);
   await page.reload();await page.locator('#meal-log').click();await expect(card.locator('.meal-log-quantities')).not.toHaveAttribute('open','');
   await card.getByRole('button',{name:'Choose Food',exact:true}).click();await expect(page.getByRole('tab',{name:'Meals',exact:true})).toHaveAttribute('aria-selected','true');
+});
+
+test.describe('Meal log day integrity',()=>{
+  test.use({timezoneId:'America/Denver'});
+  async function groupedDays(page:Page,firstDay=25){
+    await page.clock.setFixedTime(new Date('2026-11-27T04:29:00Z'));
+    const fixture=await setup(page,3,false,firstDay);
+    await page.evaluate(async id=>{
+      const load=(name:string)=>import(/* @vite-ignore */'/src/'+name+'.ts');
+      const {Store}=await load('storage') as typeof import('../../src/storage'),{masterDayBlocks}=await load('day-logging') as typeof import('../../src/day-logging');
+      const {excelDate}=await load('dates') as typeof import('../../src/dates'),{setInput,uid}=await load('model') as typeof import('../../src/model'),store=await Store.open();
+      try{
+        const state=(await store.load())!,sheet=state.book.sheets.find(sheet=>sheet.id===id)!;
+        sheet.dayLogging!.nextDate=excelDate(2026,11,27)!;
+        const blocks=masterDayBlocks(state.book,sheet);
+        for(const block of blocks)for(const row of block.rows.slice(1))setInput(state.book,sheet,row,sheet.columns[0].id,`=A${sheet.rows.findIndex(row=>row.id===block.header)+1}`);
+        sheet.groups=blocks.map(block=>({id:uid(),axis:'row',kind:'summary',members:block.rows,collapsed:false,label:'Synthetic day'}));
+        await store.save(state.book,state.version,'Synthetic grouped days');
+      }finally{store.close();}
+    },fixture.sheet);
+    await page.reload();await page.locator('#meal-log').click();return fixture;
+  }
+  test('clearing and retyping Weight never moves foods, removes a day, changes dates or consumes the cursor',async({page})=>{
+    const fixture=await groupedDays(page),panel=page.locator('.meal-log-panel'),date=panel.getByRole('button',{name:'Choose log date',exact:true});
+    const weight=panel.getByRole('textbox',{name:'Weight',exact:true}),before=await read(page,fixture.sheet),header=before.blocks.at(-1)!.header;
+    const table=before.book.tables.find((table:{id:string})=>table.id===fixture.table)!,column=table.columns.find((field:{name:string})=>field.name==='Weight')!.column;
+    const unchangedCells=Object.fromEntries(Object.entries(before.sheet.cells).filter(([address])=>address!==`${header}:${column}`));
+    const foods=before.blocks.at(-1)!.rows.slice(1),check=async()=>{
+      await expect(date).toHaveText('11/26');
+      expect(await panel.locator('[data-log-card]').evaluateAll(cards=>cards.map(card=>(card as HTMLElement).dataset.logCard))).toEqual(foods);
+      const saved=await read(page,fixture.sheet);
+      expect(saved.blocks).toEqual(before.blocks);expect(saved.sheet.rows).toEqual(before.sheet.rows);expect(saved.sheet.groups).toEqual(before.sheet.groups);
+      expect(saved.sheet.dayLogging.nextDate).toBe(before.sheet.dayLogging.nextDate);
+      expect(Object.fromEntries(Object.entries(saved.sheet.cells).filter(([address])=>address!==`${header}:${column}`))).toEqual(unchangedCells);
+    };
+    await weight.click();await weight.press('Control+a');await weight.press('Backspace');await check();await expect(weight).toHaveValue('');await expect(weight).toBeFocused();
+    await weight.pressSequentially('68.',{delay:30});await check();await expect(weight).toHaveValue('68.');
+    await weight.pressSequentially('25',{delay:30});await check();await expect(weight).toHaveValue('68.25');
+    await weight.fill('0');await check();await expect(weight).toHaveValue('0');
+    await weight.fill('');await check();await weight.press('Control+z');await check();await expect(weight).toHaveValue('0');
+    await weight.press('Control+y');await check();await expect(weight).toHaveValue('x');
+    await weight.fill('');await panel.getByRole('button',{name:'Today',exact:true}).click();await check();
+    await panel.getByRole('button',{name:'Previous day',exact:true}).click();await expect(date).toHaveText('11/25');
+    await panel.getByRole('button',{name:'Next day',exact:true}).click();await check();
+    await panel.getByRole('button',{name:'Undo',exact:true}).click();await check();
+    await page.reload();await page.locator('#meal-log').click();await check();
+  });
+  test('Today creates the local 11/26 at 21:29, not UTC 11/27 or the next-day cursor',async({page})=>{
+    const fixture=await groupedDays(page,24),before=await read(page,fixture.sheet),panel=page.locator('.meal-log-panel');
+    await panel.getByRole('button',{name:'Today',exact:true}).click();await expect(panel.getByRole('button',{name:'Choose log date',exact:true})).toHaveText('11/26');
+    const saved=await read(page,fixture.sheet),dates='/src/dates.ts',today=await page.evaluate(async path=>{
+      const {excelDate}=await import(/* @vite-ignore */path) as typeof import('../../src/dates');return excelDate(2026,11,26);
+    },dates);
+    expect(saved.blocks.slice(0,-1)).toEqual(before.blocks);expect(saved.blocks.at(-1)!.date).toBe(today);
+    expect(saved.sheet.dayLogging.nextDate).toBe(before.sheet.dayLogging.nextDate);
+    await panel.getByRole('button',{name:'Today',exact:true}).click();expect((await read(page,fixture.sheet)).blocks).toEqual(saved.blocks);
+  });
+  test('date button invokes a visible native calendar in the tap gesture and navigates without moving food',async({page,isMobile})=>{
+    const fixture=await groupedDays(page),before=await read(page,fixture.sheet);
+    await page.evaluate(()=>{
+      const native=HTMLInputElement.prototype.showPicker;
+      HTMLInputElement.prototype.showPicker=function(){
+        document.body.dataset.calendarInvocation=JSON.stringify({value:this.value,active:navigator.userActivation.isActive,width:this.getBoundingClientRect().width});
+        native.call(this);
+      };
+    });
+    const date=page.locator('.meal-log-panel').getByRole('button',{name:'Choose log date',exact:true});
+    if(isMobile)await date.tap();else await date.click();
+    const input=page.getByLabel('Log date',{exact:true});await expect(input).toBeVisible();
+    await expect(page.locator('.cell-date-picker [role="alert"]')).toBeHidden();
+    const invoked=await page.evaluate(()=>JSON.parse(document.body.dataset.calendarInvocation??'null'));
+    expect(invoked).toMatchObject({value:'2026-11-26',active:true});expect(invoked.width).toBeGreaterThan(100);
+    await input.fill('2026-11-25');await expect(date).toHaveText('11/25');
+    const after=await read(page,fixture.sheet);expect(after.blocks).toEqual(before.blocks);expect(after.sheet.groups).toEqual(before.sheet.groups);
+  });
+  test('production bundle preserves grouped foods after clearing Weight, local Today, reload and opening the native calendar',async({page,isMobile})=>{
+    const fixture=await groupedDays(page),before=await read(page,fixture.sheet),source=new URL(page.url()).origin;
+    await page.goto(process.env.FNT_PUBLISHED_URL!);await expect(page.locator('#save-state')).toContainText(/^Saved/);
+    await page.evaluate(async({source,book})=>{
+      const storage=source+'/src/storage.ts',{Store}=await import(/* @vite-ignore */storage) as typeof import('../../src/storage'),store=await Store.open();
+      try{const state=(await store.load())!;await store.save(book,state.version,'Synthetic production day integrity');}finally{store.close();}
+    },{source,book:before.book});
+    await page.reload();await page.getByRole('button',{name:'Log test',exact:true}).click();await page.locator('#meal-log').click();
+    const panel=page.locator('.meal-log-panel'),weight=panel.getByRole('textbox',{name:'Weight',exact:true}),date=panel.getByRole('button',{name:'Choose log date',exact:true});
+    await weight.fill('');await expect(date).toHaveText('11/26');
+    const cleared=await read(page,fixture.sheet,source);expect(cleared.blocks).toEqual(before.blocks);expect(cleared.sheet.groups).toEqual(before.sheet.groups);
+    await expect(weight).toHaveValue('');await weight.pressSequentially('68.25');await panel.getByRole('button',{name:'Today',exact:true}).click();
+    await expect(date).toHaveText('11/26');const saved=await read(page,fixture.sheet,source);
+    expect(saved.blocks).toEqual(before.blocks);expect(saved.sheet.dayLogging.nextDate).toBe(before.sheet.dayLogging.nextDate);
+    const header=before.blocks.at(-1)!.header,column=before.book.tables.find((table:{id:string})=>table.id===fixture.table)!.columns.find((field:{name:string})=>field.name==='Weight')!.column;
+    expect(saved.sheet.cells[`${header}:${column}`].value).toBe(68.25);
+    await page.reload();await page.locator('#meal-log').click();await expect(weight).toHaveValue('68.25');await expect(date).toHaveText('11/26');
+    await page.evaluate(()=>{
+      const native=HTMLInputElement.prototype.showPicker;
+      HTMLInputElement.prototype.showPicker=function(){document.body.dataset.calendarInvocation=this.value;native.call(this);};
+    });
+    if(isMobile)await date.tap();else await date.click();
+    await expect(page.locator('.cell-date-picker [role="alert"]')).toBeHidden();
+    expect(await page.evaluate(()=>document.body.dataset.calendarInvocation)).toBe('2026-11-26');
+    await page.getByLabel('Log date',{exact:true}).fill('2026-11-25');await expect(date).toHaveText('11/25');
+    expect((await read(page,fixture.sheet,source)).blocks).toEqual(before.blocks);
+  });
 });
 
 test('Meal log matches the sketch layout and live fields, uses the shared picker, adds ingredients and persists without Save',async({page,isMobile})=>{

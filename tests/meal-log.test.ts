@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import {addMasterFood,masterLogging,masterDayBlocks} from '../src/day-logging';
 import {Engine,scalar} from '../src/formula';
-import {addMealIngredient,markMealDraft,mealLogConfig,mealLogContext,moveMealFood} from '../src/meal-log';
+import {addMealIngredient,editMealDayWeight,markMealDraft,mealLogConfig,mealLogContext,moveMealFood} from '../src/meal-log';
 import {addTableColumns,blankSheet,clone,createDemo,getCell,moveColumns,renameColumn,setInput} from '../src/model';
 import {applyUndo,structuralUndo} from '../src/undo-history';
 import {validationChoiceGroups} from '../src/references';
@@ -46,6 +46,38 @@ it('retains live field identities and formulas after column moves and names chan
   setInput(book,sheet,food,fields.get('calories')!.column,'321');
   expect(scalar(new Engine(book).cell(sheet.id,header,fields.get('calories')!.column))).toBe(421);
   validateBook(book);
+});
+it('keeps day boundaries, groups, formulas and cursor intact through blank, zero and decimal Weight edits after a column rename and move',()=>{
+  const {book,sheet,table}=fixture(),header=sheet.rows[4].id,weight=table.columns[1];
+  sheet.groups=masterDayBlocks(book,sheet).map(block=>({id:'day-'+block.header,axis:'row',kind:'summary',members:block.rows,collapsed:false,label:'Synthetic day'}));
+  renameColumn(book,table,weight.id,'Measured weight');moveColumns(book,sheet,[weight.column],0);
+  const expected=clone(book),blocks=masterDayBlocks(book,sheet),engine=new Engine(book),address=`${header}:${weight.column}`;
+  for(const [value,result] of [['','x'],[' ','x'],['0',0],['68.25',68.25],['','x'],['(Tues)','(Tues)']] as const){
+    editMealDayWeight(book,sheet,header,value,engine);
+    expect(getCell(sheet,header,weight.column).value).toBe(result);
+    expected.sheets.find(source=>source.id===sheet.id)!.cells[address]=clone(getCell(sheet,header,weight.column));
+    expect(book).toEqual(expected);expect(masterDayBlocks(book,sheet,engine)).toEqual(blocks);validateBook(book);
+  }
+});
+it('rejects missing, food and demoted day targets without writing Weight or changing day membership',()=>{
+  const {book,sheet,input}=fixture(),header=sheet.rows[4].id;
+  input(4,1,'');
+  for(const row of ['missing-row',sheet.rows[2].id,header]){
+    const before=clone(book);
+    expect(()=>editMealDayWeight(book,sheet,row,'68.25')).toThrow('day header changed');
+    expect(book).toEqual(before);
+  }
+});
+it('rolls back empty literals and invalid Weight formulas without poisoning day calculations, while allowing valid formulas',()=>{
+  const {book,sheet,table}=fixture(),header=sheet.rows[4].id,engine=new Engine(book),blocks=masterDayBlocks(book,sheet,engine);
+  for(const value of ["'",'=""','=NA()','=']){
+    const before=clone(book);
+    expect(()=>editMealDayWeight(book,sheet,header,value,engine)).toThrow();
+    expect(book).toEqual(before);expect(masterDayBlocks(book,sheet,engine)).toEqual(blocks);
+  }
+  editMealDayWeight(book,sheet,header,'=60+8',engine);
+  expect(scalar(engine.cell(sheet.id,header,table.columns[1].column))).toBe(68);
+  expect(masterDayBlocks(book,sheet,engine)).toEqual(blocks);validateBook(book);
 });
 it('copies manual nutrition to Ingredients, links the Food cell, and reverses the whole action with Undo',()=>{
   const {book,sheet,input}=fixture();input(2,10,'300');

@@ -67,6 +67,19 @@ export function mealLogContext(book:Workbook,sheet:Sheet,engine?:Engine){
   if(!fields.has('food'))throw Error('Restore the Meal log Food field before logging.');
   return{table,fields,blocks:masterDayBlocks(book,sheet,engine).filter(block=>block.isDay)};
 }
+export function editMealDayWeight(book:Workbook,sheet:Sheet,row:string,value:string,engine=new Engine(book)):void{
+  const blocks=mealLogContext(book,sheet,engine).blocks;
+  if(!blocks.some(block=>block.header===row))throw Error('This Meal log day header changed. Undo the change or reopen the correct day before editing Weight.');
+  const {label}=masterLogging(book,sheet),address=key(row,label.column),previous=sheet.cells[address],reference=`${sheet.id}:${address}`;
+  try{
+    setInput(book,sheet,row,label.column,value.trim()?value:'x');engine.invalidate([reference]);
+    const after=mealLogContext(book,sheet,engine).blocks;
+    if(after.length!==blocks.length||after.some((block,i)=>block.header!==blocks[i].header||block.rows.length!==blocks[i].rows.length||block.rows.some((row,j)=>row!==blocks[i].rows[j])))throw Error('Weight would change day grouping. Clear the field to leave this day unmeasured instead.');
+  }catch(error){
+    if(previous)sheet.cells[address]=previous;else delete sheet.cells[address];
+    engine.invalidate([reference]);throw error;
+  }
+}
 export function moveMealFood(book:Workbook,sheet:Sheet,row:string,direction:-1|1,engine?:Engine):void{
   const {table,blocks}=mealLogContext(book,sheet,engine),block=blocks.find(block=>block.rows.slice(1).includes(row));
   if(!block)throw Error('This food no longer belongs to a day.');
