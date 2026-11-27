@@ -2,7 +2,7 @@ import './style.css';
 import {mountWorkbookComparison} from './sync-comparison';
 import {mergeComparison} from './comparison-merge';
 import type {ComparisonSource} from './comparison-host';
-import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,listComparisonCommits,readComparisonCommit,snapshotDate,type ComparisonSnapshot,type ComparisonCommit,type ComparisonCommitPage} from './github-snapshots';
+import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,listComparisonCommits,readComparisonCommit,snapshotDate,type ComparisonSnapshot,type ComparisonCommit} from './github-snapshots';
 import {githubFormDefaults} from './github-client';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
@@ -1061,7 +1061,7 @@ function openComparison(conflict?:SyncConflict):void{
   document.querySelectorAll<HTMLDialogElement>('dialog[open]').forEach(dialog=>dialog.close());
   document.body.classList.add('comparison-open');document.body.append(view);
   let files:ComparisonSnapshot[]=[];
-  const commitPages=new Map<number,ComparisonCommitPage>(),commits=new Map<string,ComparisonCommit>();
+  const commits=new Map<string,ComparisonCommit>();
   const dispose=mountWorkbookComparison(view,{
     local:source(captured.book,'This device','Current local workbook'),
     remote:conflict?source(conflict.remote,'GitHub','Preserved sync-conflict copy',conflict.sha):undefined,
@@ -1084,8 +1084,7 @@ function openComparison(conflict?:SyncConflict):void{
     }:undefined,
     commits:config&&credential?{
       list:async page=>{
-        let result=commitPages.get(page);
-        if(!result){result=await listComparisonCommits(config,credential,page);commitPages.set(page,result);for(const commit of result.commits)commits.set(commit.sha,commit);}
+        const result=await listComparisonCommits(config,credential,page);for(const commit of result.commits)commits.set(commit.sha,commit);
         return result;
       },
       read:async entry=>{

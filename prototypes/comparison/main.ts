@@ -23,6 +23,7 @@ let specific='';
 let focus:{difference:number;row?:string;column?:string}|undefined;
 let sourcesBusy=true;
 const commitSelections:Partial<Record<'left'|'right',string>>={};
+const latestSelections=new Set<'left'|'right'>();
 const sharedDropdowns=new Map<string,ReturnType<typeof mountSelectDropdown>>();
 type Pick='left'|'right';
 const choices=new Map<number,Pick>(),choiceHistory:Map<number,Pick>[]=[];
@@ -516,7 +517,11 @@ async function loadComparison(candidateLeft=left,candidateRight=right,onCommit:(
   }catch(error){if(generation===request)showError(error);return false;}
   finally{if(generation===request){document.body.dataset.loading='false';el('workspace').setAttribute('aria-busy','false');}}
 }
-function showError(error:unknown){el('error').hidden=false;el('error').textContent=`Comparison could not be completed. Neither workbook was changed. ${error instanceof Error?error.message:String(error)}`;}
+function showError(error:unknown){
+  const message=error&&typeof error==='object'&&'message'in error&&typeof error.message==='string'?error.message:String(error);
+  const update=host?.readRemote&&!host.commits&&message.includes('Invalid Meal log field identities')?' This open workbook uses an older Meal log schema. Go back, save locally, and use Update website before reading the newer copy.':'';
+  el('error').hidden=false;el('error').textContent=`Comparison could not be completed. Neither workbook was changed. ${message}${update}`;
+}
 async function readWorkbook(contents:string):Promise<Workbook>{
   let root=parseArchive(contents) as Record<string,unknown>;
   if(root.format==='fnt-comparison-snapshot')return comparisonSnapshot(contents);
@@ -531,6 +536,7 @@ function sourceTime(time:string,timeZone?:string):string{
 }
 function setSource(side:'left'|'right',label:string,kind:string,commit?:string){
   delete commitSelections[side];
+  latestSelections.delete(side);
   el(`${side}-source`).textContent=label;
   document.querySelector<HTMLElement>(`.${side}-pane > header b`)!.textContent=kind;
   el(`${side}-grid`).setAttribute('aria-label',kind+' spreadsheet preview');
@@ -596,26 +602,30 @@ for(const side of ['left','right'] as const)el(side+'-github').onclick=()=>{
 };
 el('snapshot-close').onclick=()=>picker.close();
 let snapshotConfig:SyncConfig|undefined,snapshotToken='',uploadedFiles:ComparisonSnapshot[]=[];
+async function selectComparisonSource(side:'left'|'right',read:()=>Promise<ComparisonSource>,reading:string,latest=false):Promise<void>{
+  if(sourcesBusy)return;
+  setSourcesBusy(true);
+  const totals=el('totals'),previousTotals=totals.textContent;totals.textContent=reading;
+  try{
+    const source=await read(),other=side==='left'?right:left;
+    if(other&&source.book.id!==other.id)throw Error('This copy belongs to a different workbook. Neither comparison source was replaced.');
+    el('error').hidden=true;
+    const commit=()=>{setHostSource(side,source);if(latest)latestSelections.add(side);};
+    if(side==='left'&&!right){left=source.book;commit();waitForCopy();return;}
+    await loadComparison(side==='left'?source.book:left,side==='right'?source.book:right,commit);
+  }catch(error){showError(error);}
+  finally{if(totals.textContent===reading)totals.textContent=previousTotals;setSourcesBusy(false);}
+}
 for(const side of ['left','right'] as const)mountCommitPicker(el<HTMLButtonElement>(side+'-commits'),{
   selected:()=>commitSelections[side],
-  list:page=>host?.commits?host.commits.list(page):listComparisonCommits(snapshotConfig,snapshotToken,page),
+  list:host&&!host.commits?undefined:page=>host?.commits?host.commits.list(page):listComparisonCommits(snapshotConfig,snapshotToken,page),
+  latest:host?.readRemote?{selected:()=>latestSelections.has(side),choose:()=>void selectComparisonSource(side,host.readRemote!,'Reading latest saved workbook...',true)}:undefined,
   choose:entry=>{
     if(sourcesBusy||commitSelections[side]===entry.sha)return;
-    setSourcesBusy(true);
-    const totals=el('totals'),previousTotals=totals.textContent,reading=`Reading commit ${entry.sha.slice(0,8)}...`;
-    totals.textContent=reading;
-    void (async()=>{
-      try{
-        const loaded=host?.commits?await host.commits.read(entry):await readComparisonCommit(snapshotConfig,snapshotToken,entry);
-        const source:ComparisonSource='kind'in loaded?loaded:{book:loaded.book,kind:'GitHub commit',label:`${loaded.path} · ${entry.sha.slice(0,8)}`,revision:entry.sha,freshness:`Committed: ${sourceTime(entry.time)}.`};
-        const other=side==='left'?right:left;
-        if(other&&source.book.id!==other.id)throw Error('This commit belongs to a different workbook. Neither comparison source was replaced.');
-        el('error').hidden=true;
-        if(side==='left'&&!right){left=source.book;setHostSource(side,source);waitForCopy();return;}
-        await loadComparison(side==='left'?source.book:left,side==='right'?source.book:right,()=>setHostSource(side,source));
-      }catch(error){showError(error);}
-      finally{if(totals.textContent===reading)totals.textContent=previousTotals;setSourcesBusy(false);}
-    })();
+    void selectComparisonSource(side,async()=>{
+      const loaded=host?.commits?await host.commits.read(entry):await readComparisonCommit(snapshotConfig,snapshotToken,entry);
+      return 'kind'in loaded?loaded:{book:loaded.book,kind:'GitHub commit',label:`${loaded.path} · ${entry.sha.slice(0,8)}`,revision:entry.sha,freshness:`Committed: ${sourceTime(entry.time)}.`};
+    },`Reading commit ${entry.sha.slice(0,8)}...`);
   },
 });
 const snapshotControls=(['left','right'] as const).map(side=>{
@@ -651,10 +661,9 @@ function setSourcesBusy(busy:boolean){
   for(const side of ['left','right']){
     el<HTMLButtonElement>(side+'-github').disabled=unavailable||!!host&&!host.uploads;
     el<HTMLInputElement>(side+'-file').disabled=unavailable;
-    el<HTMLButtonElement>(side+'-commits').disabled=unavailable||(host?!host.commits:!snapshotConfig||!snapshotToken);
+    el<HTMLButtonElement>(side+'-commits').disabled=unavailable||(host?!host.commits&&!host.readRemote:!snapshotConfig||!snapshotToken);
   }
   el<HTMLButtonElement>('snapshot-list').disabled=unavailable||!!host&&!host.uploads;
-  const remote=el<HTMLButtonElement>('comparison-github');if(remote)remote.disabled=unavailable||!host?.readRemote;
   document.querySelectorAll<HTMLInputElement>('#snapshot-connect input').forEach(input=>input.disabled=unavailable);
   for(const {side,select,control}of snapshotControls){
     select.disabled=unavailable||side!==snapshotSide||!uploadedFiles.length;control.refresh();
@@ -759,8 +768,8 @@ async function start(){
       left=host.local.book;setHostSource('left',host.local);
       setSource('right','Attach a local JSON copy or read the saved GitHub version.','Compared copy');
       waitForCopy();
-      const source=host.remote??(host.readRemote?await host.readRemote():undefined);
-      if(source){right=source.book;setHostSource('right',source);await loadComparison();}
+      const source=host.remote??(host.commits&&host.readRemote?await host.readRemote():undefined);
+      if(source){right=source.book;setHostSource('right',source);if(!host.remote)latestSelections.add('right');await loadComparison();}
       return;
     }
     const responses=await Promise.all(['left.json','right.json','source-meta.json'].map(async path=>{const response=await fetch(path,{cache:'no-store'});if(!response.ok)throw Error(`${path} returned ${response.status}`);return response.text();}));
@@ -786,18 +795,8 @@ if(host){
   el('snapshot-connect').querySelector<HTMLElement>('.snapshot-config')!.hidden=true;
   el('snapshot-token').closest<HTMLElement>('label')!.hidden=true;
   el('snapshot-connect').querySelectorAll<HTMLInputElement>('input').forEach(input=>input.required=false);
-  const remote=document.createElement('button');remote.type='button';remote.id='comparison-github';remote.textContent='Read GitHub';
-  remote.setAttribute('aria-label','Compare with remote version (GitHub)');
-  remote.onclick=async()=>{
-    if(sourcesBusy||!host.readRemote)return;
-    setSourcesBusy(true);
-    try{
-      const source=await host.readRemote();
-      if(source.book.id!==left.id)throw Error('The GitHub copy belongs to a different workbook. Neither comparison source was replaced.');
-      el('error').hidden=true;await loadComparison(left,source.book,()=>setHostSource('right',source));
-    }catch(error){showError(error);}
-    finally{setSourcesBusy(false);}
-  };
-  document.querySelector('#right-source-card .source-actions')!.prepend(remote);
+  const note=el('source-auth-note');
+  if(!host.readRemote&&!host.commits&&!host.uploads){note.hidden=false;note.textContent='GitHub controls require Private GitHub sync to be connected in this browser. Local JSON copies still work offline.';}
+  else if(host.readRemote&&!host.commits){note.hidden=false;note.textContent='This open workbook uses an older website version. Save locally and use Update website to enable commit history and read newer Meal log fields. No GitHub copy was loaded automatically.';}
 }
 void start();

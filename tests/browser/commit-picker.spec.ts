@@ -1,6 +1,6 @@
 import {expect,test} from '@playwright/test';
 import {encode64} from '../../src/storage';
-import {createDemo} from '../../src/model';
+import {createDemo,key} from '../../src/model';
 import {decompressArchive} from '../../src/archive';
 
 test.use({timezoneId:'America/Los_Angeles'});
@@ -14,7 +14,7 @@ test('commit picker uses local time, sticky three-column headers, collapsible da
     mountCommitPicker(trigger,{selected:()=>entries[0].sha,list:async page=>page===1?{commits:entries,next:2}:{commits:[{sha:'f'.repeat(40),time:'2026-11-24T22:00:00Z',message:'Older invented commit'}]},choose:entry=>document.body.dataset.chosenCommit=entry.sha});
   });
 
-  await page.getByRole('button',{name:'Test commits',exact:true}).click();
+  await page.getByRole('combobox',{name:'Test commits',exact:true}).click();
   const popup=page.locator('.commit-popup'),list=popup.getByRole('listbox',{name:'Commits',exact:true});
   await expect(popup.getByRole('searchbox',{name:'Search commits',exact:true})).toBeFocused();
   await expect(popup.locator('.commit-header')).toHaveText('TimeChangesCommit');await expect(popup.locator('.commit-header')).toHaveCSS('position','sticky');
@@ -31,20 +31,25 @@ test('commit picker uses local time, sticky three-column headers, collapsible da
 });
 
 test('historical comparison sources stay read-only until submission and use the current remote head when syncing',async({page})=>{
-  const a='a'.repeat(40),b='b'.repeat(40),c='c'.repeat(40);let content='',writes=0,allowUpload=false,uploaded='';
+  const a='a'.repeat(40),b='b'.repeat(40),c='c'.repeat(40);let content='',currentSha='current-blob',historyReads=0,writes=0,allowUpload=false,uploaded='';
   await page.route('https://api.github.com/**',async route=>{
     const url=new URL(route.request().url());
     if(route.request().method()==='PUT'){
       expect(allowUpload).toBe(true);const body=route.request().postDataJSON() as {sha:string;content:string};
-      expect(body.sha).toBe('current-blob');writes++;uploaded=body.content;await route.fulfill({json:{content:{sha:'saved-blob'}}});return;
+      expect(body.sha).toBe(currentSha);writes++;uploaded=body.content;await route.fulfill({json:{content:{sha:'saved-blob'}}});return;
     }
     if(url.pathname.endsWith('/commits')){
+      historyReads++;
       await route.fulfill({json:[a,b,c].map((sha,i)=>({sha,commit:{committer:{date:`2026-11-${25-i}T22:00:00Z`},message:`Fnt save (${i+1} pending changes)`}}))});return;
     }
     if(url.pathname.includes('/contents/')){
       const envelope=JSON.parse(content),ref=url.searchParams.get('ref');
-      if(ref===c)envelope.book=createDemo();else if(ref===a||ref===b)envelope.book={...envelope.book,title:ref===a?'Invented first commit':'Invented second commit'};
-      await route.fulfill({json:{sha:'current-blob',content:encode64(JSON.stringify(envelope)),encoding:'base64'}});return;
+      if(ref===c)envelope.book=createDemo();else if(ref===a||ref===b){
+        envelope.book.title=ref===a?'Invented first commit':'Invented second commit';
+        const sheet=envelope.book.sheets.at(-1);
+        for(const row of [1,60])sheet.cells[key(sheet.rows[row].id,sheet.columns[0].id)]={value:`Invented ${ref.slice(0,8)} row ${row}`};
+      }
+      await route.fulfill({json:{sha:currentSha,content:encode64(JSON.stringify(envelope)),encoding:'base64'}});return;
     }
     await route.fulfill({json:{private:true,has_pages:false}});
   });
@@ -61,14 +66,35 @@ test('historical comparison sources stay read-only until submission and use the 
   await page.reload();await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
   const frame=page.frameLocator('.comparison-view iframe');
   await expect(frame.locator('#right-source')).toHaveText('book.json');
-  await expect(frame.getByRole('button',{name:'Commits for left comparison',exact:true})).toBeEnabled();
+  await expect(frame.getByRole('combobox',{name:'Commits for left comparison',exact:true})).toBeEnabled();
   const beforeSelection=await page.evaluate(async()=>{const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();try{return(await store.load())!.book;}finally{store.close();}});
+  await expect(frame.getByRole('button',{name:'Read GitHub',exact:true})).toHaveCount(0);
+  await expect(frame.locator('#right-github')).toHaveText('Uploads');
+  await frame.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();
+  await expect(frame.locator(`[data-commit="${a}"]`)).toBeVisible();
+  content=JSON.stringify({format:'fnt-sync-v1',book:{...original,title:'Newest invented save'},operations:[]});currentSha='fresh-blob';
+  await frame.getByRole('option',{name:'Latest saved workbook',exact:true}).click();
+  await expect(frame.locator('#detail-right')).toContainText('Newest invented save');expect(writes).toBe(0);
   for(const [side,sha]of [['left',a],['right',b]] as const){
-    await frame.getByRole('button',{name:`Commits for ${side} comparison`,exact:true}).click();
+    await frame.getByRole('combobox',{name:`Commits for ${side} comparison`,exact:true}).click();
     await frame.locator(`[data-commit="${sha}"]`).click();await expect(frame.locator(`#${side}-kind`)).toHaveText('GitHub commit');
     await expect(frame.locator(`#${side}-source`)).toContainText(sha.slice(0,8));
   }
-  await frame.getByRole('button',{name:'Commits for right comparison',exact:true}).click();await frame.locator(`[data-commit="${c}"]`).click();
+  const settingsScope=await frame.locator('.scope-button[aria-current="true"]').getAttribute('data-scope');
+  await frame.locator('#navigation>div').filter({has:frame.locator('.sheet-heading',{hasText:'Notebook'})}).getByRole('button').click();
+  await expect(frame.locator('#region-picker-trigger')).toBeVisible();
+  const triggerStyles=await frame.locator('#right-commits').evaluate(button=>{
+    const region=document.querySelector<HTMLElement>('#region-picker-trigger')!,properties=['height','paddingTop','paddingRight','paddingBottom','paddingLeft','gap','fontSize','fontWeight','borderRadius'];
+    const style=getComputedStyle(button),other=getComputedStyle(region);
+    const values=(computed:CSSStyleDeclaration)=>Object.fromEntries(properties.map(property=>[property,computed.getPropertyValue(property.replace(/[A-Z]/g,c=>'-'+c.toLowerCase()))]));
+    return {commits:values(style),region:values(other),directChevron:!!button.querySelector(':scope>svg'),wrapper:!!button.querySelector('.format-caret'),width:button.getBoundingClientRect().width,regionWidth:region.getBoundingClientRect().width};
+  });
+  expect(triggerStyles.commits).toEqual(triggerStyles.region);expect(triggerStyles.directChevron).toBe(true);expect(triggerStyles.wrapper).toBe(false);expect(triggerStyles.width).toBeLessThan(triggerStyles.regionWidth);
+  const widths=await frame.locator('#right-commits').evaluate(button=>{const label=button.querySelector('span')!,before=button.getBoundingClientRect().width;label.textContent='Commits with a longer label';const longer=button.getBoundingClientRect().width;label.textContent='Commits';return{before,longer,after:button.getBoundingClientRect().width};});
+  expect(widths.longer).toBeGreaterThan(widths.before);expect(widths.after).toBe(widths.before);
+  await frame.locator(`.scope-button[data-scope="${settingsScope}"]`).click();
+  await frame.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();await frame.locator(`[data-commit="${c}"]`).click();
+  expect(historyReads).toBe(4);
   await expect(frame.locator('#error')).toContainText('different workbook');await expect(frame.locator('#right-source')).toContainText(b.slice(0,8));
   expect(writes).toBe(0);
   const after=await page.evaluate(async()=>{const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();try{return(await store.load())!.book;}finally{store.close();}});
@@ -120,4 +146,37 @@ test('paged commit history stays responsive with one thousand loaded metadata ro
   });
   console.log('1,000-commit history search including layout (ms)',elapsed);expect(elapsed).toBeLessThan(500);
   await expect(popup.getByRole('button',{name:'Load earlier commits',exact:true})).toBeHidden();
+});
+
+test('older open workbooks do not fail automatically on newer Meal log metadata and explain the safe update',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.evaluate(async()=>{
+    const path='/src/model.ts',{createDemo}=await import(/* @vite-ignore */path) as typeof import('../../src/model'),book=createDemo(),remote=structuredClone(book),table=remote.tables[0];
+    remote.sheets.find(sheet=>sheet.id===table.sheet)!.mealLog={table:table.id,fields:{food:table.columns[0].id,notes:table.columns[1].id}};
+    const frame=document.createElement('iframe') as import('../../src/comparison-host').ComparisonFrame;
+    document.body.dataset.remoteReads='0';frame.className='legacy-comparison';frame.style.cssText='width:100%;height:750px;border:0';
+    frame.comparisonHost={local:{book,kind:'This device',label:'Invented legacy copy'},close:()=>{},readRemote:async()=>{
+      document.body.dataset.remoteReads=String(Number(document.body.dataset.remoteReads)+1);
+      const oldFields=['food','calories','protein','fat','carbs','sugar','sodium','weight','amount','unit'];
+      if(remote.sheets.some(sheet=>Object.keys(sheet.mealLog?.fields??{}).some(field=>!oldFields.includes(field))))throw Error('Invalid Meal log field identities.');
+      return {book:remote,kind:'GitHub',label:'Invented saved copy'};
+    }};
+    frame.src='/comparison.html';document.body.replaceChildren(frame);
+  });
+  const frame=page.frameLocator('iframe.legacy-comparison');
+  await expect(frame.locator('#left-source')).toHaveText('Invented legacy copy');await expect(frame.locator('#source-auth-note')).toContainText('older website version');
+  await expect(frame.locator('#error')).toBeHidden();expect(await page.evaluate(()=>document.body.dataset.remoteReads)).toBe('0');
+  await frame.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();
+  await frame.getByRole('option',{name:'Latest saved workbook',exact:true}).click();
+  await expect(frame.locator('#error')).toContainText('Update website');await expect(frame.locator('#left-source')).toHaveText('Invented legacy copy');
+  expect(await page.evaluate(()=>document.body.dataset.remoteReads)).toBe('1');await expect(frame.locator('#right-file')).toBeEnabled();
+});
+
+test('disconnected browsers explain disabled GitHub controls and keep local comparison available',async({page})=>{
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
+  const frame=page.frameLocator('iframe.comparison-frame');
+  await expect(frame.locator('#source-auth-note')).toContainText('connected in this browser');
+  await expect(frame.getByRole('combobox',{name:'Commits for right comparison',exact:true})).toBeDisabled();
+  await expect(frame.locator('#right-github')).toBeDisabled();await expect(frame.locator('#right-file')).toBeEnabled();
 });

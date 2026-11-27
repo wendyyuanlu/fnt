@@ -104,7 +104,8 @@ test('independent browsers batch uploads, require deliberate remote adoption, an
   const adopt=async(target:typeof page)=>{
     await target.bringToFront();await target.locator('#sync-review').click();
     const comparison=target.frameLocator('iframe.comparison-frame');
-    await comparison.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true}).click();
+    await comparison.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();
+    await comparison.getByRole('option',{name:'Latest saved workbook',exact:true}).click();
     await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
     await comparison.locator('.bulk-disclosure>summary').click();
     await comparison.locator('#choice-scope-trigger').click();await comparison.getByRole('option',{name:'Every difference in both copies',exact:true}).click();
@@ -149,8 +150,9 @@ test('independent browsers batch uploads, require deliberate remote adoption, an
     await page.locator('#sync-review').click();
     const comparison=page.frameLocator('iframe.comparison-frame');
     await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
-    await comparison.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true}).click();
-    await expect(comparison.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeEnabled();
+    await comparison.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();
+    await comparison.getByRole('option',{name:'Latest saved workbook',exact:true}).click();
+    await expect(comparison.getByRole('combobox',{name:'Commits for right comparison',exact:true})).toBeEnabled();
     await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
     await expect(comparison.locator('#left-grid')).toContainText('901');
     await expect(comparison.locator('#right-grid')).toContainText('902');
@@ -188,7 +190,7 @@ test('visual backup comparison supports choices and changed areas without restor
   await page.getByRole('button',{name:'Compare copies',exact:true}).click();
   const comparison=page.frameLocator('iframe.comparison-frame');
   await expect(comparison.getByRole('heading',{name:'Compare versions',exact:true})).toBeVisible();
-  await expect(comparison.getByRole('button',{name:'Compare with remote version (GitHub)',exact:true})).toBeDisabled();
+  await expect(comparison.getByRole('combobox',{name:'Commits for right comparison',exact:true})).toBeDisabled();
   await expect(comparison.locator('#totals')).toContainText('Choose a right copy');
   await comparison.locator('#right-file').setInputFiles({name:'invented.fnt.json',mimeType:'application/json',buffer:Buffer.from(fixture.contents)});
   await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');

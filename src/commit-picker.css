@@ -9,5 +9,5 @@
 .cell-dropdown .commit-options .commit-option,:root body[data-dropdown-style="dd"].compact-controls .cell-dropdown .commit-options .commit-option{display:grid;width:100%;text-align:left;min-width:0}
 .commit-option>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .commit-option>span:last-child{font-family:ui-monospace,monospace}
-.commit-popup>p{flex:none;margin:0;font-size:11px}
+.commit-popup>p{display:block;flex:none;margin:0;font-size:11px}
 .commit-popup>button{flex:none}

@@ -5,6 +5,11 @@ export const sourcePickerBodyHtml='<input class="dropdown-source-search" type="s
 export type SourcePage=<T>(items:T[])=>T[];
 const optionNavigation=new WeakMap<HTMLElement,(key:string,focused:Element|null)=>void>();
 
+export function renderDropdownTrigger(trigger:HTMLButtonElement,label:string,renderContent?:()=>void):void{
+  const text=document.createElement('span');text.textContent=label;trigger.replaceChildren(text);
+  renderContent?.();trigger.insertAdjacentHTML('beforeend',dropdownArrowHtml);
+}
+
 export function mountSourcePicker(dialog:HTMLDialogElement,options:{
   grid:boolean;viewControls?:boolean;searchLabel?:string;placeholder?:string;changeView?:(grid:boolean)=>void;render:(grid:boolean,query:string,page:SourcePage)=>void;
 }):{refresh:()=>void}{
@@ -43,15 +48,16 @@ export function mountSelectDropdown(select:HTMLSelectElement,options?:{renderOpt
   select.hidden=true;select.after(trigger);if(label)label.htmlFor=trigger.id;
   let closePopup:(()=>void)|undefined;
   const refresh=()=>{
-    const text=document.createElement('span');text.textContent=select.selectedOptions[0]?.textContent??'';trigger.replaceChildren(text);
     trigger.title=select.title;
     const description=select.getAttribute('aria-description');
     if(description)trigger.setAttribute('aria-description',description);else trigger.removeAttribute('aria-description');
-    if(select.selectedOptions[0])options?.renderOption?.(trigger,select.selectedOptions[0]);
-    if(options?.fitOptions)for(const option of select.options){
-      const size=document.createElement('span');size.className='dropdown-option-size';size.setAttribute('aria-hidden','true');size.textContent=option.textContent;trigger.append(size);
-    }
-    trigger.insertAdjacentHTML('beforeend',dropdownArrowHtml);trigger.disabled=select.disabled;
+    renderDropdownTrigger(trigger,select.selectedOptions[0]?.textContent??'',()=>{
+      if(select.selectedOptions[0])options?.renderOption?.(trigger,select.selectedOptions[0]);
+      if(options?.fitOptions)for(const option of select.options){
+        const size=document.createElement('span');size.className='dropdown-option-size';size.setAttribute('aria-hidden','true');size.textContent=option.textContent;trigger.append(size);
+      }
+    });
+    trigger.disabled=select.disabled;
   };
   trigger.onclick=()=>{
     if(closePopup){closePopup();return;}

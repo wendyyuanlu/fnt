@@ -962,10 +962,13 @@ unchecked confirmation option and a fresh remote SHA check. Local-only submissio
 pauses automatic sync persistently until an explicit Save or reconnect.
 Closing without submitting or successfully changing sources clears the choices.
 Load a native full Fnt backup on either side; this does not restore,
-save or upload it. **Compare with remote version (GitHub)** is always visible;
-it requires configured, authenticated private sync and loads the right side with
-a read-only fetch, never a sync/upload, including when local edits
-are pending. The conflict dialog also offers **Compare versions or a
+save or upload it. **Commits → Latest saved workbook** reads the newest saved
+GitHub copy onto either side, never syncing or uploading, including when local
+edits are pending. It requires private sync connected in this browser; otherwise
+the controls explain their availability and local JSON comparisons still work.
+Older open website versions do not automatically fetch newer-schema data:
+save locally and use **Update website** before loading that copy.
+The conflict dialog also offers **Compare versions or a
 backup**, initially comparing this device with the received GitHub version.
 Cells match by stable identities, not current row/column positions. Values,
 formulas, notes, formatting, rows/columns, table definitions, groups, dropdowns
@@ -985,7 +988,11 @@ Comparison sources each have **Commits**: a read-only private GitHub history
 picker with sticky Time/Changes/Commit columns and collapsible device-local date
 sections. Times include the device's time zone. Changes shows a recorded pending
 save count when available, otherwise the commit message. Earlier history loads
-on request. Selecting a commit loads only that comparison side; it never restores,
+on request; reopening fetches fresh history. **Latest saved workbook** fetches the
+branch's newest copy when chosen, whereas dated rows retain their fixed commit
+versions even if another device saves meanwhile. The content-fitting Commits
+trigger shares the region navigator's dropdown rendering and styling.
+Selecting a commit loads only that comparison side; it never restores,
 uploads, or syncs until a decision is explicitly submitted. Recognized historical
 JSON filenames remain readable across the default private-data filename rename;
 custom destinations are never guessed or changed. Large historical files use
@@ -999,7 +1006,7 @@ resolves conflicts. It uses the existing private, non-Pages data repository and
 restricted token. A device name is saved separately in this browser; uploaded
 snapshots contain the workbook and its date/device metadata, not credentials
 or original Excel attachments. Keep independent full backups for recovery.
-Comparison offers uploaded copies for either side, sorted newest first, with
+Comparison's **Uploads** controls offer uploaded copies for either side, sorted newest first, with
 the local upload date/time on the left and `[Device name]` on the right.
 Listing and selecting copies only read GitHub. Snapshot dates do not establish
 which divergent workbook is authoritative, and revisions are not global clocks.

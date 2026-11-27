@@ -1,12 +1,13 @@
-import {dropdownArrowHtml,dropdownOptionsKey} from './dropdown-ui';
+import {dropdownArrowHtml,dropdownOptionsKey,renderDropdownTrigger} from './dropdown-ui';
 import type {ComparisonCommit,ComparisonCommitPage} from './github-snapshots';
 import './commit-picker.css';
 
 export function mountCommitPicker(trigger:HTMLButtonElement,options:{
-  list:(page:number)=>Promise<ComparisonCommitPage>;choose:(commit:ComparisonCommit)=>void;selected:()=>string|undefined;
+  list?:((page:number)=>Promise<ComparisonCommitPage>);choose:(commit:ComparisonCommit)=>void;selected:()=>string|undefined;
+  latest?:{choose:()=>void;selected:()=>boolean};
 }):{close:()=>void}{
   trigger.type='button';trigger.classList.add('dropdown-field');
-  trigger.innerHTML=`<span>Commits</span><span class="format-caret">${dropdownArrowHtml}</span>`;
+  renderDropdownTrigger(trigger,'Commits');trigger.setAttribute('role','combobox');
   trigger.setAttribute('aria-haspopup','listbox');trigger.setAttribute('aria-expanded','false');
   let closePopup:(()=>void)|undefined;
   trigger.onclick=()=>{
@@ -18,7 +19,7 @@ export function mountCommitPicker(trigger:HTMLButtonElement,options:{
     trigger.setAttribute('aria-controls',list.id);
     status.className='muted';status.setAttribute('role','status');more.type='button';more.textContent='Load earlier commits';
     popup.append(search,list,status,more);
-    let entries:ComparisonCommit[]=[],next:number|undefined=1,loading=false,failure:string|undefined;
+    let entries:ComparisonCommit[]=[],next:number|undefined=options.list?1:undefined,loading=false,failure:string|undefined;
     const collapsed=new Set<string>(),timeFormat=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hour12:true,timeZoneName:'short'}),dayFormat=new Intl.DateTimeFormat(undefined,{year:'numeric',month:'long',day:'numeric'});
     const close=()=>{controller.abort();popup.remove();trigger.setAttribute('aria-expanded','false');closePopup=undefined;};closePopup=close;
     const position=()=>{
@@ -37,6 +38,14 @@ export function mountCommitPicker(trigger:HTMLButtonElement,options:{
       const header=document.createElement('div');header.className='commit-columns commit-header';
       for(const name of ['Time','Changes','Commit']){const cell=document.createElement('span');cell.textContent=name;header.append(cell);}
       list.replaceChildren(header);
+      const showLatest=options.latest&&(!query||'latest saved workbook current branch'.includes(query));
+      if(showLatest){
+        const button=document.createElement('button');button.type='button';button.className='commit-columns commit-option';
+        button.setAttribute('role','option');button.setAttribute('aria-label','Latest saved workbook');button.setAttribute('aria-selected',String(options.latest!.selected()));
+        for(const text of ['Latest','Latest saved workbook','Current']){const cell=document.createElement('span');cell.textContent=text;button.append(cell);}
+        button.title='Fetch the newest saved workbook now. Dated rows open a fixed saved version.';
+        button.onclick=()=>{close();options.latest!.choose();};list.append(button);
+      }
       for(const [date,commits]of groups){
         const group=document.createElement('details'),summary=document.createElement('summary'),label=document.createElement('span'),rows=document.createElement('div');
         group.className='commit-day';group.open=!!query||!collapsed.has(date);
@@ -51,14 +60,14 @@ export function mountCommitPicker(trigger:HTMLButtonElement,options:{
         }
         group.append(summary,rows);group.ontoggle=()=>{if(!query){if(group.open)collapsed.delete(date);else collapsed.add(date);}};list.append(group);
       }
-      status.textContent=loading?'Reading commit history…':failure??(query&&!groups.size?'No matching commits.':entries.length?`${entries.length} commits loaded. Times use this device’s time zone. Changes shows the recorded save count, or the commit message.`:'No commits found.');
+      status.textContent=loading?'Reading commit history…':failure??(query&&!groups.size&&!showLatest?'No matching commits.':entries.length?`${entries.length} commits loaded. Times use this device’s time zone. Changes shows the recorded save count, or the commit message.${options.latest?' Latest fetches the newest copy now; dated rows open a fixed saved version.':''}`:options.list?'No commits found.':'Historical commits require the current website version. Latest fetches the newest saved workbook now.');
       more.textContent=failure?'Retry reading commits':'Load earlier commits';more.hidden=next===undefined;more.disabled=loading;position();
     };
     const load=async()=>{
       if(loading||next===undefined)return;
       loading=true;failure=undefined;draw();
       try{
-        const page=await options.list(next);
+        const page=await options.list!(next);
         if(!popup.isConnected)return;
         const known=new Set(entries.map(entry=>entry.sha));for(const entry of page.commits)if(!known.has(entry.sha)){known.add(entry.sha);entries.push(entry);}next=page.next;loading=false;draw();
       }catch(error){if(popup.isConnected){loading=false;failure=`Commit history unavailable. ${error instanceof Error?error.message:String(error)}`;draw();}}
@@ -70,7 +79,7 @@ export function mountCommitPicker(trigger:HTMLButtonElement,options:{
       else dropdownOptionsKey(event,search,list);
       event.stopPropagation();
     };
-    document.body.append(popup);trigger.setAttribute('aria-expanded','true');position();search.focus({preventScroll:true});void load();
+    document.body.append(popup);trigger.setAttribute('aria-expanded','true');draw();search.focus({preventScroll:true});void load();
     document.addEventListener('pointerdown',event=>{if(event.target instanceof Node&&!popup.contains(event.target)&&!trigger.contains(event.target))close();},{capture:true,signal:controller.signal});
     window.addEventListener('resize',position,{signal:controller.signal});window.visualViewport?.addEventListener('resize',position,{signal:controller.signal});
     document.addEventListener('scroll',event=>{if(event.target instanceof Node&&!popup.contains(event.target))position();},{capture:true,signal:controller.signal});
