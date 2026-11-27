@@ -82,7 +82,8 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
   let observedHeader:Element|undefined;
   let fullHeight=window.visualViewport?.height??innerHeight;
   const touch=()=>document.body.classList.contains('touch-input-device');
-  const fieldInput=(row:string,field:MealLogInputField)=>element.querySelector<HTMLInputElement|HTMLTextAreaElement>(`[data-log-row="${row}"][data-log-field="${field}"]`);
+  const cards=new Map<string,HTMLElement>(),inputs=new Map<string,HTMLInputElement|HTMLTextAreaElement>();
+  const fieldInput=(row:string,field:MealLogInputField)=>inputs.get(row+':'+field);
   scroll.addEventListener('scroll',()=>{savedScroll=scroll.scrollTop;atBottom=scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop<1;},{signal:controller.signal});
   const restoreScroll=()=>{
     cancelAnimationFrame(scrollFrame);
@@ -153,6 +154,9 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
         const quantities=`<div class="meal-log-fields">${(['weight','amount','unit'] as const).map(field).join('')}</div>`,quantityKey=row.id+':'+row.meal;
         return`<section class="meal-log-card" data-log-card="${row.id}" aria-label="Food ${i+1}">${host.restaurant?restaurantFieldHtml():''}${field('food')}<details class="meal-log-macros" ${expanded.has(row.id)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Macros</span><span data-log-totals></span></summary><div class="meal-log-fields">${mealFields.slice(1,7).map(field).join('')}</div></details>${row.meal?`<details class="meal-log-quantities" data-quantity-key="${quantityKey}" ${quantitiesExpanded.has(quantityKey)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Grams</span></summary>${quantities}</details>`:quantities}${view.fields.notes?`<details class="meal-log-notes" data-log-notes ${notesExpanded.has(row.id)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Notes</span></summary>${field('notes')}</details>`:''}${row.manual?'<label class="inline meal-log-ingredient"><input type="checkbox" data-log-ingredient>Add to Ingredients</label>':''}<div class="meal-log-row-actions">${icon('Move food up',navigationIcon('up'),i===0)}${icon('Move food down',navigationIcon('down'),i===view.rows.length-1)}<button type="button" data-log-insert>+ Food</button>${icon('Delete food',toolbarIcon('trash'))}</div></section>`;
       }).join(''):'<p class="muted">No foods in this day. Use + Food to start logging.</p>');
+      cards.clear();inputs.clear();
+      for(const card of scroll.querySelectorAll<HTMLElement>('[data-log-card]'))cards.set(card.dataset.logCard!,card);
+      for(const input of scroll.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('[data-log-row][data-log-field]'))inputs.set(input.dataset.logRow+':'+input.dataset.logField,input);
       if(host.restaurant)for(const card of scroll.querySelectorAll<HTMLElement>('[data-log-card]'))restaurantFields.push(host.restaurant(card.dataset.logCard!,card));
       for(const details of scroll.querySelectorAll<HTMLDetailsElement>('details'))details.ontoggle=()=>{const row=details.closest<HTMLElement>('[data-log-card]')!.dataset.logCard!,state=details.classList.contains('meal-log-notes')?notesExpanded:details.classList.contains('meal-log-quantities')?quantitiesExpanded:expanded,id=details.dataset.quantityKey??row;if(details.open)state.add(id);else state.delete(id);};
       if(focused&&active){const input=fieldInput(active.row,active.field);if(input&&keepWeight&&before)input.value=before.value;input?.focus({preventScroll:true});if(input&&caret?.[0]!=null&&caret[1]!=null)input.setSelectionRange(caret[0],caret[1]);}
@@ -161,8 +165,10 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
     if(!keepWeight&&weight.value!==view.weight.value)weight.value=view.weight.value;
     weight.disabled=view.busy;weight.classList.toggle('calculated',view.weight.calculated);
     for(const row of view.rows){
-      element.querySelector<HTMLElement>(`[data-log-card="${row.id}"] [data-log-totals]`)!.textContent=row.totals;
-      element.querySelector<HTMLElement>(`[data-log-card="${row.id}"] [data-log-needs-nutrition]`)!.hidden=!row.needsNutrition;
+      const card=cards.get(row.id)!;
+      card.querySelector<HTMLElement>('[data-log-totals]')!.textContent=row.totals;
+      card.querySelector<HTMLElement>('[data-log-needs-nutrition]')!.hidden=!row.needsNutrition;
+      const checkbox=card.querySelector<HTMLInputElement>('[data-log-ingredient]');if(checkbox)checkbox.disabled=view.busy;
       for(const field of mealFields){const input=fieldInput(row.id,field),value=row.values[field]??'';if(input&&(!writing||input!==document.activeElement)&&input.value!==value)input.value=value;if(input){input.disabled=view.busy;input.classList.toggle('calculated',row.calculated.includes(field));}}
     }
     element.querySelector<HTMLElement>('[data-log-date]')!.textContent=view.date;
@@ -171,7 +177,6 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
       button.disabled=view.busy||button.hasAttribute('data-log-boundary')||button.hasAttribute('data-log-unavailable');
     }
     button('Close Meal log').disabled=false;
-    for(const row of view.rows){const checkbox=element.querySelector<HTMLInputElement>(`[data-log-card="${row.id}"] [data-log-ingredient]`);if(checkbox)checkbox.disabled=view.busy;}
     element.querySelector<HTMLElement>('.meal-log-day-totals')!.textContent=view.totals;
     button('Undo').disabled=!view.undo||view.busy;button('Redo').disabled=!view.redo||view.busy;
     footer.querySelector<HTMLButtonElement>('[data-log-add]')!.disabled=view.busy;
@@ -284,7 +289,7 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
     const card=element.querySelector<HTMLElement>(`[data-log-card="${row}"]`);
     for(const details of card?.querySelectorAll<HTMLDetailsElement>(manual?'.meal-log-macros,.meal-log-quantities':'.meal-log-quantities')??[])details.open=false;
   };
-  return{element,get tab(){return tab;},tableMode,commit:()=>host.table?.commit()??true,showTab,refresh:()=>{try{update();}catch(error){host.error(error);}},reveal,startFood,foodMode,tableLast:()=>host.table?.last(),bottom:()=>{pendingBottom=true;restoreScroll();},rememberScroll:()=>{if(element.isConnected&&tab==='formal')savedScroll=scroll.scrollTop;if(element.isConnected&&tab==='table')host.table?.rememberScroll();},restoreScroll:()=>{if(tab==='table')host.table?.restoreScroll();else restoreScroll();},dispose:()=>{morePopup.close();resize.disconnect();for(const field of restaurantFields)field.dispose();for(const panel of Object.values(panels))panel?.dispose();controller.abort();cancelAnimationFrame(scrollFrame);element.remove();document.body.classList.remove('meal-log-keyboard');},restoreFocus:()=>{
+  return{element,get tab(){return tab;},tableMode,commit:()=>host.table?.commit()??true,showTab,refresh:()=>{try{update();}catch(error){host.error(error);}},reveal,startFood,foodMode,tableLast:()=>host.table?.last(),bottom:()=>{pendingBottom=true;restoreScroll();},rememberScroll:()=>{if(element.isConnected&&tab==='formal')savedScroll=scroll.scrollTop;if(element.isConnected&&tab==='table')host.table?.rememberScroll();},restoreScroll:()=>{if(tab==='table')host.table?.restoreScroll();else restoreScroll();},dispose:()=>{morePopup.close();resize.disconnect();for(const field of restaurantFields)field.dispose();for(const panel of Object.values(panels))panel?.dispose();cards.clear();inputs.clear();controller.abort();cancelAnimationFrame(scrollFrame);element.remove();document.body.classList.remove('meal-log-keyboard');},restoreFocus:()=>{
     if(tab==='formal'&&active&&focusMode)fieldInput(active.row,active.field)?.focus({preventScroll:true});
     else if(tab==='table')host.table?.restoreFocus();
   }};

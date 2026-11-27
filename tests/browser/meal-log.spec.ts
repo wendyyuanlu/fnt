@@ -973,6 +973,23 @@ test('linked foods use current Ingredient reference nutrition without changing l
   const incomplete=await read(page,fixture.sheet);
   expect(incomplete.sheet.cells).toEqual(original.sheet.cells);expect(incomplete.blocks).toEqual(original.blocks);
 });
+test('a populated thousand-food day opens and switches promptly without stale field targets',async({page})=>{
+  const fixture=await setup(page,1000),panel=page.locator('.meal-log-panel');
+  const opened=Date.now();await page.locator('#meal-log').click();
+  await expect(panel.locator('[data-log-card]')).toHaveCount(1001);
+  const openDuration=Date.now()-opened;expect(openDuration).toBeLessThan(3000);
+  await panel.getByRole('button',{name:'Previous day',exact:true}).click();
+  await expect(panel.locator('[data-log-card]')).toHaveCount(2);
+  const switched=Date.now();await panel.getByRole('button',{name:'Next day',exact:true}).click();
+  await expect(panel.locator('[data-log-card]')).toHaveCount(1001);
+  const switchDuration=Date.now()-switched;expect(switchDuration).toBeLessThan(3000);
+  console.info('Meal log 1,000-food day',test.info().project.name,{open:openDuration,switch:switchDuration});
+  const grams=panel.locator(`[data-log-card="${fixture.latest}"] [data-log-field="weight"]`);
+  await expect(grams).toHaveValue('300');await grams.fill('321');
+  await panel.getByRole('button',{name:'Previous day',exact:true}).click();
+  await panel.getByRole('button',{name:'Next day',exact:true}).click();
+  await expect(grams).toHaveValue('321');
+});
 test('public-sized food reordering finishes promptly and keeps stable row identities and Undo',async({page})=>{
   const fixture=await setup(page,6000,true);await page.locator('#meal-log').click();
   const panel=page.locator('.meal-log-panel'),before=await panel.locator('[data-log-card]').evaluateAll(cards=>cards.map(card=>(card as HTMLElement).dataset.logCard));
