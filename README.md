@@ -110,6 +110,9 @@ reveals the source cell. Source and option paging never truncates the list.
 Known layout-only commands and Undo use scoped metadata records; cell-only
 repaints retain the existing toolbar and headers. Structural edits still take
 the conservative reference/conflict path when unrelatedness is not proven.
+Nutrition write-back validates structural Ingredient identities without reading
+unused nutrition values. An already prepared review is reused only for its exact
+source revision and target; table-layout changes still take the full review path.
 Logged day controls are indexed by stable row and field IDs; changing days
 rebuilds that index rather than repeatedly scanning the full panel for each cell.
 Food mode, insertion, deletion and ordering changes retain unrelated row cards,

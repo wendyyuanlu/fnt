@@ -54,7 +54,7 @@ import {mountNutritionPanel} from './nutrition-ui';
 import {encodeNameBackup,parseNameBackup} from './nutrition-names';
 import defaultNutritionPrompt from './nutrition-prompt.txt?raw';
 import {converterReview,newConverterState,validateConverterState,type ConverterReview,type ConverterState} from './nutrition-converter';
-import {converterSignature,prepareNutritionApply} from './nutrition-apply';
+import {converterSignature,prepareNutritionApply,type PreparedNutritionApply} from './nutrition-apply';
 import {inspectPhoto,type PhotoBlob} from './food-photos';
 import {makePhotoThumbnail} from './photo-images';
 import {createPhotoUI,type PhotoScope} from './photo-ui';
@@ -317,13 +317,13 @@ async function applyNutritionReview(review:ConverterReview):Promise<unknown>{
     await saveCaptureDurably('Save nutrition review before applying');
     const data=captureData(book),batch=data.builder,saved=data.converter;
     if(!batch||!saved||saved.batch!==batch.id||converterSignature(converterReview(saved))!==converterSignature(review))throw Error('The saved nutrition review changed. Validate the current review before applying.');
-    const prepared=prepareNutritionApply(book,batch,review,data.nutritionReceipts??[]);
+    const source=book,prepared=prepareNutritionApply(book,batch,review,data.nutritionReceipts??[]);
     if(!prepared.alreadyApplied){
       prepared.receipt.response={raw:saved.raw,html:saved.html,...(saved.parsed?{parsed:clone(saved.parsed)}:{})};
       const next=captureData(prepared.book);(next.nutritionReceipts??=[]).push(prepared.receipt);next.converter={...clone(saved),status:'applied'};delete next.converter.error;
       validateBook(prepared.book);
       busy=false;
-      const applied=mutate('Apply reviewed nutrition',()=>{book=prepared.book;});
+      const applied=mutate('Apply reviewed nutrition',()=>{book=prepared.book;},false,undefined,{source,prepared});
       busy=true;
       if(!applied)throw Error(error||'Nutrition could not be applied. No partial result was accepted.');
     }
@@ -1173,13 +1173,15 @@ function primeSearchValues():void{
   task.timer=setTimeout(step,1000);
 }
 function flash(e: unknown): void { error = e instanceof Error ? e.message : String(e); renderStatus(); }
-function mutate(label: string, fn: () => void,confirmed=false,renderOptions?:{preserveViewport:boolean}): boolean {
+function mutate(label: string, fn: () => void,confirmed=false,renderOptions?:{preserveViewport:boolean},reviewedNutrition?:{source:Workbook;prepared:PreparedNutritionApply}): boolean {
   if (busy) { flash('Wait for the current save or sync to finish.'); return false; }
   const before = editSnapshot(book);
   const priorBook=book,priorCopy=copied,shape=structureKey(book),metadata=metadataKey(book),cells=new Map(allSheets(before).map(s=>[s.id,s.cells]));
   let shapeChanged=false;
   try {
+    if(reviewedNutrition&&(reviewedNutrition.source!==priorBook||reviewedNutrition.prepared.alreadyApplied||reviewedNutrition.prepared.plan.revision!==priorBook.revision||reviewedNutrition.prepared.plan.batch!==priorBook.foodCapture?.builder?.id))throw Error('The prepared nutrition source changed. Validate the current review before applying.');
     fn();
+    if(reviewedNutrition&&book!==reviewedNutrition.prepared.book)throw Error('The prepared nutrition target changed. Validate the current review before applying.');
     shapeChanged=shape!==structureKey(book);
     if(shapeChanged)refreshMasterFoodDates(book,sheetId);
     const impact=confirmed?'':conversionEditImpact(before,book);
@@ -1213,10 +1215,13 @@ function mutate(label: string, fn: () => void,confirmed=false,renderOptions?:{pr
   }
   try{
     const addresses=changes.map(change=>`${change.sheet}:${change.key}`),cellOnly=incremental&&!shapeChanged,priorReviews=book.foodCapture?.nutritionConflicts;
-    const nutritionBefore=captureNutritionReview(before,()=>new Engine(before),cellOnly?{cells:new Set(addresses)}:'all');
-    if(nutritionBefore.drafts.size||nutritionBefore.logged.size||book.foodCapture?.nutritionConflicts?.length){
-      const current=cellOnly&&engine.rebindCells(book,addresses)?engine:new Engine(book);
-      queueNutritionReview(book,nutritionBefore,current);engine=current;
+    // Structural date refreshes can change custom calculations after preparation.
+    if(!reviewedNutrition||shapeChanged){
+      const nutritionBefore=captureNutritionReview(before,()=>new Engine(before),cellOnly?{cells:new Set(addresses)}:'all');
+      if(nutritionBefore.drafts.size||nutritionBefore.logged.size||book.foodCapture?.nutritionConflicts?.length){
+        const current=cellOnly&&engine.rebindCells(book,addresses)?engine:new Engine(book);
+        queueNutritionReview(book,nutritionBefore,current);engine=current;
+      }
     }
     if(priorReviews!==book.foodCapture?.nutritionConflicts)incremental=false;
   }catch(e){book=before;copied=priorCopy;engine=new Engine(book);flash(e);render(renderOptions);return false;}

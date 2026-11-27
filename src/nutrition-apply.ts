@@ -1,4 +1,4 @@
-import {captureData,changedLinkedNutritionIntents,ingredientKey,ingredientRecord,linkedNutritionIntents,nutrients,nutritionCandidates,numberValue,rememberNutritionConversions,restaurantName,scaledDraft,setRestaurant,validateFoodCapture,type DraftFood,type FoodValues,type LinkedNutritionIntent,type NutritionBatch,type NutritionItem,type NutritionTarget,type RestaurantLink} from './food-capture';
+import {captureData,changedLinkedNutritionIntents,createFoodCaptureContext,ingredientKey,ingredientSource,linkedNutritionIntents,nutrients,nutritionCandidates,numberValue,rememberNutritionConversions,restaurantName,scaledDraft,setRestaurant,validateFoodCapture,type DraftFood,type FoodValues,type LinkedNutritionIntent,type NutritionBatch,type NutritionItem,type NutritionTarget,type RestaurantLink} from './food-capture';
 import {captureNutritionReview,queueNutritionReview,writeIngredientValues} from './ingredient-edit';
 import {addMasterFood,createMasterDay,masterLogging} from './day-logging';
 import {mealFields,mealLogConfig,mealLogContext,markMealNeedsNutrition,type MealField} from './meal-log';
@@ -103,6 +103,7 @@ export function preflightNutritionApply(book:Workbook,batch:NutritionBatch,revie
   const plan:ConverterPlan={batch:batch.id,revision:book.revision,signature:converterSignature(review),items:checked.items,linked:[]};
   if(book.foodCapture?.builder?.id!==batch.id)issues.push({message:'The active batch changed. Reopen this batch before applying.'});
   const candidates=new Map(nutritionCandidates(book,batch.days).map(item=>[item.key,item]));
+  const context=createFoodCaptureContext(book);
   for(const reviewed of checked.items){
     const item=reviewed.item;
     try{
@@ -110,7 +111,7 @@ export function preflightNutritionApply(book:Workbook,batch:NutritionBatch,revie
       if(!current||current.fingerprint!==item.fingerprint||!sameRequestPayload(current,item))throw Error('Captured source changed, was removed, or its saved identity/payload is inconsistent. Reset/review a fresh batch rather than overwriting newer values.');
       if(item.kind==='ingredient'){
         if(!item.reference||item.reference.table!==item.source.table||item.reference.row!==item.source.row)throw Error('Ingredient source identities do not match.');
-        const source=ingredientRecord(book,item.reference);
+        const source=ingredientSource(context,item.reference);
         for(const [field,text]of Object.entries(reviewed.values))if(text!==undefined&&text!==''&&!source.table.columns.some(column=>column.id===source.mapping.fields[field as MealField]))throw Error(`Restore the Ingredients ${field} field before applying.`);
         const pending=book.foodCapture?.ingredientEdits[ingredientKey(item.reference)];
         if(pending)throw Error('This Ingredient has unsaved editor changes. Save or cancel them before applying nutrition.');
@@ -136,7 +137,7 @@ export function preflightNutritionApply(book:Workbook,batch:NutritionBatch,revie
       if(changed.has(intentKey)||JSON.stringify(normalized(currentIntents.get(intentKey)))!==JSON.stringify(normalized(intent)))throw Error('Captured linked Draft source, consumption, reference or destination changed, or its saved payload is inconsistent. Review a fresh batch.');
       const target=destination(book,linkedTarget(intent,choice));
       requireFields(new Map([...target.context.fields].map(([field,column])=>[field,column.column])),intent.values);
-      ingredientRecord(book,intent.ingredient);
+      ingredientSource(context,intent.ingredient);
       const request=batch.items.find(item=>item.kind==='ingredient'&&item.reference&&ingredientKey(item.reference)===ingredientKey(intent.ingredient));
       const reference=request?candidates.get(request.key):undefined;
       if(!request||!reference||reference.fingerprint!==request.fingerprint||!sameRequestPayload(reference,request))throw Error('The captured Ingredient reference changed or was not captured. Review a fresh batch before logging linked consumption.');
@@ -147,7 +148,7 @@ export function preflightNutritionApply(book:Workbook,batch:NutritionBatch,revie
   return{plan,issues};
 }
 function linkNutrition(book:Workbook,sheet:Sheet,row:string,fields:Map<MealField,string>,intent:LinkedNutritionIntent,choice:ConverterChoice):void{
-  const source=ingredientRecord(book,intent.ingredient),consumed=intent.values;
+  const source=ingredientSource(createFoodCaptureContext(book),intent.ingredient),consumed=intent.values;
   const fieldFor=(field:MealField)=>source.table.columns.find(column=>column.id===source.mapping.fields[field])?.column;
   for(const field of ['weight','amount','unit'] as const){
     if(!fields.has(field))throw Error(`Restore the consumed ${field} mapping before linked logging.`);
@@ -175,7 +176,7 @@ function logValues(book:Workbook,target:NutritionTarget|undefined,date:number,va
     const column=fields.get(field as MealField);if(column&&value!==undefined)literalWrite(book,sheet,row,field as MealField,column,value);
   }
   if(linked){
-    const ingredient=linked.intent.ingredient,source=ingredientRecord(book,ingredient),name=source.table.columns.find(column=>column.id===source.mapping.fields.food);
+    const ingredient=linked.intent.ingredient,source=ingredientSource(createFoodCaptureContext(book),ingredient),name=source.table.columns.find(column=>column.id===source.mapping.fields.food);
     if(!name)throw Error('Restore the Ingredient name mapping before logging.');
     const foodColumn=fields.get('food')!,cell=getCell(sheet,row,foodColumn);
     sheet.cells[key(row,foodColumn)]={...cell,value:undefined,formula:undefined,binding:{table:ingredient.table,row:ingredient.row,column:name.id}};

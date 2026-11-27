@@ -1,4 +1,4 @@
-import {describe,expect,it} from 'vitest';
+import {describe,expect,it,vi} from 'vitest';
 import {addDraftFood,addDraftIngredient,appendNewFood,availableFoodDays,captureData,changedLinkedNutritionIntents,changedNutritionSnapshots,createFoodCaptureContext,deleteRestaurant,generateNutritionPrompt,ingredientList,ingredientRecord,newNutritionBatch,nutritionCandidates,nutritionReference,parseServing,quantityFactor,refreshNutritionPrompt,rememberNutritionConversions,renameRestaurant,restaurantFoods,restaurantName,restoreNameVersion,saveNameVersion,scaledDraft,setRestaurant,validateFoodCapture,type DraftFood} from '../src/food-capture';
 import {compile,Engine} from '../src/formula';
 import {setInput,type Table,type Workbook} from '../src/model';
@@ -497,6 +497,20 @@ describe.each([1,2,3])('food-capture foundation, repetition %i',()=>{
     const snapshot=structuredClone(book);
     expect(()=>writeIngredientValues(book,identity,{calories:'999',type:'Missing field'})).toThrow('Restore');
     expect(book).toEqual(snapshot);
+  });
+  it('writes Ingredient inputs without evaluating unused formulas and still rejects another workbook context',()=>{
+    const book=fixture(),sheet=book.sheets[0],identity={table:'ingredients',row:'r0'};
+    setInput(book,sheet,'r0','protein','=SUM(2,3)');
+    const formula=structuredClone(sheet.cells['r0:protein']),reads=vi.spyOn(Engine.prototype,'cell');
+    try{
+      writeIngredientValues(book,identity,{calories:'12'});
+      expect(reads).not.toHaveBeenCalled();
+    }finally{reads.mockRestore();}
+    expect(sheet.cells['r0:calories'].value).toBe(12);
+    expect(sheet.cells['r0:protein']).toEqual(formula);
+    const before=structuredClone(book),other=createFoodCaptureContext(fixture());
+    expect(()=>writeIngredientValues(book,identity,{calories:'99'},other)).toThrow('different workbook');
+    expect(book).toEqual(before);
   });
   it.each([10,100])('reads %i Ingredient rows linearly and retains values/order',count=>{
     const book=fixture(count),engine=new Engine(book),table=book.tables[0];let reads=0;

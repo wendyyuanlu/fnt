@@ -261,7 +261,7 @@ export function resolveNutritionReview(book:Workbook,decisions:NutritionDecision
   });
 }
 export function writeIngredientValues(book:Workbook,identity:IngredientIdentity,values:FoodValues&{type?:string},context?:FoodCaptureContext):void{
-  const source=ingredientRecord(book,identity,context);
+  const source=context?ingredientRecord(book,identity,context):ingredientSource(createFoodCaptureContext(book),identity);
   const writes=Object.entries(values).filter(([field])=>field!=='notes').map(([field,text])=>{
     const column=source.table.columns.find(column=>column.id===source.mapping.fields[field as keyof typeof source.mapping.fields]);
     if(!column)throw Error(`Restore the Ingredients ${field} field before applying this edit.`);
