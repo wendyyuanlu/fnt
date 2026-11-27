@@ -117,6 +117,8 @@ Logged day controls are indexed by stable row and field IDs; changing days
 rebuilds that index rather than repeatedly scanning the full panel for each cell.
 Food mode, insertion, deletion and ordering changes retain unrelated row cards,
 live fields and restaurant controls instead of rebuilding the whole day.
+Unchanged control properties and summary text are not rewritten; nutrition
+field mappings and table membership are reused only within each fresh day view.
 Restaurant controls resolve their configured table without rescanning day blocks.
 Table headers use native sticky bands bounded by their displayed table rows,
 including table-end push-off and naturally pinned columns; table and sheet
@@ -228,7 +230,10 @@ remain viewable only in history.
   whole numbers; field values themselves retain precision. Today and the
   calendar open an existing day or create one without advancing the logging
   cursor. Inline + Food inserts below that food and joins its day summary.
-  Manual Food keeps macros collapsed by default. Named foods show **Needs
+  Manual Food keeps macros collapsed by default. Switching an unnamed slot to
+  manual input clears inherited macro outputs without evaluating them, retaining
+  their restore calculations; named foods still reject faulted macro conversion.
+  Named foods show **Needs
   nutrition** when any of Calories, Protein, Fat, Carbs, Sugar or Sodium is blank
   or a calculation error; genuine zero is complete. Linked Ingredients are checked against their reference
   nutrition, not zero-filled consumption formulas. The tag is recalculated

@@ -42,7 +42,7 @@ import {createTextSearch} from './find';
 import {loadPublishedTesting,publishedTestingId,untouchedStarter} from './published';
 import {migrateDropdownData} from './dd-storage';
 import {numericKeyboardFields,numericKeyboardCell,virtualKeyboard as touchKeyboard} from './touch-keyboard';
-import {addMealIngredient,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealFields,mealLogConfig,mealLogContext,mealLogTable,moveMealFood,refreshMealIngredientCalculations,type MealField} from './meal-log';
+import {addMealIngredient,createMealNutritionReader,editMealDayWeight,markMealNeedsNutrition,mealFields,mealLogConfig,mealLogContext,mealLogTable,moveMealFood,refreshMealIngredientCalculations,type MealField} from './meal-log';
 import {mountMealLog,type MealLogInputField,type MealLogTab,type MealLogView} from './meal-log-ui';
 import {mountDraftPanel} from './draft-ui';
 import {addDraftIngredient,appendNewFood,captureData,changedLinkedNutritionIntents,changedNutritionSnapshots,createFoodCaptureContext,generateNutritionPrompt,ingredientKey,ingredientMapping,ingredientRecord,newNutritionBatch,nutrients,numberValue,refreshNutritionPrompt,rememberIngredients,restoreNameVersion,saveNameVersion,scaledDraft,type FoodValues,type IngredientIdentity,type NameVersion} from './food-capture';
@@ -203,7 +203,7 @@ function mealView():MealLogView{
   };
   const totals=(row:string)=>`${rounded(row,'calories')} cal · ${rounded(row,'protein')}P`;
   const numeric=numericKeyboardFields(book);
-  const label=masterLogging(book,s).label,weightCell=getCell(s,block.header,label.column),weight=scalar(engine.cell(s.id,block.header,label.column)),config=mealLogConfig(book,s);
+  const label=masterLogging(book,s).label,weightCell=getCell(s,block.header,label.column),weight=scalar(engine.cell(s.id,block.header,label.column)),config=mealLogConfig(book,s),needsNutrition=createMealNutritionReader(book,s,engine);
   return{header:block.header,date:block.date===undefined?'Undated':displayExcelDate(block.date)??'Undated',totals:totals(block.header),undo:!!undo.length,redo:!!redo.length,busy,
     weight:{value:isFault(weight)?weight.error:weightCell.fractionInput??String(weight??''),numeric:true,calculated:!!(weightCell.formula||weightCell.binding)},
     fields:Object.fromEntries([...context.fields].map(([field,column])=>[field,{name:column.name,numeric:field==='weight'||field==='amount'||numeric.has(`${context.table.id}:${column.id}`)}])),
@@ -211,7 +211,7 @@ function mealView():MealLogView{
       const food=getCell(s,row,context.fields.get('food')!.column);
       const foodColumn=context.fields.get('food')!.column,manualPreference=(book.pickerSources[`default:${s.id}:${foodColumn}`]??book.pickerSources[`${s.id}:${foodColumn}`])==='manual';
       return{id:row,values:Object.fromEntries(mealFields.map(field=>[field,value(row,field)])),calculated:mealFields.filter(field=>{const column=context.fields.get(field);return!!column&&!!(getCell(s,row,column.column).formula||getCell(s,row,column.column).binding);}),manual:!food.binding&&!food.formula&&(mealManual.has(row)||manualPreference||!cellValidation(s,row,foodColumn)||food.value!==undefined&&food.value!==null&&food.value!==''),
-        ...(food.binding?.table===config.meals?{meal:food.binding?.row}:{}),needsNutrition:mealNeedsNutrition(book,s,row,engine),totals:totals(row)};
+        ...(food.binding?.table===config.meals?{meal:food.binding?.row}:{}),needsNutrition:needsNutrition(row),totals:totals(row)};
     })};
 }
 function selectMealField(row:string,field:MealLogInputField,repaint=false):void{
@@ -718,7 +718,7 @@ function openMealLog(tab:MealLogTab='formal'):void{
                   const column=context.fields.get(metric);if(!column)continue;
                   const current=getCell(s,row,column.column);
                   if(current.formula){
-                    const result=scalar(engine.cell(s.id,row,column.column));
+                    const result=value===null||value===''?null:scalar(engine.cell(s.id,row,column.column));
                     if(isFault(result))throw Error(`Fix the ${column.name} error before using manual nutrition.`);
                     writeGridCell(book,s,row,column.column,value===null||value===''?'':String(result??''));
                     calculated.set(column.column,{calculation:JSON.stringify(current.formula),value:getCell(s,row,column.column).value});

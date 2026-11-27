@@ -949,6 +949,24 @@ test('manual macros stay collapsed and Needs nutrition requires all six values t
   await expect(page.locator('.cell-dropdown')).toHaveCount(0);expect((await cell()).foodDraft).toBe(true);await expect(card.locator('[data-log-needs-nutrition]')).toBeVisible();
   await expect(card).not.toContainText(/draft/i);
 });
+test('manual mode rejects faulted nutrition for a named Food without partial cell writes',async({page})=>{
+  const fixture=await setup(page);
+  await page.evaluate(async fixture=>{
+    const storage='/src/storage.ts',model='/src/model.ts';
+    const {Store}=await import(/* @vite-ignore */storage) as typeof import('../../src/storage'),{setInput}=await import(/* @vite-ignore */model) as typeof import('../../src/model'),store=await Store.open();
+    try{
+      const state=(await store.load())!,sheet=state.book.sheets.find(sheet=>sheet.id===fixture.sheet)!,table=state.book.tables.find(table=>table.id===fixture.table)!;
+      setInput(state.book,sheet,fixture.latest,table.columns.find(column=>column.name==='Fat (g)')!.column,'=1/0');
+      await store.save(state.book,state.version,'Synthetic named-food formula error');
+    }finally{store.close();}
+  },fixture);
+  await page.reload();await page.locator('#meal-log').click();
+  const before=await read(page,fixture.sheet),card=page.locator(`[data-log-card="${fixture.latest}"]`);
+  await card.getByRole('textbox',{name:'Food',exact:true}).click();
+  await page.getByRole('button',{name:'Custom',exact:true}).click();
+  await expect(page.locator('#error')).toContainText('Fix the Fat (g) error before using manual nutrition.');
+  expect((await read(page,fixture.sheet)).sheet.cells).toEqual(before.sheet.cells);
+});
 test('linked foods use current Ingredient reference nutrition without changing links, consumption or formulas',async({page})=>{
   const fixture=await setup(page);await page.locator('#meal-log').click();
   const card=page.locator(`[data-log-card="${fixture.latest}"]`),tag=card.locator('[data-log-needs-nutrition]');
@@ -996,6 +1014,11 @@ test('a populated thousand-food day opens promptly and retains unrelated live fi
   await first.locator('.meal-log-notes summary').click();
   const notes=first.getByRole('textbox',{name:'Notes',exact:true});
   await notes.fill('literal\nretained notes');await notes.evaluate((input:HTMLTextAreaElement)=>input.setSelectionRange(2,7));
+  const updates=await first.evaluateHandle(card=>{
+    const records:string[]=[],observer=new MutationObserver(changes=>records.push(...changes.map(change=>`${change.type}:${change.attributeName??''}`)));
+    observer.observe(card,{attributes:true,childList:true,characterData:true,subtree:true});
+    return{records,observer};
+  });
   const checkRetained=async()=>{
     expect(await retained!.evaluate(card=>card.isConnected)).toBe(true);
     await expect(notes).toBeFocused();await expect(notes).toHaveValue('literal\nretained notes');
@@ -1003,6 +1026,7 @@ test('a populated thousand-food day opens promptly and retains unrelated live fi
     await expect(first.locator('.meal-log-macros')).toHaveAttribute('open','');
     await expect(first.locator('.meal-log-notes')).toHaveAttribute('open','');
     await expect(first.getByRole('textbox',{name:'Restaurant',exact:true})).toHaveValue('Invented retained cafe');
+    expect(await updates.evaluate(state=>state.records)).toEqual([]);
   };
   await panel.locator('[data-log-card]').last().getByRole('button',{name:'Delete food',exact:true}).dispatchEvent('click');
   await expect(panel.locator('[data-log-card]')).toHaveCount(1000);await checkRetained();
@@ -1012,6 +1036,7 @@ test('a populated thousand-food day opens promptly and retains unrelated live fi
   expect(saved.sheet.cells[`${fixture.latest}:${table.columns.find((column:{name:string})=>column.name==='Amount (g)')!.column}`].value).toBe(321);
   await panel.getByRole('button',{name:'Redo',exact:true}).dispatchEvent('click');
   await expect(panel.locator('[data-log-card]')).toHaveCount(1000);await checkRetained();
+  await updates.evaluate(state=>state.observer.disconnect());await updates.dispose();
 });
 test('public-sized food reordering finishes promptly and keeps stable row identities and Undo',async({page})=>{
   const fixture=await setup(page,6000,true);await page.locator('#meal-log').click();

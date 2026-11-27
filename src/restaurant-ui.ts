@@ -19,8 +19,11 @@ export function mountRestaurantField(host:RestaurantHost,element:HTMLElement,cur
   const act=(change:()=>void)=>{try{change();}catch(error){host.error(error);}};
   const paths=()=>[[...path(),'restaurant'],[...path(),'restaurantText']] as Patch['path'][];
   const refresh=(disabled=false)=>{
-    if(input!==document.activeElement)input.value=restaurantName(host.book(),current());
-    input.disabled=disabled;trigger.disabled=disabled;unlink.disabled=disabled||!restaurantName(host.book(),current());
+    const name=restaurantName(host.book(),current()),unlinkDisabled=disabled||!name;
+    if(input!==document.activeElement&&input.value!==name)input.value=name;
+    if(input.disabled!==disabled)input.disabled=disabled;
+    if(trigger.disabled!==disabled)trigger.disabled=disabled;
+    if(unlink.disabled!==unlinkDisabled)unlink.disabled=unlinkDisabled;
     if(disabled)popup.close();
   };
   const popup=mountDropdownPopup(trigger,'Restaurants',(panel,position,close)=>{

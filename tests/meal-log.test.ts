@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import {addMasterFood,masterLogging,masterDayBlocks} from '../src/day-logging';
 import {Engine,scalar} from '../src/formula';
-import {addMealIngredient,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealLogConfig,mealLogContext,moveMealFood,refreshMealIngredientCalculations} from '../src/meal-log';
+import {addMealIngredient,createMealNutritionReader,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealLogConfig,mealLogContext,moveMealFood,refreshMealIngredientCalculations} from '../src/meal-log';
 import {addTableColumns,blankSheet,clone,createDemo,getCell,moveColumns,renameColumn,setInput} from '../src/model';
 import {applyUndo,structuralUndo} from '../src/undo-history';
 import {validationChoiceGroups} from '../src/references';
@@ -47,6 +47,19 @@ it('retains live field identities and formulas after column moves and names chan
   setInput(book,sheet,food,fields.get('calories')!.column,'321');
   expect(scalar(new Engine(book).cell(sheet.id,header,fields.get('calories')!.column))).toBe(421);
   validateBook(book);
+});
+it('indexes nutrition membership once per view and resolves fresh membership and renamed fields on the next view',()=>{
+  const {book,sheet,table}=fixture(),rows=[...table.rows],engine=new Engine(book),expected=rows.map(row=>mealNeedsNutrition(book,sheet,row,engine));
+  let visits=0;
+  table.rows=new Proxy(table.rows,{get(target,key,receiver){if(typeof key==='string'&&/^\d+$/.test(key))visits++;return Reflect.get(target,key,receiver);}});
+  const read=createMealNutritionReader(book,sheet,engine);
+  expect(rows.map(read)).toEqual(expected);expect(visits).toBeLessThanOrEqual(rows.length*2);
+  const row=sheet.rows[2].id;expect(read(row)).toBe(true);
+  table.rows=rows.filter(id=>id!==row);
+  expect(createMealNutritionReader(book,sheet,new Engine(book))(row)).toBe(false);
+  for(const column of table.columns)renameColumn(book,table,column.id,'Renamed '+column.id);
+  table.rows.unshift(row);
+  expect(createMealNutritionReader(book,sheet,new Engine(book))(row)).toBe(true);
 });
 it('keeps day boundaries, groups, formulas and cursor intact through blank, zero and decimal Weight edits after a column rename and move',()=>{
   const {book,sheet,table}=fixture(),header=sheet.rows[4].id,weight=table.columns[1];

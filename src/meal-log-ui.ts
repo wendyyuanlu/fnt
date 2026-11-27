@@ -175,7 +175,8 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
         if(host.restaurant)restaurantFields.set(row.id,host.restaurant(row.id,card));
         for(const details of card.querySelectorAll<HTMLDetailsElement>('details'))details.ontoggle=()=>{const state=details.classList.contains('meal-log-notes')?notesExpanded:details.classList.contains('meal-log-quantities')?quantitiesExpanded:expanded,id=details.dataset.quantityKey??row.id;if(details.open)state.add(id);else state.delete(id);};
       }
-      const card=cards.get(row.id)!;card.setAttribute('aria-label',`Food ${i+1}`);
+      const card=cards.get(row.id)!,label=`Food ${i+1}`;
+      if(card.getAttribute('aria-label')!==label)card.setAttribute('aria-label',label);
       card.querySelector('[aria-label="Move food up"]')!.toggleAttribute('data-log-boundary',i===0);
       card.querySelector('[aria-label="Move food down"]')!.toggleAttribute('data-log-boundary',i===view.rows.length-1);
     }
@@ -185,28 +186,30 @@ export function mountMealLog(host:MealLogHost,initialTab:MealLogTab='formal'){
     if(focused&&active&&document.activeElement!==fieldInput(active.row,active.field)){const input=fieldInput(active.row,active.field);if(input&&keepWeight&&before)input.value=before.value;input?.focus({preventScroll:true});if(input&&caret?.[0]!=null&&caret[1]!=null)input.setSelectionRange(caret[0],caret[1]);}
     const weight=fieldInput(view.header,'dayWeight')!;
     if(!keepWeight&&weight.value!==view.weight.value)weight.value=view.weight.value;
-    weight.disabled=view.busy;weight.classList.toggle('calculated',view.weight.calculated);
+    if(weight.disabled!==view.busy)weight.disabled=view.busy;
+    weight.classList.toggle('calculated',view.weight.calculated);
     for(const row of view.rows){
-      const card=cards.get(row.id)!;
-      card.querySelector<HTMLElement>('[data-log-totals]')!.textContent=row.totals;
-      card.querySelector<HTMLElement>('[data-log-needs-nutrition]')!.hidden=!row.needsNutrition;
+      const card=cards.get(row.id)!,totals=card.querySelector<HTMLElement>('[data-log-totals]')!,needs=card.querySelector<HTMLElement>('[data-log-needs-nutrition]')!;
+      if(totals.textContent!==row.totals)totals.textContent=row.totals;
+      if(needs.hidden!==!row.needsNutrition)needs.hidden=!row.needsNutrition;
       const food=card.querySelector<HTMLInputElement>('[data-log-field="food"]')!,ingredient=card.querySelector('.meal-log-ingredient');
-      food.dataset.logManual=String(row.manual);food.readOnly=!row.manual;food.placeholder=row.manual?'Manual input':'';
+      if(food.dataset.logManual!==String(row.manual))food.dataset.logManual=String(row.manual);
+      if(food.readOnly!==!row.manual)food.readOnly=!row.manual;
+      const placeholder=row.manual?'Manual input':'';if(food.placeholder!==placeholder)food.placeholder=placeholder;
       if(row.manual&&!ingredient)card.querySelector('.meal-log-row-actions')!.insertAdjacentHTML('beforebegin','<label class="inline meal-log-ingredient"><input type="checkbox" data-log-ingredient>Add to Ingredients</label>');
       else if(!row.manual)ingredient?.remove();
-      const checkbox=card.querySelector<HTMLInputElement>('[data-log-ingredient]');if(checkbox)checkbox.disabled=view.busy;
-      for(const field of mealFields){const input=fieldInput(row.id,field),value=row.values[field]??'';if(input&&(!writing||input!==document.activeElement)&&input.value!==value)input.value=value;if(input){input.disabled=view.busy;input.classList.toggle('calculated',row.calculated.includes(field));}}
+      const checkbox=card.querySelector<HTMLInputElement>('[data-log-ingredient]');if(checkbox&&checkbox.disabled!==view.busy)checkbox.disabled=view.busy;
+      for(const field of mealFields){const input=fieldInput(row.id,field),value=row.values[field]??'';if(input&&(!writing||input!==document.activeElement)&&input.value!==value)input.value=value;if(input){if(input.disabled!==view.busy)input.disabled=view.busy;input.classList.toggle('calculated',row.calculated.includes(field));}}
     }
-    element.querySelector<HTMLElement>('[data-log-date]')!.textContent=view.date;
-    for(const button of element.querySelectorAll('button')){
-      if(button.hasAttribute('data-log-tab'))continue;
-      button.disabled=view.busy||button.hasAttribute('data-log-boundary')||button.hasAttribute('data-log-unavailable');
+    const date=element.querySelector<HTMLElement>('[data-log-date]')!,totals=element.querySelector<HTMLElement>('.meal-log-day-totals')!,undoButton=button('Undo'),redoButton=button('Redo'),closeButton=button('Close Meal log');
+    if(date.textContent!==view.date)date.textContent=view.date;
+    if(totals.textContent!==view.totals)totals.textContent=view.totals;
+    for(const control of element.querySelectorAll('button')){
+      if(control.hasAttribute('data-log-tab')||control.hasAttribute('data-restaurant-picker')||control.hasAttribute('data-unlink-restaurant'))continue;
+      const disabled=control===closeButton?false:view.busy||control.hasAttribute('data-log-boundary')||control.hasAttribute('data-log-unavailable')||control===undoButton&&!view.undo||control===redoButton&&!view.redo;
+      if(control.disabled!==disabled)control.disabled=disabled;
     }
-    button('Close Meal log').disabled=false;
-    element.querySelector<HTMLElement>('.meal-log-day-totals')!.textContent=view.totals;
-    button('Undo').disabled=!view.undo||view.busy;button('Redo').disabled=!view.redo||view.busy;
-    footer.querySelector<HTMLButtonElement>('[data-log-add]')!.disabled=view.busy;
-    button('Next field').hidden=!touch()||!focusMode;
+    const next=button('Next field'),hideNext=!touch()||!focusMode;if(next.hidden!==hideNext)next.hidden=hideNext;
     for(const field of restaurantFields.values())field.refresh(view.busy);
     if(lastHeader!==view.header){lastHeader=view.header;pendingBottom=true;restoreScroll();}
     position();

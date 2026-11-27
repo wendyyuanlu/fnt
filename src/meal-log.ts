@@ -46,22 +46,35 @@ export function mealLogConfig(book:Workbook,sheet:Sheet):MealLogConfig{
   const {table,food}=masterLogging(book,sheet),ingredients=allTables(book).find(table=>table.name.toLowerCase()==='ingredients');
   return{table:table.id,...(meals?{meals}:{}),fields:{...mapMealFields(table),...(food?{food:food.id}:{})},...(ingredients?{ingredients:{table:ingredients.id,fields:mapMealFields(ingredients,true)}}:{})};
 }
-export function mealNeedsNutrition(book:Workbook,sheet:Sheet,row:string,engine=new Engine(book)):boolean{
-  const config=mealLogConfig(book,sheet),table=allTables(book).find(table=>table.id===config.table);
+function mealNutritionReader(book:Workbook,sheet:Sheet,engine:Engine,contains:(table:Table,row:string)=>boolean):(row:string)=>boolean{
+  const config=mealLogConfig(book,sheet),tables=allTables(book),table=tables.find(table=>table.id===config.table);
   const foodColumn=table?.columns.find(column=>column.id===config.fields.food);
-  if(!foodColumn||!table?.rows.includes(row))return false;
-  const food=getCell(sheet,row,foodColumn.column),name=scalar(engine.cell(sheet.id,row,foodColumn.column));
-  if(name===null||typeof name==='string'&&!name.trim())return false;
-  const target=config.ingredients,binding=food.binding;
-  const ingredients=binding&&binding.table===target?.table?allTables(book).find(table=>table.id===binding.table):undefined;
-  const source=ingredients?allSheets(book).find(sheet=>sheet.id===ingredients.sheet):sheet;
-  const fields=ingredients?target!.fields:config.fields,sourceTable=ingredients??table,sourceRow=ingredients?binding!.row:row;
-  if(binding&&target&&binding.table===target.table&&(!ingredients||!source||!ingredients.rows.includes(sourceRow)))return true;
-  return (['calories','protein','fat','carbs','sugar','sodium'] as const).some(field=>{
-    const column=sourceTable.columns.find(column=>column.id===fields[field]);
-    const value=column&&source?scalar(engine.cell(source.id,sourceRow,column.column)):null;
-    return typeof value==='number'?!Number.isFinite(value):typeof value!=='string'||!value.trim()||!Number.isFinite(Number(value));
+  const target=config.ingredients,ingredients=target?tables.find(table=>table.id===target.table):undefined;
+  const source=ingredients?allSheets(book).find(sheet=>sheet.id===ingredients.sheet):undefined;
+  return row=>{
+    if(!foodColumn||!table||!contains(table,row))return false;
+    const food=getCell(sheet,row,foodColumn.column),name=scalar(engine.cell(sheet.id,row,foodColumn.column));
+    if(name===null||typeof name==='string'&&!name.trim())return false;
+    const binding=food.binding,linked=!!binding&&binding.table===target?.table;
+    if(linked&&(!ingredients||!source||!contains(ingredients,binding.row)))return true;
+    const fields=linked?target!.fields:config.fields,sourceTable=linked?ingredients!:table,sourceSheet=linked?source!:sheet,sourceRow=linked?binding!.row:row;
+    return (['calories','protein','fat','carbs','sugar','sodium'] as const).some(field=>{
+      const column=sourceTable.columns.find(column=>column.id===fields[field]);
+      const value=column?scalar(engine.cell(sourceSheet.id,sourceRow,column.column)):null;
+      return typeof value==='number'?!Number.isFinite(value):typeof value!=='string'||!value.trim()||!Number.isFinite(Number(value));
+    });
+  };
+}
+export function createMealNutritionReader(book:Workbook,sheet:Sheet,engine=new Engine(book)):(row:string)=>boolean{
+  // Recreate after structural edits; this reader belongs to one synchronous view.
+  const rows=new Map<Table,Set<string>>();
+  return mealNutritionReader(book,sheet,engine,(table,row)=>{
+    let members=rows.get(table);if(!members)rows.set(table,members=new Set(table.rows));
+    return members.has(row);
   });
+}
+export function mealNeedsNutrition(book:Workbook,sheet:Sheet,row:string,engine=new Engine(book)):boolean{
+  return mealNutritionReader(book,sheet,engine,(table,row)=>table.rows.includes(row))(row);
 }
 export function markMealNeedsNutrition(book:Workbook,sheet:Sheet,row:string):void{
   const config=mealLogConfig(book,sheet),table=allTables(book).find(table=>table.id===config.table),foodColumn=table?.columns.find(column=>column.id===config.fields.food);
