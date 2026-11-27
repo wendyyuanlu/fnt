@@ -5,6 +5,7 @@ import {clone,createDemo,key,uid,type Workbook} from '../src/model';
 import {parseArchive,stringifyArchive} from '../src/archive';
 import {request,Store,validateBook,validateBookMetadata,validateCellChanges,type Backup} from '../src/storage';
 import {applyUndo,type History,type UndoHistory} from '../src/undo-history';
+import {addDraftFood,captureData,newNutritionBatch} from '../src/food-capture';
 
 const title=(value:string):History=>({patch:[{path:['title'],exists:true,value}]});
 const history:UndoHistory={undo:[title('Previous')],redo:[title('Redo')]};
@@ -31,7 +32,7 @@ async function fixture(){
   return{name,store,book,state};
 }
 async function raw(name:string,write:(store:IDBObjectStore)=>void){
-  const db=await request(indexedDB.open(name,1)),tx=db.transaction('state','readwrite');
+  const db=await request(indexedDB.open(name)),tx=db.transaction('state','readwrite');
   const done=new Promise<void>((resolve,reject)=>{tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error);});
   write(tx.objectStore('state'));await done;db.close();
 }
@@ -42,6 +43,24 @@ function failRequest(store:IDBObjectStore,error:DOMException):IDBRequest<IDBVali
 }
 
 describe('transactional workbook change journal',()=>{
+  it('recovers legacy Multi undefined Notes from the journal without clearing food, identities or history',async()=>{
+    const {name,store,book,state}=await fixture();
+    try{
+      const food=addDraftFood(book,45000);food.mode='multi';food.values.food='First synthetic dish\nSecond synthetic dish';food.parts=[{id:'one',text:'First synthetic dish'},{id:'two',text:'Second synthetic dish'}];
+      const data=captureData(book);data.builder=newNutritionBatch(book,[45000],'Template');
+      const requests=data.builder.items.filter(item=>item.kind==='draft');
+      for(const item of requests)item.values.notes=undefined;
+      const forward:History={patch:[{path:['foodCapture'],exists:true,value:clone(data)}]},receipt=await store.saveChanges(book.id,book.revision+1,state.version,'Legacy Multi snapshot',[forward],history);
+      const loaded=(await store.load())!;
+      expect(loaded.book.id).toBe(book.id);expect(loaded.book.foodCapture).toEqual(data);expect(loaded.book.sheets).toEqual(book.sheets);expect(await store.undoHistory(receipt.version,book.id)).toEqual(history);
+      expect(Object.prototype.hasOwnProperty.call(loaded.book.foodCapture!.builder!.items.find(item=>item.kind==='draft')!.values,'notes')).toBe(true);
+      await store.compact(receipt.version);
+      const reopened=await Store.open(name);
+      try{expect((await reopened.load())!.book.foodCapture).toEqual(data);}finally{reopened.close();}
+      requests[0].values.calories=undefined;expect(()=>validateBook(book)).toThrow('nutrition request');
+      delete requests[0].values.calories;Object.assign(requests[0].values,{notes:null});expect(()=>validateBook(book)).toThrow('nutrition request');
+    }finally{store.close();}
+  });
   it('materializes compaction and its independent complete recovery checkpoint once at the exact logical version',async()=>{
     const {store,book,state}=await fixture(),receipt=await store.saveChanges(book.id,book.revision+1,state.version,'Edit',[title('Exact saved version')],history);
     await store.visit(book.id,book.tables[0].id,4);

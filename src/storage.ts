@@ -5,10 +5,20 @@ import {applyUndo,type History,type UndoHistory} from './undo-history';
 import {githubFormDefaults,withPrivateGitHub} from './github-client';
 import {validateMealLog} from './meal-log';
 import {runSyncCodec} from './sync-processing';
+import {withDevicePreferences,type SyncMerge} from './sync-merge';
+import {validateFoodCapture} from './food-capture';
+import {validateConverterState} from './nutrition-converter';
+import {validateConverterReceipt} from './nutrition-apply';
+import {decodePhotoArchives,encodePhotoArchives,inspectPhoto,referencedPhotoIds,validatePhotoArchives,type PhotoArchive,type PhotoBlob} from './food-photos';
 
 export interface Pending { id: string; label: string; time: string }
 export interface SyncConfig { owner: string; repo: string; branch: string; path: string }
 const syncConflictKey=(config:SyncConfig)=>`sync-conflict:${JSON.stringify(config)}`;
+const syncBaseKey=(config:SyncConfig)=>`sync-base:${JSON.stringify(config)}`;
+const syncAttemptKey=(config:SyncConfig)=>`sync-attempt:${JSON.stringify(config)}`;
+export interface SyncBase{sha:string;book:Workbook}
+interface SyncReceipt{id:string;book:Workbook;device?:string}
+export interface SyncAttempt extends SyncReceipt{ancestor?:SyncReceipt}
 export interface LocalState {
   book: Workbook; version: number; pending: Pending[]; updated: string;
   sync?: SyncConfig; remoteSha?: string;syncPaused?:boolean;syncReview?:boolean;
@@ -19,12 +29,21 @@ export interface Checkpoint { id: string; label: string; time: string; book: Wor
 export interface Backup {
   format: 'fnt-backup'; version: 1; state: LocalState;
   originals: { id: string; name: string; data: string }[];
+  photos?:PhotoArchive[];
+  missingPhotos?:string[];
 }
 export function validateBackup(backup:Backup):void {
   if(!backup||backup.format!=='fnt-backup'||backup.version!==1||!backup.state||!Array.isArray(backup.state.pending)||!Array.isArray(backup.originals))throw Error('Invalid workbook backup.');
   if(backup.state.pending.some(p=>!p||typeof p.id!=='string'||!p.id||typeof p.label!=='string'||typeof p.time!=='string')||new Set(backup.state.pending.map(p=>p.id)).size!==backup.state.pending.length)throw Error('Invalid backup pending-operation journal.');
   validateBook(backup.state.book);
   validateOriginals(backup.state.book,backup.originals);
+  if(backup.photos!==undefined)validatePhotoArchives(backup.photos);
+  if(backup.missingPhotos!==undefined&&(!Array.isArray(backup.missingPhotos)||backup.missingPhotos.some(id=>typeof id!=='string'||!/^[\w.-]{1,128}$/.test(id))||new Set(backup.missingPhotos).size!==backup.missingPhotos.length))throw Error('Invalid missing-photo manifest.');
+  const metadata=new Map(backup.state.book.foodCapture?.photos.map(photo=>[photo.id,photo]));
+  for(const photo of backup.photos??[]){
+    const expected=metadata.get(photo.id);
+    if(backup.missingPhotos?.includes(photo.id)||expected&&(expected.digest!==photo.digest||expected.bytes!==photo.bytes||expected.mime!==photo.mime))throw Error('Photo backup conflicts with workbook metadata.');
+  }
 }
 type Original=Backup['originals'][number];
 interface Navigation {visits:Record<string,number>;pending:Pending[]}
@@ -144,6 +163,13 @@ function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook
   const sheets=[...b.sheets,...b.dropdownData?.sheets??[]],tables=[...b.tables,...b.dropdownData?.tables??[]];
   if(b.dropdownData?.tables.some(table=>!b.dropdownData!.sheets.some(sheet=>sheet.id===table.sheet))||b.tables.some(table=>!b.sheets!.some(sheet=>sheet.id===table.sheet)))throw Error('A table is stored outside its owning sheet collection.');
   if(b.hypotheticalStyle!==undefined)validateHypotheticalStyle(b.hypotheticalStyle);
+  if(b.foodCapture!==undefined)validateFoodCapture(b.foodCapture);
+  if(b.foodCapture?.converter!==undefined)validateConverterState(b.foodCapture.converter);
+  if(b.foodCapture?.nutritionReceipts!==undefined){
+    if(!Array.isArray(b.foodCapture.nutritionReceipts))throw Error('Invalid nutrition receipt history.');
+    const ids=new Set<string>();
+    for(const receipt of b.foodCapture.nutritionReceipts){validateConverterReceipt(receipt);if(ids.has(receipt.id))throw Error('Duplicate nutrition apply receipt.');ids.add(receipt.id);}
+  }
   for(const field of ['toolbarOrder','toolbarDividers'] as const){
     const ids=b[field];
     if(ids!==undefined&&(!Array.isArray(ids)||ids.length>256||ids.some(id=>typeof id!=='string'||!/^(action|control):[a-zA-Z0-9_-]{1,100}$/.test(id))||new Set(ids).size!==ids.length))throw Error(`Invalid toolbar ${field==='toolbarOrder'?'order':'dividers'}.`);
@@ -233,15 +259,72 @@ function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook
   }
 }
 export class Store {
-  constructor(private db: IDBDatabase) {}
+  constructor(private db: IDBDatabase) {db.onversionchange=()=>db.close();}
   static async open(name = 'fnt-workbook-v1'): Promise<Store> {
-    const r = indexedDB.open(name,1);
+    const r = indexedDB.open(name,2);
     r.onupgradeneeded = () => {
-      r.result.createObjectStore('state');
-      r.result.createObjectStore('history',{keyPath:'id'});
-      r.result.createObjectStore('originals',{keyPath:'id'});
+      if(!r.result.objectStoreNames.contains('state'))r.result.createObjectStore('state');
+      if(!r.result.objectStoreNames.contains('history'))r.result.createObjectStore('history',{keyPath:'id'});
+      if(!r.result.objectStoreNames.contains('originals'))r.result.createObjectStore('originals',{keyPath:'id'});
+      if(!r.result.objectStoreNames.contains('photos'))r.result.createObjectStore('photos',{keyPath:'id'});
     };
-    return new Store(await request(r));
+    const db=await new Promise<IDBDatabase>((resolve,reject)=>{
+      let blocked=false;
+      r.onblocked=()=>{blocked=true;reject(Error('Close other Fnt tabs before upgrading photo storage, then reopen this page. Existing data has not been replaced.'));};
+      r.onerror=()=>reject(r.error??Error('Cannot open local workbook storage.'));
+      r.onsuccess=()=>{if(blocked)r.result.close();else resolve(r.result);};
+    });
+    return new Store(db);
+  }
+  async putPhoto(photo:PhotoBlob):Promise<void>{
+    const verified=await inspectPhoto(photo.id,photo.blob,photo),tx=this.db.transaction('photos','readwrite'),done=complete(tx),store=tx.objectStore('photos'),existing=store.get(photo.id);
+    let failure:unknown;
+    existing.onsuccess=()=>{
+      if(existing.result&&existing.result.digest!==verified.digest){failure=Error('A different photo already uses this identity. Nothing was replaced.');tx.abort();}
+      else store.put(verified);
+    };
+    try{await done;}catch(error){throw failure??error;}
+  }
+  private async verifiedPhotos(photos:PhotoBlob[]):Promise<PhotoBlob[]>{
+    const seen=new Set<string>(),verified:PhotoBlob[]=[];
+    for(const photo of photos){
+      if(seen.has(photo.id))throw Error('A photo identity was included more than once. Nothing was saved.');
+      seen.add(photo.id);verified.push(await inspectPhoto(photo.id,photo.blob,photo));
+    }
+    return verified;
+  }
+  private writePhotos(tx:IDBTransaction,photos:PhotoBlob[],fail:(error:unknown)=>void):void{
+    for(const photo of photos){
+      const store=tx.objectStore('photos'),existing=store.get(photo.id);
+      existing.onsuccess=()=>{
+        try{
+          if(existing.result&&existing.result.digest!==photo.digest)throw Error('A different photo already uses this identity. Nothing was replaced.');
+          store.put(photo);
+        }catch(error){fail(error);}
+      };
+    }
+  }
+  async photo(id:string,expected?:Pick<PhotoBlob,'digest'|'mime'|'bytes'>):Promise<PhotoBlob>{
+    const tx=this.db.transaction('photos'),done=complete(tx),record=tx.objectStore('photos').get(id);await done;
+    const photo=record.result as PhotoBlob|undefined;
+    if(!photo)throw Error('This photo is not stored on this device. Retrieve it from your private gallery or restore a complete backup.');
+    return inspectPhoto(id,photo.blob,expected??photo);
+  }
+  async restorePhotoOriginals(book:string,expected:number,photos:PhotoBlob[]):Promise<void>{
+    const verified=await this.verifiedPhotos(photos),tx=this.db.transaction(['state','photos'],'readwrite'),done=complete(tx);
+    let failure:unknown;
+    const fail=(error:unknown)=>{failure=error;tx.abort();};
+    readState(tx.objectStore('state'),state=>{
+      try{
+        if(!state||state.book.id!==book||state.version!==expected)throw Error('Another tab changed this workbook. Refresh before restoring photo originals.');
+        for(const photo of verified){
+          const metadata=state.book.foodCapture?.photos.find(entry=>entry.id===photo.id);
+          if(!metadata||metadata.digest!==photo.digest||metadata.bytes!==photo.bytes||metadata.mime!==photo.mime)throw Error('The saved photo reference changed. No original was replaced.');
+        }
+        this.writePhotos(tx,verified,fail);
+      }catch(error){fail(error);}
+    },fail);
+    try{await done;}catch(error){throw failure??error;}
   }
   async load(): Promise<LocalState | undefined> {
     const tx=this.db.transaction('state'),done=complete(tx);
@@ -256,13 +339,14 @@ export class Store {
     if((head.result?.state.version??current.result?.version)!==expected)throw Error('Another tab changed this workbook. Sync paused; preserve this tab before reloading.');
   }
   /** Append forward patches and independent undo/redo together; complete replacements use save(). */
-  async saveChanges(bookId:string,revision:number,expected:number,label:string,forward:History[],undoHistory:UndoHistory):Promise<{version:number;pending:Pending[];updated:string}>{
+  async saveChanges(bookId:string,revision:number,expected:number,label:string,forward:History[],undoHistory:UndoHistory,photos:PhotoBlob[]=[]):Promise<{version:number;pending:Pending[];updated:string}>{
     validateForward(forward);
     if(!Number.isSafeInteger(revision)||!Number.isSafeInteger(expected)||expected<0||typeof label!=='string'||!undoHistory||!Array.isArray(undoHistory.undo)||!Array.isArray(undoHistory.redo))throw journalError();
-    const changes=clone(forward),history=undoHistory;
-    const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
+    const changes=clone(forward),history=undoHistory,attachments=await this.verifiedPhotos(photos);
+    const tx=this.db.transaction(attachments.length?['state','photos']:['state'],'readwrite'),done=complete(tx),store=tx.objectStore('state');
     let result:{version:number;pending:Pending[];updated:string}|undefined,failure:unknown;
     const fail=(e:unknown)=>{failure=e;tx.abort();};
+    this.writePhotos(tx,attachments,fail);
     const append=(head:JournalHead)=>{
       try{
         if(head.book!==bookId||head.state.version!==expected)throw Error('Another tab changed this workbook. Your edits are still in memory. Download a backup before reloading.');
@@ -334,6 +418,48 @@ export class Store {
   async originals():Promise<Original[]>{
     return await request(this.db.transaction('originals').objectStore('originals').getAll()) as Original[];
   }
+  async syncBase(config:SyncConfig,sha?:string):Promise<Workbook|undefined>{
+    if(!sha)return;
+    const saved=await request(this.db.transaction('state').objectStore('state').get(syncBaseKey(config))) as SyncBase|undefined;
+    if(!saved||saved.sha!==sha)return;
+    validateBook(saved.book);return saved.book;
+  }
+  async syncAttempt(config:SyncConfig):Promise<SyncAttempt|undefined>{
+    const saved=await request(this.db.transaction('state').objectStore('state').get(syncAttemptKey(config))) as SyncAttempt|undefined;
+    if(!saved)return;
+    for(const receipt of [saved,...(saved.ancestor?[saved.ancestor]:[])]){
+      if(typeof receipt.id!=='string'||!receipt.id||receipt.device!==undefined&&(typeof receipt.device!=='string'||!receipt.device))throw Error('Saved sync transfer receipt is damaged. Export a backup before reconnecting.');
+      validateBook(receipt.book);
+    }
+    return saved;
+  }
+  async rememberSyncAttempt(config:SyncConfig,attempt:SyncAttempt):Promise<void>{
+    const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
+    store.put(attempt,syncAttemptKey(config));await done;
+  }
+  async acceptSync(expected:number,config:SyncConfig,result:SyncResult,book:Workbook,history?:UndoHistory,options?:{pendingLabel?:string}):Promise<LocalState>{
+    book=clone(book);result=clone({...result,remote:undefined});history=history?clone(history):undefined;
+    validateBook(book);if(result.confirmed)validateBook(result.confirmed);
+    const tx=this.db.transaction(['state','originals','history'],'readwrite'),done=complete(tx),store=tx.objectStore('state');
+    let saved:LocalState|undefined,failure:unknown;
+    readState(store,previous=>{
+      try{
+        if(!previous||previous.version!==expected||JSON.stringify(previous.sync)!==JSON.stringify(config))throw Error('Another tab changed this workbook. Sync response was not applied; local edits retained.');
+        const acknowledged=new Set(result.acknowledged??[]),pending=previous.pending.filter(operation=>!acknowledged.has(operation.id));
+        if(options?.pendingLabel)pending.push({id:uid(),label:options.pendingLabel,time:new Date().toISOString()});
+        book=withDevicePreferences(book,previous.book);
+        saved={...previous,version:expected+1,book,pending,remoteSha:result.sha,updated:new Date().toISOString()};
+        if(result.confirmed)store.put({sha:result.sha,book:result.confirmed} satisfies SyncBase,syncBaseKey(config));
+        tx.objectStore('history').put({id:uid(),label:'Before incoming sync changes',time:new Date().toISOString(),book:previous.book} satisfies Checkpoint);
+        for(const original of result.originals??[])tx.objectStore('originals').put(original);
+        store.put(saved,'current');resetJournal(store,saved);
+        store.delete(navigationKey(book.id));
+        if(history)store.put({version:saved.version,book:book.id,history},'undo');
+        else store.delete('undo');
+      }catch(error){failure=error;tx.abort();}
+    },error=>{failure=error;tx.abort();});
+    try{await done;}catch(error){throw failure??error;}return saved!;
+  }
   async syncToken(config:SyncConfig):Promise<string|undefined>{
     const saved=await request(this.db.transaction('state').objectStore('state').get(syncCredentialKey)) as {config?:SyncConfig;token?:unknown}|undefined;
     if(!saved||!saved.config||!(['owner','repo','branch','path'] as const).every(field=>saved.config![field]===config[field]))return;
@@ -388,11 +514,12 @@ export class Store {
     if(!saved.history||!Array.isArray(saved.history.undo)||!Array.isArray(saved.history.redo))throw Error('Saved undo history is damaged. Export a backup before continuing.');
     return saved.history;
   }
-  async save(book: Workbook, expected: number, label: string, checkpoint = false, original?: {id:string;name:string;data:string}, options?:{localOnly?:boolean;recoveryArchive?:string;publishedSnapshot?:string;undoHistory?:UndoHistory;comparisonSync?:{config:SyncConfig;sha:string};pauseSync?:boolean}): Promise<LocalState> {
-    const snapshot=clone(book);
-    const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx);
+  async save(book: Workbook, expected: number, label: string, checkpoint = false, original?: {id:string;name:string;data:string}, options?:{localOnly?:boolean;recoveryArchive?:string;publishedSnapshot?:string;undoHistory?:UndoHistory;comparisonSync?:{config:SyncConfig;sha:string};pauseSync?:boolean;photos?:PhotoBlob[]}): Promise<LocalState> {
+    const snapshot=clone(book),attachments=await this.verifiedPhotos(options?.photos??[]);
+    const tx = this.db.transaction(attachments.length?['state','history','originals','photos']:['state','history','originals'],'readwrite'), done = complete(tx);
     const store = tx.objectStore('state');
     let result: LocalState | undefined, conflict = false, failure:unknown;
+    this.writePhotos(tx,attachments,error=>{failure=error;tx.abort();});
     const navigation=store.get(navigationKey(snapshot.id));
     readState(store,previous=>{
       try{
@@ -424,11 +551,13 @@ export class Store {
     try { await done; } catch (e) { if (conflict) throw Error('Another tab changed this workbook. Your edits are still in memory. Download a backup before reloading.'); throw failure??e; }
     return result!;
   }
-  async syncMetadata(expected:number,change:{sha?:string;acknowledged?:string[];paused?:boolean;review?:boolean;clearConflict?:boolean}):Promise<Omit<LocalState,'book'>>{
-    const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
+  async syncMetadata(expected:number,change:{sha?:string;acknowledged?:string[];paused?:boolean;review?:boolean;clearConflict?:boolean;confirmed?:Workbook;originals?:Original[]}):Promise<Omit<LocalState,'book'>>{
+    const tx=this.db.transaction(['state','originals'],'readwrite'),done=complete(tx),store=tx.objectStore('state');
     let result:Omit<LocalState,'book'>|undefined,failure:unknown;
     const update=(state:Omit<LocalState,'book'>,write:(metadata:Omit<LocalState,'book'>)=>void)=>{
       if(state.version!==expected)throw Error('Another tab changed this workbook. Sync acknowledgement was not applied; local edits retained.');
+      if(change.confirmed&&change.sha&&state.sync)store.put({sha:change.sha,book:change.confirmed} satisfies SyncBase,syncBaseKey(state.sync));
+      for(const original of change.originals??[])tx.objectStore('originals').put(original);
       if(change.clearConflict&&state.sync)store.delete(syncConflictKey(state.sync));
       const acknowledged=new Set(change.acknowledged??[]);
       result={...state,version:expected+1,pending:state.pending.filter(operation=>!acknowledged.has(operation.id)),
@@ -483,8 +612,8 @@ export class Store {
     try { await done; } catch (e) { if (conflict) throw Error('Workbook changed during this operation. Retry after saving.'); throw failure??e; }
     return result!;
   }
-  async checkpoint(label: string, book: Workbook, originals:Original[]=[],exact=false,conflict?:{config:SyncConfig;sha:string}): Promise<void> {
-    book=clone(book);originals=clone(originals);
+  async checkpoint(label: string, book: Workbook, originals:Original[]=[],exact=false,conflict?:{config:SyncConfig;sha:string;local?:Workbook}): Promise<void> {
+    book=clone(book);originals=clone(originals);conflict=conflict?clone(conflict):undefined;
     const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx),store=tx.objectStore('state');
     let failure:unknown;
     readState(store,(state,head)=>{
@@ -495,7 +624,7 @@ export class Store {
           const snapshot=exact?current:withNavigation({book:current,pending:[],version:0,updated:''},navigation.result).book;
           const id=uid();
           tx.objectStore('history').put({ id, label, time:new Date().toISOString(), book:snapshot } satisfies Checkpoint);
-          if(conflict)store.put({id,sha:conflict.sha},syncConflictKey(conflict.config));
+          if(conflict)store.put({id,sha:conflict.sha,...(conflict.local?{local:conflict.local}:{})},syncConflictKey(conflict.config));
           for(const original of originals)tx.objectStore('originals').put(original);
         }catch(e){failure=e;tx.abort();}
       };
@@ -505,26 +634,27 @@ export class Store {
   async history(): Promise<Checkpoint[]> {
     return (await request(this.db.transaction('history').objectStore('history').getAll()) as Checkpoint[]).sort((a,b) => b.time.localeCompare(a.time));
   }
-  async syncConflict(config:SyncConfig):Promise<{book:Workbook;sha:string}|undefined>{
+  async syncConflict(config:SyncConfig):Promise<{book:Workbook;sha:string;local?:Workbook}|undefined>{
     const tx=this.db.transaction(['state','history']),done=complete(tx),pointer=tx.objectStore('state').get(syncConflictKey(config));
-    let result:{book:Workbook;sha:string}|undefined,failure:unknown;
+    let result:{book:Workbook;sha:string;local?:Workbook}|undefined,failure:unknown;
     pointer.onsuccess=()=>{
       if(!pointer.result)return;
-      const saved=pointer.result as {id:string;sha:string};
+      const saved=pointer.result as {id:string;sha:string;local?:Workbook};
       if(typeof saved.id!=='string'||typeof saved.sha!=='string'||!saved.sha){failure=Error('Saved sync conflict metadata is damaged. Use Recovery before continuing.');tx.abort();return;}
       const checkpoint=tx.objectStore('history').get(saved.id);
       checkpoint.onsuccess=()=>{
         try{
           const record=checkpoint.result as Checkpoint|undefined;
           if(!record||record.label!=='Remote conflict - not applied')throw Error('Saved sync conflict copy is unavailable. Use Recovery before continuing.');
-          validateBook(record.book);result={book:record.book,sha:saved.sha};
+          validateBook(record.book);if(saved.local)validateBook(saved.local);
+          result={book:record.book,sha:saved.sha,...(saved.local?{local:saved.local}:{})};
         }catch(error){failure=error;tx.abort();}
       };
     };
     try{await done;}catch(error){throw failure??error;}return result;
   }
-  async backup(state: LocalState): Promise<Backup> {
-    const tx=this.db.transaction(['state','originals']),done=complete(tx),store=tx.objectStore('state'),originals=tx.objectStore('originals').getAll();
+  async backup(state: LocalState,additionalPhotos:readonly PhotoBlob[]=[]): Promise<Backup> {
+    const tx=this.db.transaction(['state','originals','photos']),done=complete(tx),store=tx.objectStore('state'),originals=tx.objectStore('originals').getAll(),photos=tx.objectStore('photos').getAll();
     let result:Backup|undefined,failure:unknown;
     readState(store,(current,head)=>{
       const navigation=store.get(navigationKey(state.book.id));
@@ -536,19 +666,31 @@ export class Store {
         }catch(e){failure=e;tx.abort();}
       };
     },e=>{failure=e;tx.abort();});
-    try{await done;}catch(e){throw failure??e;}return result!;
+    try{await done;}catch(e){throw failure??e;}
+    const required=referencedPhotoIds(result!.state.book),all=new Map([...(photos.result as PhotoBlob[]),...additionalPhotos].map(photo=>[photo.id,photo])),available=[...all.values()].filter(photo=>required.has(photo.id)),found=new Set(available.map(photo=>photo.id));
+    if(required.size){result!.photos=await encodePhotoArchives(available);result!.missingPhotos=[...required].filter(id=>!found.has(id));}
+    return result!;
   }
   async restore(backup: Backup, expected: number): Promise<LocalState> {
     validateBackup(backup);
-    const tx = this.db.transaction(['state','history','originals'],'readwrite'), done = complete(tx), store = tx.objectStore('state');
+    const photos=await decodePhotoArchives(backup.photos??[]);
+    const previous=await this.load();
+    if(!previous||previous.version!==expected)throw Error('Another tab changed this workbook. Restore cancelled.');
+    const recovery=stringifyArchive(await this.backup(previous));
+    const tx = this.db.transaction(['state','history','originals','photos'],'readwrite'), done = complete(tx), store = tx.objectStore('state');
     let result: LocalState, conflict = false,failure:unknown;
-    const originals=tx.objectStore('originals').getAll();
     readState(store,previous=>{
       try{
       if (!previous||previous.version !== expected) { conflict = true; tx.abort(); return; }
-      const recovery=stringifyArchive({format:'fnt-backup',version:1,state:previous,originals:originals.result} satisfies Backup);
       tx.objectStore('history').put({id:uid(),label:'Before backup restore',time:new Date().toISOString(),book:previous.book,backup:recovery} satisfies Checkpoint);
       for (const original of backup.originals) tx.objectStore('originals').put(original);
+      for(const photo of photos){
+        const target=tx.objectStore('photos'),existing=target.get(photo.id);
+        existing.onsuccess=()=>{
+          if(existing.result&&existing.result.digest!==photo.digest){failure=Error('Restored photo identity conflicts with an existing recovery photo. Restore cancelled.');tx.abort();}
+          else target.put(photo);
+        };
+      }
       result = { ...previous, book:clone(backup.state.book), version:expected+1, updated:new Date().toISOString(),
         pending:[...new Map([...previous.pending,...backup.state.pending].map(p=>[p.id,p])).values(), {id:uid(),label:'Restore backup',time:new Date().toISOString()}] };
       delete result.sync;delete result.remoteSha;
@@ -571,14 +713,25 @@ export function encode64(text: string): string {
 }
 export const decode64 = (s: string) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\s/g,'')), c => c.charCodeAt(0)));
 export class SyncConflict extends Error {
-  constructor(public remote: Workbook, public sha: string,public originals:Original[]=[]) { super('Remote changes found. Both versions are preserved in recovery. No upload was made.'); }
+  confirmed?:SyncResult;
+  constructor(public remote: Workbook, public sha: string,public originals:Original[]=[],public local?:Workbook,public base?:Workbook,public originalRemote:Workbook=remote,public conflicts:string[]=[]) { super('Concurrent incompatible changes found. Both versions are preserved in recovery. Review the conflicting changes before syncing.'); }
 }
-export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[],options?:{readOnly?:boolean;canUpload?:()=>boolean}): Promise<{sha:string;remote?:Workbook;originals?:Original[];readPath?:string}> {
-  return privateSync(state,token,fetcher,originals,options?.readOnly===true,options?.canUpload);
+export class SyncPaused extends Error {}
+export interface SyncResult{sha:string;remote?:Workbook;confirmed?:Workbook;originals?:Original[];readPath?:string;acknowledged?:string[]}
+export async function mergeForSync(base:Workbook,local:Workbook,remote:Workbook):Promise<SyncMerge&{unchangedLocal:boolean;unchangedRemote:boolean}>{
+  return await runSyncCodec({kind:'merge',base,local,remote},{snapshots:true}) as SyncMerge&{unchangedLocal:boolean;unchangedRemote:boolean};
 }
-async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[],readOnly:boolean,canUpload?:()=>boolean):Promise<{sha:string;remote?:Workbook;originals?:Original[];readPath?:string}>{
+export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[],options?:{readOnly?:boolean;canUpload?:()=>boolean;base?:Workbook;attempt?:SyncAttempt;beforeUpload?:(attempt:SyncAttempt)=>Promise<void>}): Promise<SyncResult> {
+  const captured={...state,pending:clone(state.pending),sync:state.sync?clone(state.sync):undefined};
+  captured.book=await runSyncCodec({kind:'capture',book:state.book}) as Workbook;
+  return privateSync(captured,token,fetcher,originals,options?.readOnly===true,options?.canUpload,options?.base,options?.attempt,options?.beforeUpload);
+}
+async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[],readOnly:boolean,canUpload?:()=>boolean,base?:Workbook,previousAttempt?:SyncAttempt,beforeUpload?:(attempt:SyncAttempt)=>Promise<void>):Promise<SyncResult>{
   return withPrivateGitHub(state.sync,token,fetcher,async({root,headers,request,contentURL,config:cfg})=>{
   const url = `${root}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}`;
+  const captured=state.book,pendingIds=state.pending.map(operation=>operation.id);
+  let ancestor=base;
+  for(let attempt=0;attempt<3;attempt++){
   let readPath=cfg.path,response=await request(url,{headers,cache:'no-store',redirect:'error'});
   if(readOnly&&response.status===404){
     const renamed=githubFormDefaults(cfg).path;
@@ -587,45 +740,82 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
       response=await request(contentURL(readPath),{headers,cache:'no-store',redirect:'error'});
     }
   }
-  let sha: string | undefined, remote: Workbook | undefined;
+  let sha: string | undefined, remote: Workbook | undefined,book=captured,attachments=originals,operations:string[]=[],receipts:Record<string,string>={},proven:SyncReceipt|undefined,changed=false;
   if (response.ok) {
     let data = await response.json() as {sha:string;content:string;encoding?:string;size?:number};
     sha = data.sha;
     if(typeof sha!=='string'||!sha)throw Error('GitHub did not return a file revision. Nothing overwritten.');
-    if(!readOnly&&sha===state.remoteSha&&!hasPendingContent(state))return{sha};
-    if(readOnly||sha!==state.remoteSha){
+    if(!readOnly&&sha===state.remoteSha&&!hasPendingContent(state)&&ancestor)return{sha};
+    {
       if(data.encoding==='none'||(!data.content&&data.size)){
         const blob=await request(`${root}/git/blobs/${encodeURIComponent(sha)}`,{headers,cache:'no-store',redirect:'error'});
         if(!blob.ok)throw Error(`Cannot read larger remote workbook (${blob.status}). Nothing overwritten.`);
         data=await blob.json() as typeof data;
       }
       if(typeof data.content!=='string')throw Error('GitHub did not return file content. Nothing overwritten.');
-      const envelope=await runSyncCodec({kind:'unpack',value:data.content}) as {format:string;book:Workbook;operations:string[];originals?:Original[]};
+      const envelope=await runSyncCodec({kind:'unpack',value:data.content}) as {format:string;book:Workbook;operations:string[];originals?:Original[];receipts?:Record<string,string>};
       if (envelope.format !== 'fnt-sync-v1') throw Error('Remote file is not an Fnt sync file. Nothing overwritten.');
-      validateBook(envelope.book); remote = envelope.book;
+      remote = envelope.book;
       const remoteOriginals=envelope.originals??[];
       validateOriginals(remote,remoteOriginals);
-      if (readOnly||!hasPendingContent(state)) return {sha,remote,originals:remoteOriginals,...(readOnly?{readPath}:{})};
-      const pendingIds = state.pending.map(p => p.id);
-      if (Array.isArray(envelope.operations) && pendingIds.every(id => envelope.operations.includes(id)) && stringifyArchive(remote) === stringifyArchive(state.book)) return {sha};
-      throw new SyncConflict(remote,sha,remoteOriginals);
+      operations=Array.isArray(envelope.operations)?envelope.operations.filter((id):id is string=>typeof id==='string'):[];
+      if(envelope.receipts!==undefined){
+        if(!envelope.receipts||typeof envelope.receipts!=='object'||Array.isArray(envelope.receipts)||Object.entries(envelope.receipts).some(([device,id])=>!device||typeof id!=='string'||!id))throw Error('Remote sync transfer receipts are invalid. Local edits retained.');
+        receipts=envelope.receipts;
+      }
+      if(readOnly)return{sha,remote,originals:remoteOriginals,readPath};
+      const byId=new Map(remoteOriginals.map(original=>[original.id,original]));
+      for(const original of originals){
+        const previous=byId.get(original.id);
+        if(previous&&(previous.name!==original.name||previous.data!==original.data))throw Error('An original attachment identity has different contents on these devices. Both copies retained; export independent backups before resolving.');
+        byId.set(original.id,original);
+      }
+      attachments=[...byId.values()];
+      if(sha===state.remoteSha)ancestor=remote;
+      else if(previousAttempt){
+        for(const candidate of [previousAttempt,...(previousAttempt.ancestor?[previousAttempt.ancestor]:[])]){
+          if(candidate.book.id===captured.id&&(operations.includes(candidate.id)||candidate.device&&receipts[candidate.device]===candidate.id)){
+            ancestor=candidate.book;proven={id:candidate.id,book:candidate.book,device:candidate.device};break;
+          }
+        }
+      }
+      if(!hasPendingContent(state)||!ancestor){
+        const equivalent=await runSyncCodec({kind:'equal',local:captured,remote},{snapshots:true}) as boolean;
+        if(!hasPendingContent(state))return{sha,...(!equivalent?{remote:withDevicePreferences(remote,captured)}:{}),confirmed:remote,originals:attachments,acknowledged:pendingIds};
+        if(equivalent)return{sha,confirmed:remote,originals:attachments,acknowledged:pendingIds};
+      }
+      if(!ancestor)throw new SyncConflict(remote,sha,remoteOriginals);
+      const merged=await mergeForSync(ancestor,captured,remote);
+      if(merged.conflicts.length)throw new SyncConflict(merged.remote,sha,attachments,merged.local,ancestor,remote,merged.conflicts);
+      book=merged.local;changed=!merged.unchangedLocal;
+      if(merged.unchangedRemote)return{sha,...(!merged.unchangedLocal?{remote:book}:{}),confirmed:remote,originals:attachments,acknowledged:pendingIds};
     }
   } else if (response.status !== 404) throw Error(`Cannot read sync file (${response.status}). Local edits retained.`);
   else if (!readOnly&&state.remoteSha) throw Error('Remote file was removed. Local edits retained; refusing to recreate it silently.');
   if(readOnly)throw Error(`No saved GitHub workbook exists at ${readPath}${readPath!==cfg.path?` (saved destination: ${cfg.path})`:''}. Check the path in Recovery > Private GitHub sync. Comparison did not upload anything.`);
-  if (!hasPendingContent(state) && sha) return {sha};
-  if(state.syncReview||canUpload&&!canUpload())throw Error('Sync paused for comparison review. No upload was made.');
-  validateOriginals(state.book,originals);
-  const content=await runSyncCodec({kind:'pack',value:{format:'fnt-sync-v1',book:state.book,operations:state.pending.map(p=>p.id),originals}});
-  if(canUpload&&!canUpload())throw Error('Sync paused for comparison review. No upload was made.');
+  if(state.syncReview||canUpload&&!canUpload())throw new SyncPaused('Sync paused for comparison review. No upload was made.');
+  validateOriginals(book,attachments);
+  const device=previousAttempt?.device??uid(),transfer:SyncAttempt={id:uid(),device,book,...(proven?{ancestor:proven}:{})};
+  const content=await runSyncCodec({kind:'pack',value:{format:'fnt-sync-v1',book,operations:[...new Set([...operations,...pendingIds,transfer.id])].slice(-10000),receipts:{...receipts,[device]:transfer.id},originals:attachments}});
+  await beforeUpload?.(transfer);
+  if(canUpload&&!canUpload())throw new SyncPaused('Sync paused for comparison review. No upload was made.');
   const upload = await request(url,{method:'PUT',headers:{...headers,'Content-Type':'application/json'},redirect:'error',body:JSON.stringify({
     message:`Fnt: save ${state.pending.length} local changes`, branch:cfg.branch, ...(sha ? {sha} : {}),
     content,
   })});
-  if (!upload.ok) throw Error(upload.status === 409 || upload.status === 422 ? 'Remote changed during upload. No overwrite; save again to inspect the conflict.' : `Sync failed (${upload.status}). Local edits retained.`);
+  if(!upload.ok){
+    if(upload.status===409||upload.status===422){
+      if(!ancestor&&sha===state.remoteSha&&remote)ancestor=remote;
+      if(attempt<2)continue;
+      throw Error('Remote kept changing during upload. Local edits retained; automatic sync will retry.');
+    }
+    throw Error(`Sync failed (${upload.status}). Local edits retained.`);
+  }
   const ack = await upload.json() as {content:{sha:string}};
   if (!ack.content?.sha) throw Error('GitHub did not acknowledge a file revision. Sync not confirmed.');
-  return {sha:ack.content.sha};
+  return {sha:ack.content.sha,confirmed:book,...(changed?{remote:book}:{}),originals:attachments,acknowledged:pendingIds};
+  }
+  throw Error('Private sync retry limit reached. Local edits retained.');
   });
 }
 import {validatePagination} from './date-pagination';

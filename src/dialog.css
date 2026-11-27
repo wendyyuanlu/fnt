@@ -35,6 +35,8 @@
 }
 .dialog-surface h1 { font-size: var(--dialog-h1-size); color: var(--green); }
 .dialog-surface h2 { font-size: var(--dialog-h2-size); }
+.dialog-title { min-width: 0; overflow-wrap: anywhere; }
+.dialog-heading > .close { flex-shrink: 0; }
 
 @media (max-width: 720px) {
   :root { --dialog-padding: 18px; }

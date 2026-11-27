@@ -312,7 +312,7 @@ describe('private opt-in sync',()=>{
     const result=await syncGitHub(state,'test',async url=>{
       paths.push(String(url));
       return paths.length===1?response({private:true,has_pages:false}):response({sha:'base',encoding:'none',size:90000000});
-    });
+    },[],{base:structuredClone(state.book)});
     expect(result).toEqual({sha:'base'});expect(paths).toHaveLength(2);
   });
   it('does not let navigation-only journals create remote commits or conflict with newer workbook content',async()=>{
@@ -358,10 +358,10 @@ describe('private opt-in sync',()=>{
     expect(calls).toBe(2);expect(state.pending).toHaveLength(1);
   });
   it('uses CAS SHA and acknowledges only a successful upload',async()=>{
-    const state=setup();state.remoteSha='base';let calls=0,uploaded:Record<string,unknown>={};
+    const state=setup(),remote=structuredClone(state.book);state.book.title='Local edit after acknowledged remote';state.remoteSha='base';let calls=0,uploaded:Record<string,unknown>={};
     const result=await syncGitHub(state,'test',async(_url,init)=>{
       calls++;if(calls===1)return response({private:true,has_pages:false});
-      if(calls===2)return response({sha:'base',content:encode64(JSON.stringify({format:'fnt-sync-v1',book:state.book,operations:[]}))});
+      if(calls===2)return response({sha:'base',content:encode64(JSON.stringify({format:'fnt-sync-v1',book:remote,operations:[]}))});
       uploaded=JSON.parse(String(init?.body));return response({content:{sha:'next'}});
     });
     expect(uploaded.sha).toBe('base');expect(result.sha).toBe('next');

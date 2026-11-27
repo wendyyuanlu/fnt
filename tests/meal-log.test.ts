@@ -7,6 +7,7 @@ import {applyUndo,structuralUndo} from '../src/undo-history';
 import {validationChoiceGroups} from '../src/references';
 import {validateBook} from '../src/storage';
 import {defaultHeaderFormula} from '../src/meal-block';
+import {writeIngredientValues} from '../src/ingredient-edit';
 
 function fixture(){
   const book=createDemo(),sheet=blankSheet('Master',7,13);
@@ -85,7 +86,7 @@ it('copies manual nutrition to Ingredients, links the Food cell, and reverses th
   const read=(name:string)=>scalar(new Engine(book).cell(destination.id,added.row,target.columns.find(field=>field.name===name)!.column));
   expect(read('Serving (g)')).toBe(300);expect(read('Conversion Amount')).toBe(300);expect(read('Conversion Unit')).toBe('g');
   expect(read('Calories (kcal)')).toBe(100);expect(read('Protein (g)')).toBe(20);
-  for(const [address,cell]of Object.entries(before.sheets.find(source=>source.id===sheet.id)!.cells))if(address!==`${row}:${food.column}`)expect(sheet.cells[address]).toEqual(cell);
+  for(const [address,cell]of Object.entries(before.sheets.find(source=>source.id===sheet.id)!.cells))if(address!==`${row}:${food.column}`&&(cell.value!==null&&cell.value!==undefined&&cell.value!==''||cell.formula||cell.binding))expect(sheet.cells[address]).toEqual(cell);
   expect(getCell(sheet,row,food.column).binding).toEqual({table:target.id,row:added.row,column:target.columns.find(field=>field.name==='Ingredients')!.id});
   expect(validationChoiceGroups(book,sheet.validations.find(source=>source.rows.includes(row))!,row,food.column,new Engine(book)).some(group=>group.choices.some(choice=>choice.binding?.row===added.row))).toBe(true);
   const restored=applyUndo(book,structuralUndo(before,book)).book;
@@ -93,18 +94,57 @@ it('copies manual nutrition to Ingredients, links the Food cell, and reverses th
   expect(restored.tables.find(table=>table.id===target.id)!.rows).not.toContain(added.row);
   expect(()=>addMealIngredient(book,sheet,row)).toThrow('already exists');validateBook(book);
 });
-it('marks missing core nutrition, accepts zero and optional blanks, and retains incompleteness after Ingredient promotion',()=>{
+it('recalculates all six previously blank promoted nutrients from later Ingredient reference edits without changing consumed quantity',()=>{
+  const {book,sheet,table,input}=fixture(),row=sheet.rows[2].id;
+  for(let c=4;c<10;c++)input(2,c,'');
+  input(2,11,'2');input(2,12,'each');
+  const before=clone(book),identity=addMealIngredient(book,sheet,row);
+  writeIngredientValues(book,identity,{weight:'25',amount:'1',unit:'each',calories:'70',protein:'1',fat:'2',carbs:'12',sugar:'6',sodium:'10'});
+  const engine=new Engine(book);
+  expect(table.columns.slice(4,10).map(column=>scalar(engine.cell(sheet.id,row,column.column)))).toEqual([140,2,4,24,12,20]);
+  expect(getCell(sheet,row,table.columns[11].column).value).toBe(2);
+  expect(getCell(sheet,row,table.columns[12].column).value).toBe('each');
+  const ingredients=book.tables.find(table=>table.id===identity.table)!,source=book.sheets.find(sheet=>sheet.id===ingredients.sheet)!;
+  for(const column of ingredients.columns)renameColumn(book,ingredients,column.id,'Renamed '+column.id);
+  moveColumns(book,source,[ingredients.columns[0].column],0);
+  expect(scalar(new Engine(book).cell(sheet.id,row,table.columns[4].column))).toBe(140);
+  expect(applyUndo(book,structuralUndo(before,book)).book).toEqual(before);
+  validateBook(book);
+});
+it('promotes Logged nutrition with the shared Premade type, original Notes and retained consumed portion',()=>{
+  const {book,sheet,table,input}=fixture(),row=sheet.rows[2].id;
+  const ingredients=book.tables.find(table=>table.name==='Ingredients')!,source=book.sheets.find(sheet=>sheet.id===ingredients.sheet)!;
+  const type=source.columns[11];setInput(book,source,ingredients.header,type.id,'Type');addTableColumns(book,source,ingredients,[type.id]);
+  const notes=sheet.columns[13]??{id:'notes-column',label:'Notes'};if(!sheet.columns.includes(notes))sheet.columns.push(notes);
+  setInput(book,sheet,table.header,notes.id,'Exercise');addTableColumns(book,sheet,table,[notes.id]);sheet.mealLog=mealLogConfig(book,sheet);
+  input(2,11,'2');input(2,12,'each');setInput(book,sheet,row,notes.id,"'Synthetic packaging note");
+  const before=clone(book),added=addMealIngredient(book,sheet,row);
+  expect(getCell(source,added.row,type.id).value).toBe('Premade');
+  expect(book.foodCapture!.ingredientDetails[`${added.table}:${added.row}`]).toEqual({notes:'Synthetic packaging note',photos:[]});
+  expect(book.foodCapture!.ingredientMappings.find(mapping=>mapping.table===ingredients.id)!.fields.type).toBe(ingredients.columns.find(column=>column.column===type.id)!.id);
+  expect(getCell(sheet,row,table.columns[11].column).value).toBe(2);expect(getCell(sheet,row,table.columns[12].column).value).toBe('each');
+  expect(getCell(sheet,row,notes.id).value).toBe('Synthetic packaging note');
+  expect(applyUndo(book,structuralUndo(before,book)).book).toEqual(before);validateBook(book);
+});
+it('requires all six nutrients, accepts genuine zeros and retains incompleteness after Ingredient promotion',()=>{
   const {book,sheet,input}=fixture(),row=sheet.rows[2].id,food=mealLogContext(book,sheet).fields.get('food')!.column;
   markMealNeedsNutrition(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
   for(let c=4;c<8;c++)input(2,c,'0');
+  markMealNeedsNutrition(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
+  input(2,8,'0');markMealNeedsNutrition(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
+  input(2,9,'0');
   markMealNeedsNutrition(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBeUndefined();
+  for(const value of ['unknown',"'NaN",'TRUE']){
+    input(2,9,value);markMealNeedsNutrition(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
+  }
+  input(2,9,'0');
   input(2,4,'=""');markMealNeedsNutrition(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
   const added=addMealIngredient(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
   expect(getCell(sheet,row,food).binding?.row).toBe(added.row);validateBook(book);
 });
 it('checks linked Ingredient source nutrition rather than zero-filled consumption formulas, with live stable identities',()=>{
   const {book,sheet,input}=fixture(),row=sheet.rows[2].id;
-  for(let c=4;c<8;c++)input(2,c,'0');
+  for(let c=4;c<10;c++)input(2,c,'0');
   const added=addMealIngredient(book,sheet,row),table=book.tables.find(table=>table.id===added.table)!,source=book.sheets.find(sheet=>sheet.id===table.sheet)!;
   const fields=sheet.mealLog!.ingredients!.fields,calories=table.columns.find(column=>column.id===fields.calories)!;
   for(let c=4;c<8;c++)input(2,c,'=0');

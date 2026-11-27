@@ -2,16 +2,31 @@
 .meal-log-spreadsheet{display:flex;flex:1;flex-direction:column;min-height:0;min-width:0}
 .meal-log-slot:empty{display:none}
 .meal-log-panel{--meal-log-button-size:30px;display:flex;flex-direction:column;width:450px;max-width:450px;height:100%;min-height:0;background:#fff;border-right:1px solid var(--line);overflow:hidden}
-.meal-log-header,.meal-log-footer{display:flex;align-items:center;gap:6px;padding:8px;flex:none;border-bottom:1px solid var(--line)}
-.meal-log-header{flex-wrap:wrap}
-.meal-log-footer{border-bottom:0;border-top:1px solid var(--line)}
-.meal-log-footer>[data-log-add]{flex:1}
+.meal-log-header,.meal-log-day-bar,.meal-log-footer,.capture-day-bar,.capture-footer{display:flex;align-items:center;gap:6px;padding:8px;flex:none;border-bottom:1px solid var(--line)}
+.meal-log-header .panel-tabs{flex:1;min-width:0;gap:16px;border-bottom:0}
+.meal-log-footer,.capture-footer{border-bottom:0;border-top:1px solid var(--line)}
+.meal-log-footer>[data-log-add],.capture-footer>[data-draft-add]{flex:1}
 .meal-log-panel button{display:inline-flex;align-items:center;justify-content:center;gap:4px}
 .meal-log-panel .icon-button{flex:none}
-.meal-log-panel button.group-control{width:auto;height:30px;min-height:30px;padding:6px 8px;font:inherit}
+.meal-log-panel button.group-control{width:auto;height:30px;min-height:30px;padding:6px 8px;font-family:inherit;font-size:inherit;line-height:inherit}
 .meal-log-panel button.icon-button{width:var(--meal-log-button-size);height:var(--meal-log-button-size);min-height:var(--meal-log-button-size);padding:4px}
-.meal-log-day-totals{margin-left:auto;font-size:12px;white-space:nowrap}
-.meal-log-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 12px;scroll-padding:12px}
+.meal-log-day-totals{margin-left:auto;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.meal-log-draft{flex:1;min-height:0;overflow:auto;padding:0 12px}
+.meal-log-draft:has(.capture-pane){display:flex;overflow:hidden;padding:0}
+.capture-pane{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0}
+.capture-wrapper{display:flex;flex:1;min-height:0;overflow:hidden}
+.capture-toolbar{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:8px;flex-wrap:wrap}
+.capture-search,.capture-notice{margin:8px}
+.capture-search input{width:100%}
+.capture-original{white-space:pre-wrap;overflow-wrap:anywhere}
+[data-day-list]{display:flex;flex-wrap:wrap;gap:6px}
+.capture-pane textarea{width:100%;resize:vertical}
+.capture-mode-tabs{display:flex;flex-wrap:wrap;margin:12px 0}
+.capture-date{min-width:0;margin:0}
+.capture-date input{width:100%;min-width:0}
+.capture-restaurant-name{flex:1;min-width:0}
+.capture-pane .meal-log-card>.button-row{flex-wrap:wrap}
+.meal-log-scroll,.capture-foods{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 12px;scroll-padding:12px}
 .meal-log-day-weight{margin:14px 0}
 .meal-log-card{padding:14px 0;border-bottom:1px solid var(--line)}
 .meal-log-card:last-child{border-bottom:0}
@@ -19,9 +34,13 @@
 .meal-log-field>span:first-child{white-space:nowrap}
 .meal-log-input{display:flex;position:relative;min-width:0}
 .meal-log-input input{width:100%;min-width:0}
-.meal-log-input:has(button) input{padding-right:calc(var(--meal-log-button-size) + 6px)}
+.meal-log-input:has(>button)>input{--field-padding-right:calc(var(--meal-log-button-size) + 6px)}
 .meal-log-input>button{position:absolute;right:1px;top:50%;transform:translateY(-50%);border:0;background:transparent}
 .meal-log-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px 10px;margin-top:14px}
+.meal-log-field-wide{grid-column:1/-1}
+.ingredient-table-nav{display:flex;flex:1;gap:6px}
+.capture-foods[data-virtual]{overflow-anchor:none}
+.capture-footer>[data-ingredient-add]{flex:1}
 .meal-log-card details{margin-top:14px}
 .meal-log-card summary{display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;list-style:none}
 .meal-log-card summary::-webkit-details-marker{display:none}
@@ -29,7 +48,7 @@
 .meal-log-card details:not([open]) summary .format-caret{transform:rotate(-90deg)}
 .meal-log-card summary [data-log-totals]{font-size:12px}
 .meal-log-row-actions{display:flex;gap:6px;margin-top:16px}
-.meal-log-row-actions>[aria-label="Delete food"]{margin-left:auto}
+.meal-log-row-actions>:is([aria-label="Delete food"],[aria-label="Delete Ingredient"]){margin-left:auto}
 .meal-log-ingredient{margin:16px 0 0}
 .meal-log-notes .meal-log-field{margin-top:10px}
 .meal-log-panel [hidden]{display:none!important}
@@ -39,8 +58,8 @@
 .touch-input-device .meal-log-panel{--meal-log-button-size:40px}
 .touch-input-device .meal-log-panel :is(button,input,textarea){min-height:40px}
 .touch-input-device .meal-log-panel button.group-control{height:40px;min-height:40px}
-.touch-input-device .meal-log-input :is(input,textarea){font-size:16px}
-.touch-input-device .meal-log-header{gap:4px;padding:6px}
+.touch-input-device .meal-log-field :is(input,textarea){font-size:16px}
+.touch-input-device :is(.meal-log-header,.meal-log-day-bar,.capture-day-bar){gap:4px;padding:6px}
 .touch-input-device .meal-log-header button{padding:6px 8px}
 .touch-input-device .meal-log-fields{gap:16px 8px}
 .touch-input-device .meal-log-field{font-size:12px}

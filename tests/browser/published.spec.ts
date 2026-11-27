@@ -6,7 +6,7 @@ import type {Checkpoint,LocalState} from '../../src/storage';
 const url=process.env.FNT_PUBLISHED_URL??'http://127.0.0.1:4173/';
 async function state(page:Page):Promise<LocalState>{
   return page.evaluate(async()=>{
-    const open=indexedDB.open('fnt-workbook-v1',1),db=await new Promise<IDBDatabase>((resolve,reject)=>{open.onsuccess=()=>resolve(open.result);open.onerror=()=>reject(open.error);});
+    const open=indexedDB.open('fnt-workbook-v1'),db=await new Promise<IDBDatabase>((resolve,reject)=>{open.onsuccess=()=>resolve(open.result);open.onerror=()=>reject(open.error);});
     try{const read=db.transaction('state').objectStore('state').get('current');return await new Promise<LocalState>((resolve,reject)=>{read.onsuccess=()=>resolve(read.result);read.onerror=()=>reject(read.error);});}finally{db.close();}
   });
 }
@@ -16,7 +16,7 @@ async function seed(page:Page,edited:boolean){
   const pending=[{id:'first',label:'Create starter workbook',time:''},{id:'migration',label:'Move dropdown records into DD storage',time:''},{id:'visit',label:'Visit table',time:''},...(edited?[{id:'edit',label:'Edit workbook',time:''}]:[])];
   const value:LocalState={book,version:100,pending,updated:''};
   await page.evaluate(async value=>{
-    const open=indexedDB.open('fnt-workbook-v1',1),db=await new Promise<IDBDatabase>((resolve,reject)=>{open.onsuccess=()=>resolve(open.result);open.onerror=()=>reject(open.error);});
+    const open=indexedDB.open('fnt-workbook-v1'),db=await new Promise<IDBDatabase>((resolve,reject)=>{open.onsuccess=()=>resolve(open.result);open.onerror=()=>reject(open.error);});
     try{const tx=db.transaction('state','readwrite'),store=tx.objectStore('state');store.clear();store.put(value,'current');await new Promise<void>((resolve,reject)=>{tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);});}finally{db.close();}
   },value);
   return book;
@@ -52,7 +52,7 @@ test('existing website edits are not overwritten; explicit testing restore prese
   await expect(page.locator('#save-state')).toContainText('Published testing workbook saved');
   expect((await state(page)).book.id).not.toBe(own.id);
   const preserved=await page.evaluate(async id=>{
-    const open=indexedDB.open('fnt-workbook-v1',1),db=await new Promise<IDBDatabase>((resolve,reject)=>{open.onsuccess=()=>resolve(open.result);open.onerror=()=>reject(open.error);});
+    const open=indexedDB.open('fnt-workbook-v1'),db=await new Promise<IDBDatabase>((resolve,reject)=>{open.onsuccess=()=>resolve(open.result);open.onerror=()=>reject(open.error);});
     try{const read=db.transaction('history').objectStore('history').getAll();return await new Promise<boolean>((resolve,reject)=>{read.onsuccess=()=>resolve(read.result.some((h:Checkpoint)=>h.book.id===id&&!!h.backup));read.onerror=()=>reject(read.error);});}finally{db.close();}
   },own.id);expect(preserved).toBe(true);
 });

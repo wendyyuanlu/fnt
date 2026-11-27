@@ -1,5 +1,6 @@
 import { allSheets,allTables, columnIndex, fault, getCell, isFault, key, letters, tableAt, type Fault, type Scalar, type Value, type Workbook } from './model';
 import { excelDate,excelDateParts } from './dates';
+import {createFoodCaptureContext,quantityFactor,type FoodCaptureContext} from './food-capture';
 
 export type Ast =
   | { kind: 'literal'; value: Scalar }
@@ -18,7 +19,7 @@ type Token = { type: 'number' | 'string' | 'word' | 'bracket' | 'symbol' | 'quot
 type Env = Map<string, Value | (() => Value)>;
 const compiled = new WeakMap<Workbook, { revision: number; trees: Map<string, Ast> }>();
 const normalName = (s: string) => s.replace(/_xlfn\.|_xlws\./gi, '').toUpperCase();
-export const supportedFunctions = new Set(['IF', 'IFERROR', 'SUM', 'AVERAGE', 'MIN', 'MAX', 'INDEX', 'MATCH', 'XLOOKUP', 'XMATCH', 'FILTER', 'VSTACK', 'LET', 'ROW', 'ROWS', 'ISNUMBER', 'DATE', 'DATEDIF', 'FIND', 'LEFT', 'RIGHT', 'ROUND', 'VALUE', 'AND', 'OR', 'NOT', 'COUNT', 'COUNTA', 'ABS', 'INT', 'TODAY', 'CONCAT', 'LEN', 'TRIM', 'LOWER', 'UPPER', 'INDIRECT', 'ANCHORARRAY']);
+export const supportedFunctions = new Set(['IF', 'IFERROR', 'SUM', 'AVERAGE', 'MIN', 'MAX', 'INDEX', 'MATCH', 'XLOOKUP', 'XMATCH', 'FILTER', 'VSTACK', 'LET', 'ROW', 'ROWS', 'ISNUMBER', 'DATE', 'DATEDIF', 'FIND', 'LEFT', 'RIGHT', 'ROUND', 'VALUE', 'AND', 'OR', 'NOT', 'COUNT', 'COUNTA', 'ABS', 'INT', 'TODAY', 'CONCAT', 'LEN', 'TRIM', 'LOWER', 'UPPER', 'INDIRECT', 'ANCHORARRAY', 'UNITFACTOR']);
 function tokenize(source: string): Token[] {
   const out: Token[] = [];
   for (let i = 0; i < source.length;) {
@@ -242,6 +243,7 @@ export function maySpill(ast:Ast,bindings=new Map<string,Ast>(),depth=0):boolean
   }
   return false;
 }
+export const calculationWorkLimit=500_000;
 export class Engine {
   cache = new Map<string, Value>();
   visiting = new Set<string>();
@@ -252,7 +254,7 @@ export class Engine {
   private dependents=new Map<string,Set<string>>();
   private stack:string[]=[];
   private lazyRefs=new WeakMap<()=>Value,{ast:Ast;env:Env}>();
-  private remaining=500_000;
+  private remaining=calculationWorkLimit;
   private spillAnchors=new Map<string,{row:string;column:string;r:number;c:number}[]>();
   private rowPositions=new Map<string,Map<string,number>>();
   private columnPositions=new Map<string,Map<string,number>>();
@@ -286,7 +288,8 @@ export class Engine {
     const parent=this.stack.at(-1);if(!parent||parent===key)return;
     let deps=this.dependents.get(key);if(!deps){deps=new Set();this.dependents.set(key,deps);}deps.add(parent);
   }
-  beginPass():void {this.remaining=500_000;}
+  private unitContext?:FoodCaptureContext;
+  beginPass():void {this.remaining=calculationWorkLimit;this.unitContext=undefined;}
   rebindLayout(book:Workbook):boolean{
     if(book.tables!==this.book.tables||book.names!==this.book.names||book.references!==this.book.references||book.dropdownData?.tables!==this.book.dropdownData?.tables)return false;
     const sheets=allSheets(book);
@@ -295,7 +298,7 @@ export class Engine {
       return !old||s.cells!==old.cells||s.rows.length!==old.rows.length||s.columns.length!==old.columns.length||
         s.rows.some((r,i)=>this.rowPositions.get(s.id)?.get(r.id)!==i)||s.columns.some((c,i)=>this.columnPositions.get(s.id)?.get(c.id)!==i);
     }))return false;
-    this.book=book;this.sheets=new Map(sheets.map(s=>[s.id,s]));return true;
+    this.book=book;this.unitContext=undefined;this.sheets=new Map(sheets.map(s=>[s.id,s]));return true;
   }
   rebindCells(book:Workbook,changed:string[]):boolean{
     if(book.tables!==this.book.tables||book.names!==this.book.names||book.references!==this.book.references||book.dropdownData?.tables!==this.book.dropdownData?.tables)return false;
@@ -329,6 +332,7 @@ export class Engine {
     }
   }
   invalidate(changed:string[]):void {
+    this.unitContext=undefined;
     let spillChanged=false;
     for(const id of changed){
       const [sheetId,row,column]=id.split(':'),s=this.sheets.get(sheetId);if(!s)continue;
@@ -397,6 +401,13 @@ export class Engine {
     } finally { this.visiting.delete(cacheKey);this.stack.pop(); }
     if(!this.flat(result!).some(v=>isFault(v)&&v.error==='#LIMIT!'))this.cache.set(cacheKey, result!);
     return result!;
+  }
+  evaluateCalculation(ast:Ast,sheet:string,row:string,column:string):Value{
+    const id=`${sheet}:${key(row,column)}`;
+    if(this.visiting.has(id))return fault('#CYCLE!','Circular reference.');
+    this.invalidate([id]);this.visiting.add(id);this.stack.push(id);
+    try{return this.evaluate(ast,sheet,row,column);}
+    finally{this.stack.pop();this.visiting.delete(id);this.invalidate([id]);}
   }
   evaluate(ast: Ast, sheet: string, row: string, col: string, env:Env = new Map()): Value {
     if(--this.remaining<0)return fault('#LIMIT!','Calculation work limit reached. This workbook needs further compatibility/performance work; results are not authoritative.');
@@ -735,6 +746,14 @@ export class Engine {
     }
     const nums = numericValues.filter((v): v is number => typeof v === 'number');
     switch (name) {
+      case 'UNITFACTOR':{
+        if(args.length!==2||values.some(Array.isArray))return fault('#VALUE!','UNITFACTOR requires two scalar unit names.');
+        const dependency='unit-conversions';this.depend(dependency);this.stack.push(dependency);
+        try{
+          const factor=quantityFactor(this.book,String(values[0]??''),String(values[1]??''),this.unitContext??=createFoodCaptureContext(this.book,this));
+          return factor??fault('#N/A','No finite conversion path connects these units.');
+        }finally{this.stack.pop();}
+      }
       case 'SUM': return nums.reduce((a,b) => a+b,0);
       case 'AVERAGE': return nums.length ? nums.reduce((a,b) => a+b,0)/nums.length : fault('#DIV/0!');
       case 'MIN': return nums.length ? Math.min(...nums) : 0;

@@ -1,0 +1,11 @@
+.nutrition-converter .nutrition-converter-table{max-width:100%;overflow:auto;overscroll-behavior:contain;border:1px solid var(--line)}
+.nutrition-converter-table table{width:1540px}
+.nutrition-converter-table th{width:130px}
+.nutrition-converter-table th:nth-child(2){width:240px}
+.nutrition-converter-table td{padding:0;max-width:none}
+.nutrition-converter-table input{width:100%;min-width:0;border:0;border-radius:0}
+.nutrition-converter .meal-log-fields input,.nutrition-converter .meal-log-field select{min-width:0;max-width:100%;width:100%}
+.nutrition-converter .meal-log-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+.nutrition-converter [data-convert-issues]{overflow-wrap:anywhere}
+.nutrition-converter .capture-footer{padding-inline:0;flex-wrap:wrap}
+.nutrition-converter h4,.nutrition-converter p,.nutrition-converter .meal-log-field{min-width:0;overflow-wrap:anywhere}

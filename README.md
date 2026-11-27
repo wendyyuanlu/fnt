@@ -170,7 +170,7 @@ remain viewable only in history.
   headers to the plain and/or summary groups immediately above or to the left.
   It preserves cells and axis order, inherits group Hypo tagging, and uses
   one Undo step. Table selection confines it to that table's groups.
-- Master has a separate **Meal log / + Day / + Food** bar; **New day settings**
+- Master has a separate **Meal log / Draft / + Day / + Food** bar; **New day settings**
   and hypothetical days are in the right-hand + Day split menu. Its saved
   next logging date and Forward/Backward direction are independent of existing
   days; Reset to today changes only the settings draft until Apply. Only a newly
@@ -195,6 +195,15 @@ remain viewable only in history.
   and caret taps keep DD search focused through keyboard viewport changes. Sheet tabs stay
   hidden while the keyboard is open, including overlay-keyboard layouts.
   Large option sets scroll continuously without a pager.
+  The panel has two header bars: shared **Logged / Draft** tabs with **Get
+  Nutrition** and Close above the existing day navigation and totals. The
+  toolbar's **Draft** button, immediately after Meal log, opens the Draft tab.
+  Draft capture autosaves separate, dated foods, restaurants and retained
+  Single/Multi/Pre-packaged/Ingredient modes without creating consumption rows.
+  Opening Draft does not create a logging day, add foods or change groups.
+  Switching tabs retains the Logged day, field values, expanded sections and
+  scroll position. This two-bar header is specific to Meal log, not a required
+  layout for every future panel.
   **Weight**, above the foods, maps to the selected day-summary row's `Weight`.
   Clearing Weight keeps the existing `x` placeholder underneath, so retyping
   never removes a day boundary or moves its foods; original marker/date/total
@@ -212,9 +221,8 @@ remain viewable only in history.
   calendar open an existing day or create one without advancing the logging
   cursor. Inline + Food inserts below that food and joins its day summary.
   Manual Food keeps macros collapsed by default. Named foods show **Needs
-  nutrition** when Calories, Protein, Fat or Carbs is blank or a calculation
-  error; genuine zero is complete, and blank optional Sugar/Sodium does not
-  trigger the tag. Linked Ingredients are checked against their reference
+  nutrition** when any of Calories, Protein, Fat, Carbs, Sugar or Sodium is blank
+  or a calculation error; genuine zero is complete. Linked Ingredients are checked against their reference
   nutrition, not zero-filled consumption formulas. The tag is recalculated
   from current data, including after reload and Ingredient edits; it does not
   turn an existing logged food into a Draft or change its quantities or link.
@@ -223,7 +231,95 @@ remain viewable only in history.
   blank amount/unit inherit entered weight and `g`, while completely blank
   quantities stay blank. This requires the Ingredients serving, conversion
   and nutrition fields; missing fields or duplicate names produce explicit
-  errors. Field mappings use stable identities across column moves/renames.
+  errors. Promotions also preserve Notes and set the existing Type field to
+  Premade. Field mappings use stable identities across column moves/renames.
+  Logged and Draft share the same restaurant field, searchable picker and
+  restaurant manager. Inline + Food inherits its source food's restaurant;
+  renaming a restaurant updates both panels. Deletion previews affected foods,
+  keeps every food and its restaurant text, and can be undone. Logged restaurant
+  metadata follows stable table/row identities without adding spreadsheet columns
+  or changing nutrition cells. Unlinked Logged nutrition requests retain this
+  restaurant context in their captured batch.
+  Manual nutrient overrides are never silently replaced when source values,
+  consumed quantities, conversion factors or formula dependencies change.
+  Logged overrides with retained calculations, explicitly Ingredient-linked
+  manual Logged values without a prior formula, and linked Draft overrides join
+  the same per-field review, including after bulk spreadsheet edits or reviewed
+  nutrition imports. **Food panels > Review nutrition changes** reopens pending
+  choices after closing or reloading. Keep individual/all manual values or
+  resume individual/all live calculations; unavailable or jointly circular
+  calculations cannot be applied. Choices and their pending state support
+  Undo/Redo without changing consumed portions or Ingredient reference servings.
+  Plain linked values reuse the converter's stable-ID portion calculations;
+  free text is never linked by matching its name. Missing nutrition or portions
+  remain unavailable rather than becoming an assumed serving or zero.
+  Cell-only edits project affected dependencies with per-expression and total
+  calculation-pass work limits, without constructing a historical calculation
+  engine when no affected value is read;
+  uncertain, cyclic or spill-dependent paths conservatively remain in review.
+  Structural and mapping changes retain the full review path.
+
+  **Food panels > Ingredients** edits real source rows, with a Needs nutrition
+  filter, staged field changes and explicit stale-source/manual-nutrition
+  review. Consumed quantities remain separate from Ingredient reference servings.
+  The Ingredients sheet's phone button opens **TABLE**, a continuous,
+  virtualized view of those same rows, initially at the last Ingredient.
+  Edits commit on Enter or leaving a field; unfinished edits persist and retain
+  shared Apply/Discard recovery. Add/insert creates an immediate real table row;
+  move/delete and Undo/Redo preserve stable identities. Deletion refuses linked,
+  shared or uncertain name/dynamic-formula uses rather than silently breaking them.
+  Logged promotion installs live portion calculations only for blank manual
+  nutrient cells, so completing the Ingredient later also completes its Logged
+  nutrition without replacing existing manual values or formulas.
+  **Get Nutrition** retains a batch with stable request/source identities:
+  choose days, foods and Ingredients, fill missing reference servings, opt Notes
+  in or out, edit the template and generate/copy a prompt. Reviewed dish names
+  update that prompt without overwriting original descriptions. Back/reload
+  resume the batch and selected Prompt builder/Table converter tab; Check new
+  appends only unseen sources; Reset alone repulls
+  existing snapshots. Dated name versions and identity-checked JSON name
+  backups support recovery. Generated prompt text is read-only; its template
+  and reviewed names are editable. Reference input is available only when all
+  captured serving fields are blank; correct an existing or partial serving at
+  its Ingredient source and explicitly reset the batch.
+  **Table converter** accepts the complete tracked response, maps its columns,
+  retains an editable review across reload, and requires a write-back preview.
+  **Convert table** opens that same saved converter from the Master toolbar
+  after New day, or from the Ingredients toolbar after its TABLE phone button.
+  It preserves the current batch and commits active TABLE edits before opening;
+  unresolved source conflicts keep the editor open for review.
+  Apply writes the reviewed Ingredient, original Logged and dated Draft routes
+  together with a durable receipt and Undo history. Failed saves are not
+  reported as applied; retrying persistence cannot log the operation twice.
+  Untracked mode is explicitly parse/edit review only, not workbook import.
+  Linked quantity formulas use Fnt's `UNITFACTOR(from,to)` with live conversion
+  dependencies and stable conversion-column identities. Excel export preserves
+  this Fnt-defined function, but Excel cannot recalculate it as a native function.
+  Draft foods and Ingredients share camera/upload controls and an FNT photo
+  picker. The Draft footer camera adds an unassigned day photo. The local
+  gallery supports selection, organization, reusable food links, removal and
+  Undo; originals remain available to recovery. Image bytes and their workbook
+  references save atomically, and emergency full backups include pending
+  originals after a failed save. Images are limited to 12 MB and 32 megapixels,
+  with at most eight selected files per import.
+  The original viewer supports browser-native opening, download, fullscreen
+  and sharing where available. Device downloads are requested after capture;
+  browser permissions determine the result, and saving into a Photos app is
+  not guaranteed. Physical-device camera and native gesture behavior remain
+  unverified. Workbook sync carries photo references, not image bytes.
+  **Photos > Private photo gallery** optionally connects to a separate private
+  data repository with Pages disabled and a gallery JSON path distinct from the
+  workbook. Connection and token stay only in this tab's memory. Connecting
+  reads/verifies without uploading existing photos; automatic new-photo upload
+  requires its own opt-in. Originals upload sequentially after local saving,
+  without blocking food edits. Failures pause automatic transfers; explicit
+  Upload local originals verifies existing content before retrying. Reloading
+  disconnects; local originals remain available for reconnect/retry.
+  Private name/date conflicts require explicit review. Selected downloads verify
+  checksums, preserve existing local names and links, and restore missing bytes
+  or add new gallery identities. Local removal never deletes remote originals.
+  Transfer behavior is covered against a synthetic GitHub endpoint; no actual
+  private repository or physical-device transfer has been verified.
 
   Logged overrides are not rewritten when adding an ingredient. Returning to a
   linked Food restores untouched nutrition snapshots from this panel, but keeps
@@ -930,18 +1026,29 @@ reload unless the user opts into remembering a repository-only token on that
 trusted device; offline local editing remains available without authentication.
 GitHub history is not an independent backup.
 
-While a private connection is authenticated, local commits trigger an automatic
-sync after a 15-second pause. Idle visible tabs check remote revisions at most once
-per minute; offline edits remain durably pending. Resume/reconnection schedules
-the same batched check rather than interrupting an active input.
-Unchanged remote revisions do not download/decompress the workbook blob or create
-another full local checkpoint. Response headers time out after 30 seconds; a
+While a private connection is authenticated, saved edits batch after about two
+seconds; clean visible tabs check remote revisions about every ten seconds.
+Offline edits remain durably pending. Compatible changes merge by stable identity
+against the last confirmed shared revision, including edits made while offline.
+Input/formula/binding changes stay atomic; independent formatting can merge.
+Incoming changes wait for the current editor or dialog to close. Toolbar layout,
+navigation activity and outline collapse preferences remain device-local.
+Unchanged remote revisions with a saved shared base do not download/decompress
+the workbook blob or create another full local checkpoint. Older profiles first
+establish a confirmed base; divergent copies without one still require comparison.
+Response headers time out after 30 seconds; a
 90-second overall deadline also covers stalled response bodies and aborts transfers
 rather than leaving a transfer hanging. Navigation-only visit journals do not
-create remote commits. Changed remote content is saved in Recovery for explicit
-comparison, never automatically installed over this device's workbook, even
-when there are no pending content edits. Opening comparison or finding a
-conflict persistently pauses uploads across reloads until a decision is submitted.
+create remote commits. Accepted incoming changes retain a pre-adoption recovery
+copy and rebase local Undo/Redo without undoing other devices' changes.
+An incomplete local save, including pending photo bytes, blocks adoption rather
+than marking unsaved data durable. Incoming Ingredient changes preserve manual
+Draft/Logged nutrition and queue recalculated choices; that new review metadata
+remains pending for sync. Applying comparison selections performs the same review
+and keeps its choices with the selected workbook through Undo/Redo and reload.
+Incompatible changes preserve both alternatives and
+pause uploads for explicit comparison. Opening comparison or finding a conflict
+persistently pauses uploads across reloads until a decision is submitted.
 Save alone cannot bypass an unresolved review.
 The compact **Compare** button and linked conflict/status message open the
 comparison directly with this device and the exact preserved GitHub revision.

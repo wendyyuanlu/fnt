@@ -69,7 +69,7 @@ test('comparison reads the renamed default after an old saved path is removed, r
   expect(reads).toContain('personal-workbook.json');expect(reads).toContain('fnt-data.json');expect(writes).toBe(0);
 });
 
-test('independent browsers batch uploads, require deliberate remote adoption, and retain failed/offline edits',async({page,browser,isMobile})=>{
+test('independent browsers batch uploads, adopt clean remote updates automatically, and retain conflicting/offline edits',async({page,browser,isMobile})=>{
   let content:string|undefined,sha='revision-0',revision=0,failure=false;
   const other=await browser.newContext({viewport:page.viewportSize()!,isMobile,hasTouch:isMobile}),second=await other.newPage();
   const route=async(context:typeof other)=>context.route('https://api.github.com/**',async route=>{
@@ -104,19 +104,6 @@ test('independent browsers batch uploads, require deliberate remote adoption, an
       return{pending:state.pending.filter((operation:{label:string})=>operation.label!=='Visit table').length,value:sheet.cells[`${sheet.rows[1].id}:${sheet.columns[2].id}`].value};
     }finally{store.close();}
   });
-  const adopt=async(target:typeof page)=>{
-    await target.bringToFront();await target.locator('#sync-review').click();
-    const comparison=target.frameLocator('iframe.comparison-frame');
-    await comparison.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();
-    await comparison.getByRole('option',{name:'Latest saved workbook',exact:true}).click();
-    await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
-    await comparison.locator('.bulk-disclosure>summary').click();
-    await comparison.locator('#choice-scope-trigger').click();await comparison.getByRole('option',{name:'Every difference in both copies',exact:true}).click();
-    await comparison.locator('#bulk-buttons [data-pick="right"]').click();
-    await comparison.locator('#submit-decision').click();await comparison.locator('#apply-sync').check();
-    await comparison.locator('#apply-selection').click();await expect(target.locator('.comparison-view')).toHaveCount(0);
-    await expect(target.locator('#save-state')).toContainText('Synced');
-  };
   try{
     await route(page.context());await route(other);
     await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');await connect(page);
@@ -134,8 +121,8 @@ test('independent browsers batch uploads, require deliberate remote adoption, an
     const started=Date.now();await edit(page,'801');
     await expect.poll(()=>local(page),{timeout:25000}).toEqual({pending:0,value:801});
     await second.bringToFront();await second.locator('[data-action="save"]').click();
-    await expect(second.locator('#save-state')).toContainText('Sync conflict');
-    expect((await local(second)).value).not.toBe(801);
+    await expect(second.locator('#save-state')).toContainText('Synced');
+    await expect.poll(async()=>(await local(second)).value).toBe(801);
     test.info().annotations.push({type:'controlled-sync-ms',description:String(Date.now()-started)});
     failure=true;await edit(page,'802');await page.locator('[data-action="save"]').click();
     await expect(page.locator('#save-state')).toHaveText('Sync failed - local copy retained');
@@ -144,7 +131,8 @@ test('independent browsers batch uploads, require deliberate remote adoption, an
     await expect.poll(()=>local(page)).toEqual({pending:0,value:802});
     await page.context().setOffline(true);await edit(page,'901');await expect(page.locator('#save-state')).toContainText('Saved locally');
     expect((await local(page)).pending).toBeGreaterThan(0);
-    await adopt(second);await expect(second.locator('td[data-r="1"][data-c="2"]')).toHaveText('802');
+    await second.bringToFront();await second.locator('[data-action="save"]').click();
+    await expect.poll(async()=>(await local(second)).value).toBe(802);await expect(second.locator('td[data-r="1"][data-c="2"]')).toHaveText('802');
     await edit(second,'902');await second.locator('[data-action="save"]').click();await expect.poll(()=>local(second)).toEqual({pending:0,value:902});
     const before=revision;await page.context().setOffline(false);
     await page.bringToFront();await page.locator('[data-action="save"]').click();

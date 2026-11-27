@@ -225,7 +225,7 @@ dialog .picker-results{max-height:none}
 .group-control{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;width:24px;height:24px;min-height:24px;padding:0;background:#fff;color:#35433c;border:1px solid var(--outline-control-stroke);border-radius:4px;font:10px/1 system-ui,sans-serif}
 .group-control:hover{background:#fff;border-color:var(--outline-control-stroke)}
 .group-control.outline-text{width:auto;height:30px;min-height:30px;padding:6px 9px;font:inherit}
-.group-control svg{display:block;width:18px;height:18px;flex-shrink:0}
+.group-control>svg{display:block;width:18px;height:18px;flex-shrink:0}
 .grid .group-control svg,.sticky-table-headers .group-control svg{width:14px;height:14px}
 .group-control svg path,.group-control svg circle{vector-effect:non-scaling-stroke}
 .group-depth{position:absolute;right:-1px;bottom:-1px;font-size:10px;line-height:11px;background:#fff;border-radius:2px}
@@ -497,7 +497,7 @@ dialog .picker-results{max-height:none}
 @media(max-width:720px){.sheet-bar{margin-left:3px;margin-right:3px}.sheet-bar>.reference-manager{min-height:44px}}
 .find-dialog{--dialog-height:800px;overflow-x:hidden;overflow-y:auto}
 .find-dialog[open]{display:flex;flex-direction:column}.find-dialog [hidden]{display:none!important}
-.find-tabs{display:flex;flex-shrink:0;gap:24px;border-bottom:1px solid #dedede;margin-bottom:12px}.find-tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;padding:8px 1px;font-size:13px}.find-tabs button[aria-selected=true]{border-bottom-color:var(--green);font-weight:600}
+.find-tabs{margin-bottom:12px}
 .toolbar button[aria-pressed="mixed"]{background:#eff3e9;border-color:#64834b;border-style:dashed}
 .hypothetical-override-dialog[open]{display:flex;flex-direction:column;overflow:hidden}
 .hypothetical-override-dialog>.dialog-heading,.hypothetical-override-dialog>.button-row,.hypothetical-override-skip{flex-shrink:0}

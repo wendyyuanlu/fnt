@@ -95,6 +95,7 @@ export interface HypotheticalStyle {
 export interface Workbook {
   schema: 1; id: string; title: string; revision: number; sheets: Sheet[]; tables: Table[]; names: Named[];
   pickerSources: Record<string, string>;
+  foodCapture?:import('./food-capture').FoodCapture;
   dropdownData?:{sheets:Sheet[];tables:Table[]};
   sheetTabGroups?:Record<string,string>;
   sheetTabCollapsed?:string[];

@@ -6,8 +6,9 @@ import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,re
 import {githubFormDefaults} from './github-client';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
-import { Store, SyncConflict, syncGitHub, hasPendingContent,validateBook,validateBackup,validateBookMetadata,validateCellChanges, type Backup, type LocalState } from './storage';
-import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch} from './undo-history';
+import { Store, SyncConflict, SyncPaused, syncGitHub,mergeForSync, hasPendingContent,validateBook,validateBackup,validateBookMetadata,validateCellChanges, type Backup, type LocalState,type SyncResult,type SyncConfig } from './storage';
+import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch,type UndoHistory} from './undo-history';
+import {runSyncCodec} from './sync-processing';
 import {cachedCellText,dateFormatContext} from './display-values';
 import { parseArchive, stringifyArchive,compressArchive } from './archive';
 import { parseTsv,serializeTsv } from './clipboard';
@@ -42,7 +43,22 @@ import {loadPublishedTesting,publishedTestingId,untouchedStarter} from './publis
 import {migrateDropdownData} from './dd-storage';
 import {numericKeyboardFields,numericKeyboardCell,virtualKeyboard as touchKeyboard} from './touch-keyboard';
 import {addMealIngredient,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealFields,mealLogConfig,mealLogContext,moveMealFood,type MealField} from './meal-log';
-import {mountMealLog,type MealLogInputField,type MealLogView} from './meal-log-ui';
+import {mountMealLog,type MealLogInputField,type MealLogTab,type MealLogView} from './meal-log-ui';
+import {mountDraftPanel} from './draft-ui';
+import {addDraftIngredient,appendNewFood,captureData,changedLinkedNutritionIntents,changedNutritionSnapshots,createFoodCaptureContext,generateNutritionPrompt,ingredientKey,ingredientMapping,ingredientRecord,newNutritionBatch,nutrients,numberValue,refreshNutritionPrompt,rememberIngredients,restoreNameVersion,saveNameVersion,scaledDraft,type FoodValues,type IngredientIdentity,type NameVersion} from './food-capture';
+import {mountIngredientsPanel} from './ingredients-ui';
+import {addIngredientTableRow,moveIngredientTableRow,deleteIngredientTableRow} from './ingredient-table';
+import {captureNutritionReview,nutritionReviewRows,queueNutritionReview,resolveNutritionReview,writeIngredientValues} from './ingredient-edit';
+import {mountRestaurantField,showRestaurants} from './restaurant-ui';
+import {mountNutritionPanel} from './nutrition-ui';
+import {encodeNameBackup,parseNameBackup} from './nutrition-names';
+import defaultNutritionPrompt from './nutrition-prompt.txt?raw';
+import {converterReview,newConverterState,validateConverterState,type ConverterReview,type ConverterState} from './nutrition-converter';
+import {converterSignature,prepareNutritionApply} from './nutrition-apply';
+import {inspectPhoto,type PhotoBlob} from './food-photos';
+import {makePhotoThumbnail} from './photo-images';
+import {createPhotoUI,type PhotoScope} from './photo-ui';
+import {createPrivatePhotoUI} from './private-photo-ui';
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
@@ -128,6 +144,7 @@ let copied: {sheet:string; r:number;c:number;rows:string[];columns:string[];cell
 const clipboardHistory=new WeakMap<History,{current:NonNullable<typeof copied>;restore:NonNullable<typeof copied>}>();
 let saveTimer: ReturnType<typeof setTimeout>;
 let scopedChanges:History[]=[],fullSaveRequired=false,compactionWrites=0;
+const pendingPhotoBlobs=new Map<string,PhotoBlob>();
 let compactionTimer:ReturnType<typeof setTimeout>|undefined;
 let displayedVersion=0;
 let movePaintFrame=0,resizePaintFrame=0,selectionPaintFrame=0,previewGeneration=-1;
@@ -158,6 +175,7 @@ let stickyTableHeaders:ReturnType<typeof mountStickyTableHeaders>|undefined;
 const toolbarSelection:{ids:Set<string>;anchor?:string}={ids:new Set()};
 let closeCellDropdown:(()=>void)|undefined;
 let mealPanel:ReturnType<typeof mountMealLog>|undefined,mealDay='',mealSheet='',mealSelected=false;
+let panelMetadataGeneration=-1;
 const mealManual=new Set<string>();
 const mealCalculated=new Map<string,Map<string,{calculation:string;value:Cell['value']}>>();
 document.addEventListener('pointerdown',event=>{if(event.target instanceof Element&&event.target.closest('#grid-scroll td,#grid-scroll th'))mealSelected=true;},{capture:true});
@@ -205,8 +223,10 @@ function selectMealField(row:string,field:MealLogInputField,repaint=false):void{
   anchor={...selected};selectionKind='cells';extraSelections=[];scrollTarget={row:selected.r,contextRows:0,align:'nearest'};
   if(repaint)render({preserveViewport:true});else if(changed)refreshSelection(false);
 }
-function closeMealLog():void{
+function closeMealLog():boolean{
+  try{if(mealPanel?.tableMode&&!mealPanel.commit())return false;}catch(error){flash(error);return false;}
   closeCellDropdown?.();mealPanel?.dispose();mealPanel=undefined;document.body.classList.remove('meal-log-open');render({preserveViewport:true});root.querySelector<HTMLElement>('#grid-scroll')?.focus({preventScroll:true});
+  return true;
 }
 function chooseMealDay(date:number):void{
   const s=sheet();
@@ -216,9 +236,13 @@ function chooseMealDay(date:number):void{
   }))mealPanel?.refresh();
 }
 function addMealFood(after?:string):void{
-  const s=sheet();let row='';
+  const s=sheet(),table=after?mealLogContext(book,s,engine).table:undefined;let row='';
   if(mutate('Add food',()=>{
     row=addMasterFood(book,s,mealDay,after?{after}:undefined);
+    if(after&&table){
+      const previous=book.foodCapture?.loggedDetails?.[`${table.id}:${after}`];
+      if(previous)(captureData(book).loggedDetails??={})[`${table.id}:${row}`]=clone(previous);
+    }
     const field=masterLogging(book,s).food!;
     selected={r:s.rows.findIndex(item=>item.id===row),c:s.columns.findIndex(column=>column.id===field.column)};anchor={...selected};selectionKind='cells';extraSelections=[];scrollTarget={row:selected.r,contextRows:0,align:'nearest'};
   })){mealPanel?.refresh();mealPanel?.startFood(row);}
@@ -245,20 +269,430 @@ function openMealCalendar(button:HTMLButtonElement):void{
   input.focus({preventScroll:true});
   if(input.showPicker)try{input.showPicker();}catch(error){message.hidden=false;message.textContent=`Calendar could not open automatically. Use the date field. ${error instanceof Error?error.message:String(error)}`;position();}
 }
-function openMealLog():void{
-  if(mealPanel){closeMealLog();return;}
+function refreshMealLogToolbar():void{
+  for(const [id,tab]of [['meal-log','formal'],['meal-draft','draft']] as const)root.querySelector(`#${id}`)?.setAttribute('aria-pressed',String(mealPanel?.tab===tab));
+  root.querySelector('[data-action="ingredients-table"]')?.setAttribute('aria-pressed',String(mealPanel?.tableMode));
+}
+function isIngredientsSheet(s:Sheet):boolean{
+  const tables=allTables(book),id=book.foodCapture?.ingredientMappings.find(mapping=>tables.some(table=>table.id===mapping.table))?.table??
+    book.sheets.find(sheet=>tables.some(table=>table.id===sheet.mealLog?.ingredients?.table))?.mealLog?.ingredients?.table;
+  return tables.some(table=>table.sheet===s.id&&(id?table.id===id:table.name.toLowerCase()==='ingredients'));
+}
+function prepareFoodCapture():boolean{
+  return!!book.foodCapture||mutateMetadata('Initialize draft foods',()=>{captureData(book);},[['foodCapture']],false,false);
+}
+function prepareCaptureIngredients():boolean{
+  if(!prepareFoodCapture())return false;
+  const mapping=ingredientMapping(book);
+  return!!book.foodCapture!.ingredientMappings.find(item=>item.table===mapping.table)||mutateMetadata('Remember Ingredient fields',()=>{rememberIngredients(book);},[['foodCapture','ingredientMappings']],false,false,true);
+}
+function prepareNutritionBatch():boolean{
+  if(!prepareCaptureIngredients())return false;
+  return!!book.foodCapture!.builder||mutateMetadata('Start nutrition batch',()=>{
+    const data=captureData(book);data.builder=newNutritionBatch(book,[data.selectedDate??localToday()],data.promptTemplate??defaultNutritionPrompt,engine);data.converter=newConverterState(data.builder.id);
+  },[['foodCapture','builder'],['foodCapture','converter']],false,false,true);
+}
+let nutritionSourceVersion=0,nutritionApplying=false;
+function stageNutritionReview(next:ConverterState):void{
+  validateConverterState(next);
+  const data=book.foodCapture;
+  if(!data?.builder||data.builder.id!==next.batch)throw Error('This review belongs to an older nutrition batch. Reopen the current converter.');
+  if(data.converter?.status==='applied'&&JSON.stringify(data.converter)!==JSON.stringify(next))throw Error('This review was already applied. Undo it or start a new batch before editing.');
+  if(!mutateMetadata('Edit nutrition response',()=>{captureData(book).converter=clone(next);},[['foodCapture','converter']],false,false,true))throw Error(error||'The nutrition review could not be staged.');
+}
+async function saveNutritionReview(next:ConverterState):Promise<void>{
+  if(book.foodCapture?.builder?.id!==next.batch)throw Error('This review belongs to an older nutrition batch.');
+  await saveCaptureDurably('Save nutrition response');
+}
+async function saveCaptureDurably(label:string):Promise<void>{
+  const id=book.id,target=generation;
+  await flush(label);
+  if(book.id!==id||savedGeneration<target)throw Error(error||'These changes are not saved. Retry saving before continuing.');
+  if(error){error='';renderStatus();}
+}
+async function applyNutritionReview(review:ConverterReview):Promise<unknown>{
+  if(busy||nutritionApplying)throw Error('Wait for the current save or sync to finish.');
+  nutritionApplying=true;busy=true;renderStatus();
+  try{
+    await saveCaptureDurably('Save nutrition review before applying');
+    const data=captureData(book),batch=data.builder,saved=data.converter;
+    if(!batch||!saved||saved.batch!==batch.id||converterSignature(converterReview(saved))!==converterSignature(review))throw Error('The saved nutrition review changed. Validate the current review before applying.');
+    const prepared=prepareNutritionApply(book,batch,review,data.nutritionReceipts??[]);
+    if(!prepared.alreadyApplied){
+      prepared.receipt.response={raw:saved.raw,html:saved.html,...(saved.parsed?{parsed:clone(saved.parsed)}:{})};
+      const next=captureData(prepared.book);(next.nutritionReceipts??=[]).push(prepared.receipt);next.converter={...clone(saved),status:'applied'};delete next.converter.error;
+      validateBook(prepared.book);
+      busy=false;
+      const applied=mutate('Apply reviewed nutrition',()=>{book=prepared.book;});
+      busy=true;
+      if(!applied)throw Error(error||'Nutrition could not be applied. No partial result was accepted.');
+    }
+    await saveCaptureDurably('Apply reviewed nutrition');
+    return prepared.receipt;
+  }finally{nutritionApplying=false;busy=false;renderStatus();mealPanel?.refresh();}
+}
+const photoPreviewCache=new Map<string,Promise<Blob>>();
+let photoPreviewWork:Promise<unknown>=Promise.resolve();
+const privatePhotos=createPrivatePhotoUI({
+  book:()=>book,defaults:()=>state.sync,dialog,error:flash,changed:()=>mealPanel?.refresh(),
+  original:async photo=>(pendingPhotoBlobs.get(photo.id)??await store.photo(photo.id,photo)).blob,
+  accept:async(entries,bookId)=>{
+    if(busy)throw Error('Wait for the current save or sync before downloading photos.');
+    const check=()=>{
+      if(book.id!==bookId)throw Error('The workbook changed during the photo download. Nothing was attached.');
+      for(const entry of entries){
+        const current=book.foodCapture?.photos.find(photo=>photo.id===entry.metadata.id),expected=entry.expected;
+        if(Boolean(current)!==Boolean(expected)||current&&expected&&(['id','digest','mime','bytes','name','date'] as const).some(field=>current[field]!==expected[field]))throw Error('Local photo metadata changed during download. Refresh and review it before retrying.');
+        if(current&&(current.digest!==entry.file.digest||current.bytes!==entry.file.bytes||current.mime!==entry.file.mime))throw Error('A different photo uses this identity locally. No original or metadata was replaced.');
+      }
+    };
+    check();
+    const prepared:{entry:typeof entries[number];thumbnail:Blob}[]=[];
+    for(const entry of entries)prepared.push({entry,thumbnail:await makePhotoThumbnail(entry.file.blob)});
+    check();
+    const added=entries.filter(entry=>!entry.expected);
+    if(added.length){
+      if(!prepareFoodCapture()||!mutateMetadata('Download private food photos',()=>{
+        for(const {metadata:photo}of added)captureData(book).photos.push({id:photo.id,name:photo.name,date:photo.date,mime:photo.mime,bytes:photo.bytes,digest:photo.digest});
+      },[['foodCapture','photos']],false,false,true))throw Error(error||'Downloaded photos could not be attached.');
+      for(const {file}of entries)pendingPhotoBlobs.set(file.id,file);
+    }
+    busy=true;renderStatus();
+    try{
+      if(added.length)await saveCaptureDurably('Download private food photos');
+      else{
+        await saveCaptureDurably('Save local edits before restoring photo originals');
+        check();await store.restorePhotoOriginals(bookId,state.version,entries.map(({file})=>file));
+      }
+      for(const {entry,thumbnail}of prepared)photoPreviewCache.set(entry.file.id+':'+entry.file.digest,Promise.resolve(thumbnail));
+      photoUI.invalidate();
+    }finally{busy=false;renderStatus();mealPanel?.refresh();}
+  }
+});
+const photoUI=createPhotoUI({
+  book:()=>book,date:()=>book.foodCapture?.selectedDate??localToday(),dialog,error:flash,
+  privateGallery:privatePhotos.open,privateStatus:privatePhotos.status,
+  original:async photo=>(pendingPhotoBlobs.get(photo.id)??await store.photo(photo.id,photo)).blob,
+  preview:photo=>{
+    const key=photo.id+':'+photo.digest,existing=photoPreviewCache.get(key);if(existing)return existing;
+    const work=photoPreviewWork.then(async()=>makePhotoThumbnail((pendingPhotoBlobs.get(photo.id)??await store.photo(photo.id,photo)).blob));
+    // Keep decoding serial; callers still receive and display the original rejection.
+    photoPreviewWork=work.catch(()=>undefined);photoPreviewCache.set(key,work);
+    while(photoPreviewCache.size>48)photoPreviewCache.delete(photoPreviewCache.keys().next().value!);
+    void work.catch(()=>{if(photoPreviewCache.get(key)===work)photoPreviewCache.delete(key);});
+    return work;
+  },
+  add:async(files,scope)=>{
+    if(files.length>8)throw Error('Choose at most eight photos at a time.');
+    checkPhotoScope(scope);
+    const prepared:{photo:PhotoBlob;name:string;thumbnail:Blob}[]=[];
+    for(const file of files){
+      const photo=await inspectPhoto(uid(),file),thumbnail=await makePhotoThumbnail(file);
+      prepared.push({photo,name:file.name||'Camera photo.jpg',thumbnail});
+    }
+    checkPhotoScope(scope);
+    if(!prepareFoodCapture())throw Error(error||'Photo capture could not be prepared.');
+    const paths:Patch['path'][]=[['foodCapture','photos'],['foodCapture','foods'],['foodCapture','ingredientDetails']];
+    if(!mutateMetadata('Add food photos',()=>{
+      const data=captureData(book),target=photoDestination(scope,true);
+      for(const {photo,name}of prepared){
+        data.photos.push({id:photo.id,name,date:scope.date,mime:photo.mime,bytes:photo.bytes,digest:photo.digest});target?.push(photo.id);
+      }
+    },paths,false,false,true))throw Error(error||'Photos could not be attached.');
+    for(const {photo,thumbnail}of prepared){pendingPhotoBlobs.set(photo.id,photo);photoPreviewCache.set(photo.id+':'+photo.digest,Promise.resolve(thumbnail));}
+    mealPanel?.refresh();
+    busy=true;renderStatus();
+    try{
+      await saveCaptureDurably('Add food photos');
+      for(const {photo,name}of prepared){
+        const url=URL.createObjectURL(photo.blob),link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);
+      }
+      status='Saved locally - photos added. Device downloads requested; your browser controls saving.';
+    }finally{busy=false;renderStatus();mealPanel?.refresh();}
+    const capturedBook=book.id,capturedGeneration=generation;
+    void privatePhotos.uploadAdded(prepared.map(({photo})=>photo.id)).then(message=>{
+      if(book.id===capturedBook&&generation===capturedGeneration&&savedGeneration>=capturedGeneration&&!busy){status='Saved locally - photos added. Device downloads requested; '+message;renderStatus();}
+    }).catch(flash);
+  },
+  attach:async(ids,scope,move)=>{
+    checkPhotoScope(scope);
+    const unique=[...new Set(ids)];
+    if(!unique.length||unique.some(id=>!book.foodCapture?.photos.some(photo=>photo.id===id)))throw Error('A selected photo is no longer in this gallery.');
+    if(!mutateMetadata(move?'Organize food photos':'Link gallery photos',()=>{
+      const data=captureData(book);
+      if(move){
+        for(const food of data.foods)food.photos=food.photos.filter(id=>!unique.includes(id));
+        for(const details of Object.values(data.ingredientDetails))details.photos=details.photos.filter(id=>!unique.includes(id));
+        for(const photo of data.photos)if(unique.includes(photo.id))photo.date=scope.date;
+      }
+      const target=photoDestination(scope,true);for(const id of unique)if(target&&!target.includes(id))target.push(id);
+    },[['foodCapture','foods'],['foodCapture','ingredientDetails'],['foodCapture','photos']],false,false,true))throw Error(error||'Photo links could not be changed.');
+    await saveCaptureDurably('Save photo organization');mealPanel?.refresh();
+  },
+  remove:ids=>{
+    const selected=[...new Set(ids)],bookId=book.id;
+    dialog('Remove selected photos?',`<p>Remove ${selected.length} photos from this gallery and their food links? Originals remain in local recovery storage for Undo and independent backups. This does not delete any private gallery copies.</p><button type="button" class="danger" data-remove-photos>Remove photos</button>`,surface=>{
+      surface.querySelector<HTMLButtonElement>('[data-remove-photos]')!.onclick=()=>{
+        if(book.id!==bookId){flash('The workbook changed. Reopen the current photo gallery.');return;}
+        if(mutateMetadata('Remove food photos',()=>{
+          const data=captureData(book);data.photos=data.photos.filter(photo=>!selected.includes(photo.id));
+          for(const food of data.foods)food.photos=food.photos.filter(id=>!selected.includes(id));
+          for(const details of Object.values(data.ingredientDetails))details.photos=details.photos.filter(id=>!selected.includes(id));
+        },[['foodCapture','photos'],['foodCapture','foods'],['foodCapture','ingredientDetails']],false,false,true)){surface.close();mealPanel?.refresh();}
+      };
+    });
+  }
+});
+function checkPhotoScope(scope:PhotoScope):void{
+  if(scope.book!==book.id)throw Error('The workbook changed while choosing photos. Reopen the correct food before importing.');
+  if(!Number.isSafeInteger(scope.date))throw Error('Choose a valid photo date.');
+  photoDestination(scope,false);
+}
+function photoDestination(scope:PhotoScope,create:boolean):string[]|undefined{
+  const target=scope.target;if(!target)return;
+  if(target.kind==='draft'){
+    const food=book.foodCapture?.foods.find(food=>food.id===target.id);
+    if(!food||food.date!==scope.date)throw Error('This Draft food was removed or moved to another day. Reopen it before attaching photos.');
+    return food.photos;
+  }
+  const table=allTables(book).find(table=>table.id===target.identity.table);
+  if(!table?.rows.includes(target.identity.row))throw Error('This Ingredient was removed. Reopen the current Ingredient before attaching photos.');
+  const key=ingredientKey(target.identity),details=book.foodCapture?.ingredientDetails[key];
+  if(details)return details.photos;
+  if(create)return(captureData(book).ingredientDetails[key]={notes:'',photos:[]}).photos;
+}
+const nutritionPromptPaths:Patch['path'][]=[['foodCapture','builder','prompt'],['foodCapture','builder','promptIssue'],['foodCapture','builder','sourceChanges']];
+function checkNewNutritionFood(days?:number[]):boolean{
+  if(!prepareNutritionBatch())return false;
+  const context=createFoodCaptureContext(book,engine);
+  const ok=mutateMetadata('Check new nutrition food',()=>{
+    const batch=captureData(book).builder!;
+    if(days){batch.days=[...new Set(days)];if(days.length>1)batch.multiDay=true;}
+    batch.sourceChanges=[...changedNutritionSnapshots(book,batch,context),...changedLinkedNutritionIntents(book,batch)];appendNewFood(book,batch,context);refreshNutritionPrompt(batch);
+  },[['foodCapture','builder','items'],['foodCapture','builder','linkedIntents'],['foodCapture','builder','days'],['foodCapture','builder','multiDay'],...nutritionPromptPaths],false,false,true);
+  if(ok)mealPanel?.refresh();return ok;
+}
+function generateCurrentNutritionPrompt():void{
+  if(!prepareNutritionBatch())return;
+  const batch=book.foodCapture!.builder!,changes=[...changedNutritionSnapshots(book,batch,engine),...changedLinkedNutritionIntents(book,batch)];
+  const generate=()=>{
+    if(mutateMetadata('Generate nutrition prompt',()=>{
+      const current=captureData(book).builder!;current.prompt=generateNutritionPrompt(current);current.generated=true;current.promptOpen=true;current.selectOpen=false;current.sourceChanges=changes;delete current.promptIssue;
+    },[['foodCapture','builder','generated'],['foodCapture','builder','promptOpen'],['foodCapture','builder','selectOpen'],...nutritionPromptPaths],false,false,true))mealPanel?.refresh();
+  };
+  if(!changes.length){generate();return;}
+  const revision=book.revision;
+  dialog('Captured sources changed',`<p>${changes.length} saved requests differ from their current source, or their source was removed. Names and original descriptions in this batch have not been overwritten.</p><p>Use the captured requests, or cancel and explicitly Reset batch to start from current source data.</p><div class="button-row"><button type="button" data-cancel>Cancel</button><button type="button" class="primary" data-use>Use captured requests</button></div>`,dialog=>{
+    dialog.querySelector<HTMLButtonElement>('[data-cancel]')!.onclick=()=>dialog.close();
+    dialog.querySelector<HTMLButtonElement>('[data-use]')!.onclick=()=>{if(book.revision!==revision){flash('The batch changed. Close this review and generate again.');return;}dialog.close();generate();};
+  });
+}
+function previewNameVersion(version:NameVersion):void{
+  const batch=book.foodCapture?.builder;if(!batch){flash('Open a nutrition batch first.');return;}
+  try{restoreNameVersion(clone(batch),version);}catch(error){flash(error);return;}
+  const revision=book.revision,byId=new Map(batch.items.map(item=>[item.id,item]));
+  dialog('Restore dish names?',`<p>${esc(version.time)} · Batch ${esc(version.batch)}. Only reviewed names and restaurants change; original descriptions and Item IDs remain intact.</p><div class="table-scroll"><table><thead><tr><th>Item</th><th>Current name</th><th>Saved name</th></tr></thead><tbody>${version.names.map(name=>`<tr><th>${esc(name.id)}</th><td>${esc(byId.get(name.id)!.name)}</td><td>${esc(name.name)}</td></tr>`).join('')}</tbody></table></div><div class="button-row"><button type="button" data-cancel>Cancel</button><button type="button" class="primary" data-restore>Restore names</button></div>`,dialog=>{
+    dialog.querySelector<HTMLButtonElement>('[data-cancel]')!.onclick=()=>dialog.close();
+    dialog.querySelector<HTMLButtonElement>('[data-restore]')!.onclick=()=>{
+      if(book.revision!==revision){flash('The batch changed. Reopen this preview before restoring.');return;}
+      const paths:Patch['path'][]=batch.items.flatMap((_,index)=>[['foodCapture','builder','items',index,'name'],['foodCapture','builder','items',index,'restaurant']]);
+      if(mutateMetadata('Restore reviewed dish names',()=>{saveNameVersion(captureData(book));restoreNameVersion(captureData(book).builder!,version);},[['foodCapture','nameVersions'],...paths,...nutritionPromptPaths],false,false,true)){dialog.close();mealPanel?.refresh();}
+    };
+  });
+}
+function nutritionNameVersions():void{
+  const data=book.foodCapture,batch=data?.builder;if(!data||!batch){flash('Open a nutrition batch first.');return;}
+  const versions=data.nameVersions.filter(version=>version.batch===batch.id).slice().reverse();
+  dialog('Dish name versions',`<p>Name edits are autosaved. A dated version is captured before entering Review names and before restoring names.</p><div data-versions></div><button type="button" data-save>Save current names as a version</button>`,dialog=>{
+    const list=dialog.querySelector<HTMLElement>('[data-versions]')!;
+    if(!versions.length)list.textContent='No saved versions for this batch yet.';
+    for(const version of versions){
+      const button=document.createElement('button');button.type='button';button.textContent=version.time;button.onclick=()=>previewNameVersion(version);list.append(button);
+    }
+    dialog.querySelector<HTMLButtonElement>('[data-save]')!.onclick=()=>{if(mutateMetadata('Save dish name version',()=>{saveNameVersion(captureData(book));},[['foodCapture','nameVersions']],false,false,true)){dialog.close();nutritionNameVersions();}};
+  });
+}
+function reviewNutritionChanges():void{
+  const reviews=book.foodCapture?.nutritionConflicts??[];if(!reviews.length){flash('No nutrition changes need review.');return;}
+  const revision=book.revision,reviewBook=book;
+  const rows=nutritionReviewRows(book,engine);
+  dialog('Review nutrition changes',`<p>Ingredient, quantity or calculation dependencies changed. Keep each manual value, or resume live recalculation. Closing keeps these choices pending; no manual values have been replaced.</p><div class="button-row"><button type="button" data-all="manual">Keep all manual</button><button type="button" data-all="calculated">Use all recalculated</button></div><div class="table-scroll"><table><thead><tr><th>Food / nutrient</th><th>Manual</th><th>Recalculated</th></tr></thead><tbody>${rows.map((row,index)=>`<tr><th>${esc(row.name)} (${row.kind==='logged'?'Logged':'Draft'}) / ${row.field}</th><td><label class="inline"><input type="radio" name="review-${index}" value="manual" checked>${esc(row.manual)}</label></td><td><label class="inline"><input type="radio" name="review-${index}" value="calculated" ${numberValue(row.calculated)===undefined?'disabled':''}>${esc(row.calculated?.trim()||'Unavailable')}</label></td></tr>`).join('')}</tbody></table></div><button type="button" class="primary" data-apply ${rows.length?'':'disabled'}>Apply choices</button>`,dialog=>{
+    for(const button of dialog.querySelectorAll<HTMLButtonElement>('[data-all]'))button.onclick=()=>{for(const input of dialog.querySelectorAll<HTMLInputElement>(`input[value="${button.dataset.all}"]:not(:disabled)`))input.checked=true;};
+    dialog.querySelector<HTMLButtonElement>('[data-apply]')!.onclick=()=>{
+      if(book!==reviewBook||book.revision!==revision){flash('Food or Ingredient values changed. Close and reopen this review before applying choices.');return;}
+      const decisions=rows.map((row,index)=>({row,calculated:dialog.querySelector<HTMLInputElement>(`input[name="review-${index}"]:checked`)!.value==='calculated'}));
+      if(mutate('Review Ingredient recalculation',()=>resolveNutritionReview(book,decisions))){dialog.close();mealPanel?.refresh();}
+    };
+  });
+}
+function applyIngredientDraft(identity:IngredientIdentity,values:FoodValues&{type?:string},base:FoodValues&{type?:string}):boolean{
+  const source=ingredientRecord(book,identity,engine),key=ingredientKey(identity),current={...source.values,notes:book.foodCapture?.ingredientDetails[key]?.notes??''};
+  const conflicts=Object.keys(values).filter(field=>Object.hasOwn(base,field)&&base[field as keyof typeof base]!==current[field as keyof typeof current]&&values[field as keyof typeof values]!==current[field as keyof typeof current]);
+  const apply=(fields:typeof values)=>{
+    const ok=mutate('Edit Ingredient',()=>{
+      writeIngredientValues(book,identity,fields);
+      const edits=captureData(book).ingredientEdits,edit=edits[key];
+      if(edit){for(const field of Object.keys(values) as (keyof typeof values)[]){delete edit.values[field];delete edit.base[field];}if(!Object.keys(edit.values).length)delete edits[key];}
+    });
+    if(ok)mealPanel?.refresh();return ok;
+  };
+  if(!conflicts.length)return apply(values);
+  const revision=book.revision;
+  dialog('Ingredient source changed',`<p>These fields changed in the source table after this draft was started. Choose which source to keep.</p><div class="button-row"><button type="button" data-all="current">Use all current</button><button type="button" data-all="draft">Use all draft edits</button></div><div class="table-scroll"><table><thead><tr><th>Field</th><th>Current source</th><th>Draft edit</th></tr></thead><tbody>${conflicts.map(field=>`<tr><th>${esc(field)}</th><td><label class="inline"><input type="radio" name="source-${field}" value="current" checked>${esc(current[field as keyof typeof current])}</label></td><td><label class="inline"><input type="radio" name="source-${field}" value="draft">${esc(values[field as keyof typeof values])}</label></td></tr>`).join('')}</tbody></table></div><button type="button" class="primary" data-apply>Apply choices</button>`,dialog=>{
+    for(const button of dialog.querySelectorAll<HTMLButtonElement>('[data-all]'))button.onclick=()=>{for(const input of dialog.querySelectorAll<HTMLInputElement>(`input[value="${button.dataset.all}"]`))input.checked=true;};
+    dialog.querySelector<HTMLButtonElement>('[data-apply]')!.onclick=()=>{
+      if(book.revision!==revision){flash('The source changed again. Close and reopen the review.');return;}
+      const chosen={...values};for(const field of conflicts)if(dialog.querySelector<HTMLInputElement>(`input[name="source-${field}"]:checked`)!.value==='current')delete chosen[field as keyof typeof chosen];
+      dialog.close();apply(chosen);
+    };
+  });
+  return false;
+}
+function linkDraftIngredient(id:string,ingredient:IngredientIdentity|undefined):boolean{
+  if(ingredient&&!prepareCaptureIngredients())return false;
+  const index=book.foodCapture?.foods.findIndex(food=>food.id===id)??-1,food=book.foodCapture?.foods[index];
+  if(index<0||!food){flash('This draft food no longer exists.');return false;}
+  const path:Patch['path']=['foodCapture','foods',index];
+  if(!ingredient){
+    const values=scaledDraft(book,food,engine).values;
+    const ok=mutateMetadata('Unlink draft Ingredient',()=>{food.values={...values};delete food.ingredient;},[[...path,'ingredient'],[...path,'values']],false,false);
+    if(ok)mealPanel?.refresh();return ok;
+  }
+  const preview=clone(food);preview.ingredient=ingredient;
+  for(const field of nutrients)delete preview.values[field];
+  const resolved=scaledDraft(book,preview,engine),conflicts=nutrients.filter(field=>food.values[field]?.trim()&&resolved.values[field]!==undefined&&food.values[field]!==resolved.values[field]);
+  const apply=(recalculate:readonly string[])=>{
+    const current=book.foodCapture?.foods.find(item=>item.id===id);
+    if(current!==food){flash('The draft food changed while choosing its Ingredient. Choose it again.');return false;}
+    const ok=mutateMetadata('Link draft Ingredient',()=>{food.ingredient=ingredient;for(const field of nutrients)if(recalculate.includes(field))delete food.values[field];},[[...path,'ingredient'],[...path,'values']],false,false);
+    if(ok)mealPanel?.refresh();return ok;
+  };
+  if(!conflicts.length)return apply([]);
+  dialog('Review nutrition changes',`<p>Choose which value to use for each manually entered nutrient. Quantities remain independent of the Ingredient reference serving.</p><div class="button-row"><button type="button" data-all="manual">Keep all manual</button><button type="button" data-all="calculated">Use all recalculated</button></div><div class="table-scroll"><table><thead><tr><th>Field</th><th>Manual</th><th>Recalculated</th></tr></thead><tbody>${conflicts.map(field=>`<tr><th>${esc(field)}</th><td><label class="inline"><input type="radio" name="${field}" value="manual">${esc(food.values[field])}</label></td><td><label class="inline"><input type="radio" name="${field}" value="calculated" checked>${esc(resolved.values[field])}</label></td></tr>`).join('')}</tbody></table></div><div class="button-row"><button type="button" data-cancel>Cancel</button><button type="button" class="primary" data-apply>Apply choices</button></div>`,dialog=>{
+    for(const button of dialog.querySelectorAll<HTMLButtonElement>('[data-all]'))button.onclick=()=>{for(const input of dialog.querySelectorAll<HTMLInputElement>(`input[value="${button.dataset.all}"]`))input.checked=true;};
+    dialog.querySelector<HTMLButtonElement>('[data-cancel]')!.onclick=()=>dialog.close();
+    dialog.querySelector<HTMLButtonElement>('[data-apply]')!.onclick=()=>{if(apply(conflicts.filter(field=>dialog.querySelector<HTMLInputElement>(`input[name="${field}"]:checked`)!.value==='calculated')))dialog.close();};
+  });
+  return false;
+}
+function openNutritionConverter():void{
+  try{
+    if(!commitDraft()||mealPanel?.commit()===false||!prepareNutritionBatch())return;
+    const batch=book.foodCapture!.builder!;
+    if(batch.workflow!=='converter'&&!mutateMetadata('Choose nutrition workflow',()=>{batch.workflow='converter';},[['foodCapture','builder','workflow']],false,false,true))return;
+    const tableMode=isIngredientsSheet(sheet());
+    if(mealPanel&&(mealSheet!==sheet().id||mealPanel.tableMode!==tableMode)&&!closeMealLog())return;
+    if(!mealPanel)openMealLog(tableMode?'table':'nutrition');
+    mealPanel?.showTab('nutrition');mealPanel?.refresh();
+  }catch(error){flash(error);}
+}
+function openMealLog(tab:MealLogTab='formal'):void{
+  if(mealPanel&&mealSheet!==sheet().id&&!closeMealLog())return;
+  if(mealPanel&&mealPanel.tableMode!==(tab==='table')&&!closeMealLog())return;
+  if(mealPanel){if(mealPanel.tab===tab)closeMealLog();else mealPanel.showTab(tab);return;}
   if(!commitDraft())return;
   try{
-    const s=sheet(),context=mealLogContext(book,s,engine),row=s.rows[selected.r]?.id;
-    const block=(mealSelected?context.blocks.find(block=>block.rows.includes(row)):undefined)??[...context.blocks].sort((a,b)=>(b.date??-1)-(a.date??-1))[0];
-    if(!block){chooseMealDay(localToday());if(mealLogContext(book,s,engine).blocks.length)openMealLog();return;}
-    mealDay=block.header;mealSheet=s.id;
-    const initialField:MealLogInputField|undefined=mealSelected&&row===block.header&&masterLogging(book,s).label.column===s.columns[selected.c]?.id?'dayWeight':mealSelected?[...context.fields].find(([,field])=>field.column===s.columns[selected.c]?.id)?.[0]:undefined;
-    const initialRow=mealSelected&&(block.rows.slice(1).includes(row)||initialField==='dayWeight')?row:undefined;
-    const config=mealLogConfig(book,s),collapsed=s.groups.filter(group=>group.axis==='row'&&group.collapsed&&block.rows.some(row=>group.members.includes(row)));
-    if(!mutateMetadata('Remember Meal log field identities',()=>{s.mealLog=config;for(const group of collapsed)group.collapsed=false;},[[...sheetPath(s),'mealLog'],...collapsed.map(group=>[...sheetPath(s),'groups',s.groups.indexOf(group),'collapsed'])],false,false))return;
+    const s=sheet();mealSheet=s.id;
+    if(tab==='table'&&!prepareCaptureIngredients())return;
+    let prepared=false,initialField:MealLogInputField|undefined,initialRow:string|undefined;
+    const prepareFormal=():boolean=>{
+      if(prepared)return true;
+      const context=mealLogContext(book,s,engine),row=s.rows[selected.r]?.id;
+      let block:typeof context.blocks[number]|undefined=(mealSelected?context.blocks.find(block=>block.rows.includes(row)):undefined)??[...context.blocks].sort((a,b)=>(b.date??-1)-(a.date??-1))[0];
+      if(!block){chooseMealDay(localToday());block=mealLogContext(book,s,engine).blocks.find(block=>block.header===mealDay);}
+      if(!block)return false;
+      mealDay=block.header;
+      initialField=mealSelected&&row===block.header&&masterLogging(book,s).label.column===s.columns[selected.c]?.id?'dayWeight':mealSelected?[...context.fields].find(([,field])=>field.column===s.columns[selected.c]?.id)?.[0]:undefined;
+      initialRow=mealSelected&&(block.rows.slice(1).includes(row)||initialField==='dayWeight')?row:undefined;
+      const config=mealLogConfig(book,s),collapsed=s.groups.filter(group=>group.axis==='row'&&group.collapsed&&block!.rows.some(row=>group.members.includes(row)));
+      if(!mutateMetadata('Remember Meal log field identities',()=>{s.mealLog=config;for(const group of collapsed)group.collapsed=false;},[[...sheetPath(s),'mealLog'],...collapsed.map(group=>[...sheetPath(s),'groups',s.groups.indexOf(group),'collapsed'])],false,false))return false;
+      prepared=true;selectMealField(block.header,'food');return true;
+    };
+    if(tab==='formal'&&!prepareFormal())return;
+    const draftPanel=mountDraftPanel({
+      book:()=>book,engine:()=>engine,photos:photoUI,
+      historyState:()=>({undo:!busy&&!!undo.length,redo:!busy&&!!redo.length}),
+      loggingTarget:()=>{
+        const source=book.sheets.find(sheet=>sheet.id===mealSheet);
+        if(!source)throw Error('The Draft source sheet was removed. Reopen Draft before adding food.');
+        const configured=source.mealLog?.table??source.dayLogging?.table;
+        const table=allTables(book).find(table=>configured?table.id===configured:table.sheet===source.id&&table.name.toLowerCase()==='master');
+        return table?{sheet:table.sheet,table:table.id}:undefined;
+      },
+      write:(label,paths,change)=>prepareFoodCapture()&&mutateMetadata(label,change,paths,false,false,true),
+      addIngredient:id=>{
+        const food=book.foodCapture?.foods.find(food=>food.id===id);if(!food){flash('This draft food no longer exists.');return false;}
+        const ok=mutate('Add draft food to Ingredients',()=>{addDraftIngredient(book,food,engine);});
+        if(ok)mealPanel?.refresh();return ok;
+      },
+      linkIngredient:linkDraftIngredient,dialog,error:flash
+    });
+    const ingredientsPanel=mountIngredientsPanel({
+      book:()=>book,engine:()=>engine,sourceVersion:()=>displayedVersion,photos:photoUI,
+      write:(label,paths,change)=>prepareCaptureIngredients()&&mutateMetadata(label,change,paths,false,false,true),
+      apply:applyIngredientDraft,review:reviewNutritionChanges,error:flash,
+      add:()=>askText('New Ingredient','',name=>{
+        if(mutate('Create Ingredient',()=>{addDraftIngredient(book,{id:uid(),date:localToday(),mode:'single',values:{food:name},parts:[],photos:[]},engine);})){mealPanel?.refresh();}
+      })
+    });
+    const tablePanel=tab==='table'?mountIngredientsPanel({
+      book:()=>book,engine:()=>engine,sourceVersion:()=>displayedVersion,
+      write:(label,paths,change)=>prepareCaptureIngredients()&&mutateMetadata(label,change,paths,false,false,true),
+      apply:applyIngredientDraft,review:reviewNutritionChanges,error:flash,add:()=>{},
+      table:{
+        add:after=>{let added:IngredientIdentity|undefined;if(mutate('Create Ingredient',()=>{added=addIngredientTableRow(book,after);}))return added;},
+        move:(identity,direction)=>mutate('Move Ingredient',()=>moveIngredientTableRow(book,identity,direction)),
+        remove:identity=>mutate('Delete Ingredient',()=>deleteIngredientTableRow(book,identity)),
+        dropdown:(identity,anchor)=>{
+          const record=ingredientRecord(book,identity,engine),field=record.table.columns.find(column=>column.id===record.mapping.fields.type);
+          if(!field){flash('Restore the Ingredient Type field before choosing its dropdown.');return;}
+          openCellDropdown(anchor,true,undefined,{row:identity.row,column:field.column,manual:()=>anchor.closest('.meal-log-input')?.querySelector<HTMLInputElement>('input')?.focus(),chosen:()=>mealPanel?.refresh()});
+        },
+        history:name=>{void action(name);},historyState:()=>({undo:!busy&&!!undo.length,redo:!busy&&!!redo.length})
+      }
+    }):undefined;
+    const nutritionPanel=mountNutritionPanel({
+      book:()=>book,engine:()=>engine,sourceVersion:()=>displayedVersion,
+      converter:{book:()=>book,state:()=>book.foodCapture?.converter,sourceVersion:()=>displayedVersion+nutritionSourceVersion,stage:stageNutritionReview,change:saveNutritionReview,apply:applyNutritionReview,receipts:()=>book.foodCapture?.nutritionReceipts??[],error:flash},
+      write:(label,paths,change)=>prepareNutritionBatch()&&mutateMetadata(label,change,paths,false,false,true),
+      days:days=>checkNewNutritionFood(days),checkNew:()=>{checkNewNutritionFood();},generate:generateCurrentNutritionPrompt,
+      reset:()=>dialog('Reset nutrition batch?',`<p>This starts a new Batch ID from current sources and clears this batch's selections, reference overrides, reviewed names, generated prompt, pasted converter response and review choices. Existing name versions and apply receipts are retained; names can only be restored to their matching batch. Undo remains available.</p><button type="button" class="danger" data-reset>Reset batch</button>`,dialog=>{
+        dialog.querySelector<HTMLButtonElement>('[data-reset]')!.onclick=()=>{if(mutateMetadata('Reset nutrition batch',()=>{const data=captureData(book),previous=data.builder!;saveNameVersion(data);data.builder=newNutritionBatch(book,previous.days,data.promptTemplate??previous.template,engine);data.converter=newConverterState(data.builder.id);},[['foodCapture','builder'],['foodCapture','converter'],['foodCapture','nameVersions']],false,false,true)){dialog.close();mealPanel?.refresh();}};
+      }),
+      back:()=>mealPanel?.showTab(tab==='table'?'table':'draft'),versions:nutritionNameVersions,
+      exportNames:()=>{
+        let version:NameVersion|undefined;
+        if(mutateMetadata('Back up current dish names',()=>{version=saveNameVersion(captureData(book));},[['foodCapture','nameVersions']],false,false,true)&&version)download('fnt-nutrition-names-'+version.time.replace(/[:.]/g,'-')+'.json',encodeNameBackup(version));
+      },
+      importNames:async file=>{
+        if(file.size>10000000)throw Error('Name backup exceeds the supported 10 MB limit.');
+        previewNameVersion(parseNameBackup(await file.text()));
+      },error:flash
+    });
     mealPanel=mountMealLog({
+      draft:draftPanel,ingredients:ingredientsPanel,table:tablePanel,nutrition:nutritionPanel,gallery:photoUI.gallery(),
+      restaurant:(row,element)=>{
+        const table=mealLogContext(book,s,engine).table,key=`${table.id}:${row}`,bookId=book.id;
+        return mountRestaurantField({
+          book:()=>book,engine:()=>engine,dialog,error:flash,changed:()=>mealPanel?.refresh(),
+          write:(label,paths,change)=>{
+            if(!prepareFoodCapture())return false;
+            const details=book.foodCapture!.loggedDetails,scope:Patch['path']|undefined=!details?['foodCapture','loggedDetails']:!details[key]?['foodCapture','loggedDetails',key]:undefined;
+            return mutateMetadata(label,()=>{
+              const current=allTables(book).find(item=>item.id===table.id);
+              if(book.id!==bookId||!current?.rows.includes(row))throw Error('This logged food changed. Reopen its restaurant field.');
+              const details=captureData(book).loggedDetails??={};details[key]??={};change();
+            },scope?[scope,...paths.filter(path=>path[1]!=='loggedDetails')]:paths,false,false,true);
+          }
+        },element,()=>book.foodCapture?.loggedDetails?.[key]??{},()=>['foodCapture','loggedDetails',key]);
+      },
+      restaurants:()=>showRestaurants({
+        book:()=>book,engine:()=>engine,dialog,error:flash,changed:()=>mealPanel?.refresh(),
+        write:(label,paths,change)=>prepareFoodCapture()&&mutateMetadata(label,change,paths,false,false,true)
+      }),
+      nutritionReview:{count:()=>book.foodCapture?.nutritionConflicts?.length??0,open:reviewNutritionChanges},
       view:mealView,close:closeMealLog,today:()=>chooseMealDay(localToday()),
+      activateTab:next=>{closeCellDropdown?.();return next==='formal'?prepareFormal():next==='ingredients'||next==='table'?prepareCaptureIngredients():next==='nutrition'?prepareNutritionBatch():true;},tabChanged:refreshMealLogToolbar,
       day:direction=>{const days=[...mealLogContext(book,sheet(),engine).blocks].sort((a,b)=>(a.date??Infinity)-(b.date??Infinity)),at=days.findIndex(block=>block.header===mealDay),next=days[at+direction];if(next){mealDay=next.header;selectMealField(next.header,'food',true);}},
       date:openMealCalendar,select:selectMealField,
       write:(row,field,text)=>{
@@ -317,10 +751,11 @@ function openMealLog():void{
       });},
       ingredient:row=>{if(mutate('Add logged food to Ingredients',()=>{addMealIngredient(book,sheet(),row);})){mealManual.delete(row);mealPanel?.refresh();}},
       history:name=>{void action(name);},error:e=>{mealPanel?.dispose();mealPanel=undefined;document.body.classList.remove('meal-log-open');flash(e);}
-    });
+    },tab);
     document.body.classList.add('meal-log-open');
-    selectMealField(block.header,'food');render({preserveViewport:true});mealPanel.refresh();
-    if(initialRow)mealPanel.reveal(initialRow,initialField,!!initialField);else mealPanel.bottom();
+    render({preserveViewport:true});mealPanel.refresh();
+    if(tab==='formal'){if(initialRow)mealPanel.reveal(initialRow,initialField,!!initialField);else mealPanel.bottom();}
+    else if(tab==='table')mealPanel.tableLast();
   }catch(error){flash(error);}
 }
 let groupControls:ReturnType<typeof mountGroupControls>|undefined,groupMenuOpen=false,groupMenuSheet='';
@@ -740,9 +1175,11 @@ function mutate(label: string, fn: () => void,confirmed=false,renderOptions?:{pr
   if (busy) { flash('Wait for the current save or sync to finish.'); return false; }
   const before = editSnapshot(book);
   const priorBook=book,priorCopy=copied,shape=structureKey(book),metadata=metadataKey(book),cells=new Map(allSheets(before).map(s=>[s.id,s.cells]));
+  let shapeChanged=false;
   try {
     fn();
-    if(shape!==structureKey(book))refreshMasterFoodDates(book,sheetId);
+    shapeChanged=shape!==structureKey(book);
+    if(shapeChanged)refreshMasterFoodDates(book,sheetId);
     const impact=confirmed?'':conversionEditImpact(before,book);
     if(impact){
       const proposed=clone(book),proposedCopy=copied;book=before;copied=priorCopy;engine=new Engine(book);
@@ -754,7 +1191,7 @@ function mutate(label: string, fn: () => void,confirmed=false,renderOptions?:{pr
   }
   catch(e) { book = before; copied=priorCopy;engine = new Engine(book); flash(e); render(renderOptions); return false; }
   const changes:{sheet:string;key:string;value?:Cell}[]=[];
-  const incremental=priorBook===book&&metadata===metadataKey(book);
+  let incremental=priorBook===book&&metadata===metadataKey(book);
   const compared=new WeakMap<object,WeakSet<object>>();
   const same=(a:unknown,b:unknown):boolean=>{
     if(Object.is(a,b))return true;
@@ -772,6 +1209,15 @@ function mutate(label: string, fn: () => void,confirmed=false,renderOptions?:{pr
       for(const k of Object.keys(previous))if(!(k in s.cells))changes.push({sheet:s.id,key:k,value:old.cells[k]});
     }
   }
+  try{
+    const addresses=changes.map(change=>`${change.sheet}:${change.key}`),cellOnly=incremental&&!shapeChanged,priorReviews=book.foodCapture?.nutritionConflicts;
+    const nutritionBefore=captureNutritionReview(before,()=>new Engine(before),cellOnly?{cells:new Set(addresses)}:'all');
+    if(nutritionBefore.drafts.size||nutritionBefore.logged.size||book.foodCapture?.nutritionConflicts?.length){
+      const current=cellOnly&&engine.rebindCells(book,addresses)?engine:new Engine(book);
+      queueNutritionReview(book,nutritionBefore,current);engine=current;
+    }
+    if(priorReviews!==book.foodCapture?.nutritionConflicts)incremental=false;
+  }catch(e){book=before;copied=priorCopy;engine=new Engine(book);flash(e);render(renderOptions);return false;}
   if(incremental){
     if(!changes.length){copied=priorCopy;render(renderOptions);return true;}undo.push({cells:changes});
   }else{
@@ -792,7 +1238,7 @@ function mutate(label: string, fn: () => void,confirmed=false,renderOptions?:{pr
   while(undo.length>undoLimit)undo.shift();
   redo.length = 0;
   recordTableEdits(before,book,changes);
-  const reset=priorBook!==book||shape!==structureKey(book);
+  const reset=priorBook!==book||shapeChanged;
   if(!reset){
     engine.invalidate(changes.map(change=>`${change.sheet}:${change.key}`));
   }
@@ -804,6 +1250,7 @@ function mutate(label: string, fn: () => void,confirmed=false,renderOptions?:{pr
   else scopedChanges.push(activity);
   changed(label,reset,false,forward);
   if(incremental&&!reset&&drawRowWindow){drawRowWindow(true);groupManager?.refresh();renderStatus();}else render(renderOptions);
+  if(book.foodCapture?.nutritionConflicts?.length&&JSON.stringify(before.foodCapture?.nutritionConflicts)!==JSON.stringify(book.foodCapture.nutritionConflicts))reviewNutritionChanges();
   return true;
 }
 function sheetPath(s:Sheet=sheet()):Patch['path']{
@@ -816,18 +1263,28 @@ function mutateCell(s:Sheet,row:string,column:string,fn:()=>void):boolean{
   const config=s.mealLog,table=config?allTables(book).find(table=>table.id===config.table):undefined,food=table?.columns.find(field=>field.id===config?.fields.food);
   const tracksNutrition=!!food&&!!table?.rows.includes(row)&&[...mealFields.slice(0,7)].some(field=>table.columns.find(column=>column.id===config?.fields[field])?.column===column);
   const addresses=[...new Set([key(row,column),...(tracksNutrition?[key(row,food!.column)]:[])])],inverse:History={cells:addresses.map(address=>({sheet:s.id,key:address,value:clone(s.cells[address])}))};
-  try{fn();if(tracksNutrition)markMealNeedsNutrition(book,s,row);validateCellChanges(book,inverse.cells);}catch(e){
+  const nutritionBefore=captureNutritionReview(book,engine,{cells:new Set(addresses.map(address=>`${s.id}:${address}`))}),reviewPath:Patch['path']=book.foodCapture?['foodCapture','nutritionConflicts']:['foodCapture'];
+  const tracksReview=nutritionBefore.drafts.size||nutritionBefore.logged.size||book.foodCapture?.nutritionConflicts?.length;
+  const reviewInverse=tracksReview?capturePatch(book,[reviewPath]):undefined;
+  try{fn();if(tracksNutrition)markMealNeedsNutrition(book,s,row);validateCellChanges(book,inverse.cells);engine.invalidate(addresses.map(address=>`${s.id}:${address}`));if(tracksReview)queueNutritionReview(book,nutritionBefore,engine);}catch(e){
     for(const change of inverse.cells){if(change.value)s.cells[change.key]=change.value;else delete s.cells[change.key];}
+    if(reviewInverse)book=applyUndo(book,reviewInverse).book;
+    engine=new Engine(book);
     flash(e);render();return false;
   }
   const oldSheet={...s,cells:Object.fromEntries(inverse.cells.flatMap(change=>change.value?[[change.key,change.value]]:[]))},before={...book,sheets:book.sheets.map(sheet=>sheet===s?oldSheet:sheet),...(book.dropdownData?{dropdownData:{...book.dropdownData,sheets:book.dropdownData.sheets.map(sheet=>sheet===s?oldSheet:sheet)}}:{})};
   recordTableEdits(before,book,inverse.cells);
-  undo.push(inverse);while(undo.length>undoLimit)undo.shift();redo.length=0;
-  const forward:History={cells:addresses.map(address=>({sheet:s.id,key:address,value:clone(s.cells[address])}))};
+  const paths=addresses.map(address=>[...sheetPath(s),'cells',address] as Patch['path']);
+  const reviewChanged=reviewInverse&&patchDifference(reviewInverse,capturePatch(book,[reviewPath])).patch.length;
+  const entry:History=reviewChanged?{patch:[...capturePatch(before,paths).patch,...reviewInverse.patch]}:inverse;
+  undo.push(entry);while(undo.length>undoLimit)undo.shift();redo.length=0;
+  const forward:History=reviewChanged?capturePatch(book,[...paths,reviewPath]):{cells:addresses.map(address=>({sheet:s.id,key:address,value:clone(s.cells[address])}))};
   scopedChanges.push(capturePatch(book,[['tableActivity']]));
-  engine.invalidate(addresses.map(address=>`${s.id}:${address}`));displayedVersion++;
+  displayedVersion++;
   changed('Edit cell',false,false,forward);
-  drawRowWindow?.(true);groupManager?.refresh();renderStatus();return true;
+  drawRowWindow?.(true);groupManager?.refresh();renderStatus();
+  if(reviewChanged&&!table?.rows.includes(row)&&book.foodCapture?.nutritionConflicts?.length)reviewNutritionChanges();
+  return true;
 }
 function tablePath(t:ReturnType<typeof allTables>[number]):Patch['path']{
   const at=book.tables.findIndex(item=>item.id===t.id),dropdown=book.dropdownData?.tables.findIndex(item=>item.id===t.id)??-1;
@@ -844,17 +1301,28 @@ function layoutHistory(entry:History):boolean{
     return ['rows','columns'].includes(String(path[offset]))&&typeof path[offset+1]==='number'&&['hidden','height','width','hypothetical','hypotheticalTables'].includes(String(path[offset+2]));
   });
 }
-function mutateMetadata(label:string,fn:()=>void,paths:Patch['path'][],reset=false,repaint=true):boolean{
+function mutateMetadata(label:string,fn:()=>void,paths:Patch['path'][],reset=false,repaint=true,statusOnly=false):boolean{
   if(busy){flash('Wait for the current save or sync to finish.');return false;}
+  const reviewPaths=paths.filter(path=>path[0]==='foodCapture'&&(path.length===1||path[1]==='foods'&&(path.length<=3||path[3]==='ingredient'||path[3]==='values'&&(path.length===4||['weight','amount','unit',...nutrients].includes(String(path[4]))))));
+  const selectedDrafts=reviewPaths.every(path=>path[1]==='foods'&&typeof path[2]==='number')?new Set(reviewPaths.flatMap(path=>{
+    const food=book.foodCapture?.foods[Number(path[2])];return food?[food.id]:[];
+  })):undefined;
+  const nutritionBefore=reviewPaths.length?captureNutritionReview(book,engine,selectedDrafts?{drafts:selectedDrafts}:'draft'):undefined;
+  if(nutritionBefore&&(nutritionBefore.drafts.size||nutritionBefore.logged.size||book.foodCapture?.nutritionConflicts?.length)){
+    const scope:Patch['path']=book.foodCapture?['foodCapture','nutritionConflicts']:['foodCapture'];
+    if(!paths.some(path=>path.length<=scope.length&&path.every((part,index)=>part===scope[index])))paths=[...paths,scope];
+  }
   const before=capturePatch(book,paths);
-  try{fn();}catch(e){if(patchDifference(before,capturePatch(book,paths)).patch.length){book=applyUndo(book,before).book;engine=new Engine(book);}flash(e);render();return false;}
+  try{fn();if(nutritionBefore&&(nutritionBefore.drafts.size||nutritionBefore.logged.size||book.foodCapture?.nutritionConflicts?.length))queueNutritionReview(book,nutritionBefore,engine);}catch(e){if(patchDifference(before,capturePatch(book,paths)).patch.length){book=applyUndo(book,before).book;engine=new Engine(book);}flash(e);render();return false;}
   const inverse=patchDifference(before,capturePatch(book,paths));
   if(!inverse.patch.length)return true;
+  if(inverse.patch.some(({path})=>path[0]==='foodCapture'&&(path.length===1||['foods','restaurants','loggedDetails','ingredientDetails','ingredientEdits','photos','builder','ingredients','conversions'].includes(String(path[1])))))nutritionSourceVersion++;
   const forward=capturePatch(book,inverse.patch.map(p=>p.path));
   undo.push(inverse);while(undo.length>undoLimit)undo.shift();redo.length=0;
   if(reset)displayedVersion++;
   changed(label,reset,false,forward);
-  if(repaint)render();else{renderStatus();refreshSelection(false);groupManager?.refresh();}
+  if(statusOnly){panelMetadataGeneration=generation;renderSaveStatus();}
+  else if(repaint)render();else{renderStatus();refreshSelection(false);groupManager?.refresh();}
   return true;
 }
 function structureKey(b:Workbook):string {
@@ -875,14 +1343,15 @@ async function flush(label = 'Edit workbook',preservedStatus?:string): Promise<v
   saving = saving.then(async () => {
     if (savedGeneration === generation && state) return;
     await navigationSaving;
-    const snapshot = book, revision=book.revision,g = generation,undoHistory=clone({undo,redo}),records=scopedChanges.splice(0),full=fullSaveRequired||!state;
+    const snapshot = book, revision=book.revision,g = generation,undoHistory=clone({undo,redo}),records=scopedChanges.splice(0),photos=[...pendingPhotoBlobs.values()],full=fullSaveRequired||!state;
     fullSaveRequired=false;
-    if(preservedStatus===undefined)status = 'Saving locally...'; renderStatus();
+    if(preservedStatus===undefined)status = 'Saving locally...';
+    if(panelMetadataGeneration===generation)renderSaveStatus();else renderStatus();
     try {
       if(full){
-        state=await store.save(snapshot,state?.version??0,label,false,undefined,{undoHistory});compactionWrites=0;
+        state=await store.save(snapshot,state?.version??0,label,false,undefined,{undoHistory,photos});compactionWrites=0;
       }else{
-        const receipt=await store.saveChanges(snapshot.id,revision,state.version,label,records,undoHistory);
+        const receipt=await store.saveChanges(snapshot.id,revision,state.version,label,records,undoHistory,photos);
         let saved=state.book;for(const record of records)saved=applyUndo(saved,record).book;
         saved={...saved,revision};state={...state,...receipt,book:saved};
         compactionWrites++;
@@ -890,12 +1359,13 @@ async function flush(label = 'Edit workbook',preservedStatus?:string): Promise<v
         if(compactionWrites>=32)void compactSavedChanges();
       }
       navigationError=undefined;
+      for(const photo of photos)if(pendingPhotoBlobs.get(photo.id)===photo)pendingPhotoBlobs.delete(photo.id);
       savedGeneration = g;
       status = g!==generation?'Unsaved changes - saving locally...':state.sync ? `Saved locally - ${state.pending.length} pending changes` : preservedStatus??'Saved in this browser — local only (not synced)';
       channel?.postMessage({version:state.version});
       schedulePrivateSync();
     } catch(e) { scopedChanges.unshift(...records);fullSaveRequired||=full;status = 'NOT SAVED - download a backup'; flash(e); throw e; }
-    finally { renderStatus(); }
+    finally { if(panelMetadataGeneration===generation&&!error)renderSaveStatus();else renderStatus(); }
   }).catch(e => { flash(e); });
   await saving;
 }
@@ -908,27 +1378,85 @@ async function compactSavedChanges():Promise<void>{
   await saving;
 }
 let privateSyncTimer:ReturnType<typeof setTimeout>|undefined;
+let privateSyncDue=0;
 let privateSyncConflict=false;
 let privateSyncFlight:Promise<void>|undefined;
 let preservedSyncConflict:SyncConflict|undefined;
 let comparisonActive=false;
 let rememberPrivateSync=false;
-function schedulePrivateSync(delay=15000):void{
+function schedulePrivateSync(delay=2000):void{
   clearTimeout(privateSyncTimer);
-  if(!state?.sync||state.syncPaused||state.syncReview||!token||privateSyncConflict||comparisonActive||privateSyncFlight||!navigator.onLine)return;
+  if(!state?.sync||state.syncPaused||state.syncReview||!token||privateSyncConflict||comparisonActive||privateSyncFlight||!navigator.onLine){privateSyncDue=0;return;}
+  const due=Date.now()+(delay===0?0:hasPendingContent(state)?delay:Math.max(delay,10000));
+  privateSyncDue=privateSyncDue?Math.min(privateSyncDue,due):due;
   privateSyncTimer=setTimeout(()=>{
-    if(document.visibilityState!=='visible'||busy||comparisonActive||draft!==undefined||touchCell||appendDraft||colorPicker?.pending||document.querySelector('dialog[open]')){schedulePrivateSync();return;}
+    privateSyncDue=0;
+    if(document.visibilityState!=='visible'||busy||comparisonActive){schedulePrivateSync();return;}
     void manualSave(true);
-  },hasPendingContent(state)?delay:Math.max(delay,60000));
+  },Math.max(0,privateSyncDue-Date.now()));
 }
 async function updateSyncMetadata(change:Parameters<Store['syncMetadata']>[1]):Promise<void>{
-  const operation=saving.then(async()=>{const metadata=await store.syncMetadata(state.version,change);state={...state,...metadata};});
+  const connection=JSON.stringify(state.sync);
+  const operation=saving.then(async()=>{
+    if(JSON.stringify(state.sync)!==connection)throw Error('Sync destination changed. The previous response was not applied.');
+    const metadata=await store.syncMetadata(state.version,change);state={...state,...metadata};
+  });
   saving=operation.catch(()=>{});await operation;
+}
+function incomingSyncBlocked():boolean{
+  const active=document.activeElement;
+  return busy||draft!==undefined||!!touchCell||!!appendDraft||!!colorPicker?.pending||!!document.querySelector('dialog[open],.cell-dropdown')||
+    (active instanceof HTMLInputElement||active instanceof HTMLTextAreaElement)&&active!==document.querySelector('#formula')&&root.contains(active);
+}
+async function receiveIncomingSync(base:Workbook,result:SyncResult,config:SyncConfig,credential:string,submittedComparison=false):Promise<void>{
+  const valid=()=>token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)&&!state.syncReview&&(!comparisonActive||submittedComparison);
+  for(let attempt=0;attempt<5;attempt++){
+    while(incomingSyncBlocked()){
+      if(!valid())throw new SyncPaused('Incoming sync paused. Local edits and the remote copy are retained.');
+      status='Remote updates ready - finish the current edit to apply';renderStatus();
+      await new Promise(resolve=>setTimeout(resolve,200));
+    }
+    if(!valid())throw new SyncPaused('Incoming sync paused. Local edits and the remote copy are retained.');
+    await flush();
+    if(savedGeneration!==generation||pendingPhotoBlobs.size)throw Error('Incoming sync could not save all local edits and photos. Updates were not applied; retry the local save first.');
+    const before=clone(book),g=generation,merged=await mergeForSync(base,before,result.remote!);
+    if(merged.conflicts.length){
+      const conflict=new SyncConflict(merged.remote,result.sha,result.originals??[],merged.local,base,result.remote,merged.conflicts);
+      conflict.confirmed=result;throw conflict;
+    }
+    const reviewed=await runSyncCodec({kind:'nutrition',before,after:merged.local},{snapshots:true}) as {book:Workbook;changed:boolean};
+    const history=await runSyncCodec({kind:'history',before,after:reviewed.book,history:clone({undo,redo})},{snapshots:true}) as UndoHistory;
+    if(g!==generation||incomingSyncBlocked())continue;
+    let applied=false;
+    const operation=saving.then(async()=>{
+      if(g!==generation||pendingPhotoBlobs.size||incomingSyncBlocked()||!valid())return;
+      rememberView();
+      const previousGeneration=savedGeneration;
+      book=reviewed.book;book.revision=Math.max(before.revision,book.revision)+1;
+      generation++;const acceptedGeneration=generation;
+      undo.splice(0,undo.length,...history.undo);redo.splice(0,redo.length,...history.redo);
+      engine=new Engine(book);displayedVersion++;
+      if(!allSheets(book).some(sheet=>sheet.id===sheetId)){sheetId=book.sheets[0].id;referenceId=undefined;}
+      restoreView();render({preserveViewport:true});groupManager?.refresh();
+      try{
+        state=await store.acceptSync(state.version,config,result,book,history,reviewed.changed?{pendingLabel:'Review incoming nutrition changes'}:undefined);
+        savedGeneration=acceptedGeneration;compactionWrites=0;applied=true;
+        channel?.postMessage({version:state.version});
+      }catch(error){
+        savedGeneration=previousGeneration;fullSaveRequired=true;
+        throw error;
+      }
+    });
+    saving=operation.catch(()=>{});await operation;
+    if(applied)return;
+  }
+  throw Error('Local edits continued during incoming sync. Changes retained; automatic sync will retry.');
 }
 async function manualSave(automatic=false,progress?:(message:string,completed:number,total:number)=>void): Promise<void> {
   if(automatic&&(!state?.sync||state.syncPaused||state.syncReview||!token||!navigator.onLine||privateSyncConflict||comparisonActive)){schedulePrivateSync();return;}
   if(busy){flash('Wait for the current save or sync to finish.');return;}
   if(!automatic&&!commitDraft())return;
+  if(!automatic&&mealPanel?.tableMode)try{if(!mealPanel.commit())return;}catch(error){flash(error);return;}
   if(privateSyncFlight){await privateSyncFlight;return;}
   if(state.syncReview||privateSyncConflict||comparisonActive&&!progress){
     if(!automatic){await flush();status='Saved locally — sync paused';renderStatus();}
@@ -951,17 +1479,17 @@ async function manualSave(automatic=false,progress?:(message:string,completed:nu
     if(!token){if(!automatic)openSync();return;}
     if(!automatic&&state.syncPaused)await updateSyncMetadata({paused:false});
     const captured={...state,pending:[...state.pending]},config=state.sync,credential=token;
+    if(!automatic){status='Checking private GitHub revision...';renderStatus();}
     await store.assertVersion(captured.version);
     progress?.('Checking private GitHub revision...',0,2);
-    const originals=hasPendingContent(captured)?await store.originals():[];
-    const result=await syncGitHub(captured,credential,fetch,originals,{canUpload:()=>!state.syncReview&&!privateSyncConflict&&(!comparisonActive||!!progress)&&token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)});
+    const originals=hasPendingContent(captured)?await store.originals():[],base=await store.syncBase(config,captured.remoteSha),attempt=await store.syncAttempt(config);
+    const result=await syncGitHub(captured,credential,fetch,originals,{base,attempt,beforeUpload:transfer=>store.rememberSyncAttempt(config,transfer),canUpload:()=>!state.syncReview&&!privateSyncConflict&&(!comparisonActive||!!progress)&&token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)});
     if(token!==credential||JSON.stringify(state.sync)!==JSON.stringify(config))throw Error('Sync connection changed during transfer. Local edits retained; acknowledgement not applied.');
-    if(result.remote){
-      throw new SyncConflict(result.remote,result.sha,result.originals??[]);
+    if(result.remote)await receiveIncomingSync(captured.book,result,config,credential,!!progress);
+    else if(result.confirmed||result.sha!==state.remoteSha||result.acknowledged?.length){
+      await updateSyncMetadata({sha:result.sha,acknowledged:result.acknowledged,confirmed:result.confirmed,originals:result.originals});
     }
-    if(!captured.pending.length&&result.sha===state.remoteSha){status='Synced with private repository';return;}
     progress?.('Recording confirmed GitHub revision...',1,2);
-    await updateSyncMetadata({sha:result.sha,acknowledged:captured.pending.map(operation=>operation.id)});
     status=generation!==savedGeneration?'Unsaved changes - saving locally...':hasPendingContent(state)?'Saved locally — newer edits pending sync':'Synced with private repository';
     progress?.('Selected data synced with private GitHub.',2,2);
   } catch(e) {
@@ -969,15 +1497,37 @@ async function manualSave(automatic=false,progress?:(message:string,completed:nu
       status='Sync connection changed — local copy retained';
       flash('The previous sync response was not applied to this connection. Local edits were retained. An upload already sent may still have reached GitHub.');return;
     }
+    if(e instanceof SyncPaused){status=generation!==savedGeneration?'NOT SAVED - download a backup':'Saved locally — sync paused';return;}
     if (e instanceof SyncConflict) {
-      privateSyncConflict=true;preservedSyncConflict=e;
       try{
+        if(e.base&&connection){
+          while(incomingSyncBlocked()&&!comparisonActive){
+            status='Conflicting updates ready - finish the current edit to review';renderStatus();
+            await new Promise(resolve=>setTimeout(resolve,200));
+          }
+          if(comparisonActive&&!progress||state.syncReview||token!==credentialAtStart||JSON.stringify(state.sync)!==JSON.stringify(connection))throw Error('Sync connection or review changed. Incoming conflict was not applied.');
+          await flush();
+          if(savedGeneration!==generation||pendingPhotoBlobs.size)throw Error('Local edits and photos must be saved before applying incoming conflict changes.');
+          const current=clone(book),merged=await mergeForSync(e.base,current,e.originalRemote);
+          e.local=merged.local;e.remote=merged.remote;e.conflicts=merged.conflicts;
+          if(!merged.unchangedLocal){
+            await store.checkpoint('Local copy before automatic conflict merge',current,[],true);
+            await receiveIncomingSync(current,{sha:e.sha,remote:merged.local,confirmed:e.confirmed?.confirmed??e.originalRemote,originals:e.originals,acknowledged:e.confirmed?.acknowledged},connection,credentialAtStart,!!progress);
+          }else if(e.confirmed){
+            await updateSyncMetadata({sha:e.sha,confirmed:e.confirmed.confirmed,acknowledged:e.confirmed.acknowledged,originals:e.originals});
+          }
+          if(!merged.conflicts.length){status='Compatible incoming changes saved - sync pending';return;}
+        }
+        if(token!==credentialAtStart||JSON.stringify(state.sync)!==JSON.stringify(connection))throw Error('Sync connection changed. Incoming conflict was not applied.');
+        privateSyncConflict=true;preservedSyncConflict=e;
         await updateSyncMetadata({paused:true,review:true,clearConflict:true});
-        await store.checkpoint('Remote conflict - not applied',e.remote,e.originals,true,connection?{config:connection,sha:e.sha}:undefined);
+        if(e.base)await updateSyncMetadata({sha:e.sha,confirmed:e.confirmed?.confirmed??e.originalRemote});
+        if(e.originalRemote!==e.remote)await store.checkpoint('Original remote before automatic conflict merge',e.originalRemote,e.originals,true);
+        await store.checkpoint('Remote conflict - not applied',e.remote,e.originals,true,connection?{config:connection,sha:e.sha,local:e.local}:undefined);
         await store.checkpoint('Local conflict - not uploaded',book);
       }catch(recoveryError){status='Sync conflict — recovery failed; saved locally';flash(recoveryError);return;}
       status = 'Sync conflict — saved locally';
-    } else status = state.sync?'Sync failed - local copy retained':'Recovery checkpoint failed - local save retained';
+    } else status = generation!==savedGeneration?'NOT SAVED - download a backup':state.sync?'Sync failed - local copy retained':'Recovery checkpoint failed - local save retained';
     if(!comparisonActive||progress)flash(e);
   } finally { renderStatus(); }
   };
@@ -992,10 +1542,10 @@ function openConflict(conflict:SyncConflict):void {
       if(busy)return;
       try{
         const received=migrateDropdownData(conflict.remote);
-        state=await store.metadata(state.version,s=>({...s,book:clone(received.book),remoteSha:conflict.sha,pending:received.changed?[{id:uid(),label:'Move dropdown records into DD storage',time:new Date().toISOString()}]:[]}));
+        state=await store.metadata(state.version,s=>({...s,book:clone(received.book),remoteSha:conflict.sha,pending:[{id:uid(),label:'Resolve sync conflicts using remote values',time:new Date().toISOString()}]}));
         adoptSavedWorkbook();
         await updateSyncMetadata({paused:false,review:false});privateSyncConflict=false;preservedSyncConflict=undefined;schedulePrivateSync(0);
-        error='';status='Remote version saved locally - previous local version in recovery';render();d.close();
+        error='';status='Remote choices saved locally - previous local version in recovery; sync pending';render();d.close();
       }catch(e){flash(e);}
     };
     d.querySelector<HTMLButtonElement>('#keep-local')!.onclick=()=>{
@@ -1043,7 +1593,19 @@ async function openSyncComparison():Promise<void>{
     if(!conflict&&state.syncReview&&config){
       const saved=await store.syncConflict(config);
       if(JSON.stringify(state.sync)!==JSON.stringify(config))throw Error('The sync destination changed. Open comparison again.');
-      if(saved)conflict=new SyncConflict(saved.book,saved.sha);
+      if(saved)conflict=new SyncConflict(saved.book,saved.sha,[],saved.local);
+    }
+    if(conflict?.local){
+      for(let attempt=0;attempt<5;attempt++){
+        if(!commitDraft())return;
+        await flush();const g=generation,current=clone(book);
+        if(savedGeneration!==generation||pendingPhotoBlobs.size)throw Error('Save local edits and photos before opening the conflicting changes.');
+        const merged=await mergeForSync(conflict.local,current,conflict.remote);
+        if(g!==generation||draft!==undefined)continue;
+        conflict=new SyncConflict(merged.remote,conflict.sha,conflict.originals,current);
+        openComparison(conflict);return;
+      }
+      throw Error('Finish the current edit before opening the conflicting changes. Your edits are retained.');
     }
     openComparison(conflict);
   }catch(error){flash(error);}
@@ -1148,7 +1710,8 @@ function openComparison(conflict?:SyncConflict):void{
       if(capturedGeneration!==generation||JSON.stringify(book)!==JSON.stringify(captured.book))throw Error('The local workbook changed after comparison opened. Close and compare again; your newer edits were not replaced.');
       if(reviewRevision!==captured.book.revision)throw Error('The local workbook changed since this comparison was saved. Your choices were retained. Use the computer icon to compare the current local copy, or close and compare again before applying.');
       request.progress?.('Checking selected changes and formula dependencies...',0,6);
-      const merged=await mergeComparison(request.left,request.right,request.choices);
+      const selected=await mergeComparison(request.left,request.right,request.choices);
+      const {book:merged}=await runSyncCodec({kind:'nutrition',before:captured.book,after:selected},{snapshots:true}) as {book:Workbook;changed:boolean};
       if(request.sync&&(!config||!credential||!remoteHead))throw Error('Read the current GitHub copy before applying and syncing.');
       busy=true;status='Validating selection and saving recovery copies...';renderStatus();
       clearTimeout(compactionTimer);compactionTimer=undefined;
@@ -1202,18 +1765,16 @@ function openComparison(conflict?:SyncConflict):void{
     },
   });
 }
-function renderStatus(): void {
-  updateCalculationState();
+function renderSaveStatus():void{
   for(const [action,entries]of [['undo',undo],['redo',redo]] as const){
     const button=root.querySelector<HTMLButtonElement>(`[data-action="${action}"]`);if(!button)continue;
     button.dataset.historyCount=String(entries.length);
     button.disabled=busy||!entries.length;
     button.dataset.shortcutLabel=`${action==='undo'?'Undo':'Redo'} (${entries.length} available)`;
   }
-  root.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('#formula,.cell-inline-editor').forEach(el=>el.disabled=busy||!editableReference()||!!gridReference()?.error);
-  if(expandedEditor)expandedEditor.input.disabled=busy||!editableReference()||!!gridReference()?.error;
   const el = document.querySelector<HTMLElement>('#save-state');
   if (el) { el.textContent = draft!==undefined?'Editing cell - not saved yet':appendDraft?'Editing new option - not saved yet':colorPicker?.pending?'Previewing color - release to apply':busy&&status.startsWith('Saved')?'Finishing complete save...':status; el.className = `save-state ${error ? 'bad' : ''}`; }
+  if(el&&(draft!==undefined||appendDraft)&&(status.startsWith('Remote updates ready')||status.startsWith('Conflicting updates ready')))el.textContent+=' — '+status;
   if(el&&state?.syncReview&&!busy&&draft===undefined&&status.startsWith('Saved'))el.textContent='Saved locally — sync paused';
   else if(el&&state?.syncPaused&&!state.syncReview&&!busy&&draft===undefined&&!el.textContent?.includes('sync paused'))el.textContent+=' — sync paused';
   const conflictLink=(container:HTMLElement)=>{
@@ -1230,6 +1791,12 @@ function renderStatus(): void {
   }
   const review=root.querySelector<HTMLButtonElement>('#sync-review');
   if(review){review.hidden=!state?.syncReview&&!privateSyncConflict;review.onclick=()=>void openSyncComparison();}
+}
+function renderStatus(): void {
+  renderSaveStatus();
+  updateCalculationState();
+  root.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('#formula,.cell-inline-editor').forEach(el=>el.disabled=busy||!editableReference()||!!gridReference()?.error);
+  if(expandedEditor)expandedEditor.input.disabled=busy||!editableReference()||!!gridReference()?.error;
   if(root.querySelector('[data-action="bold"]')){
     const format=inGrid(selected.r,selected.c)?current().format:undefined;
     for(const flag of ['bold','italic','underline','strikethrough','wrap'] as const)root.querySelector(`[data-action="${flag}"]`)?.setAttribute('aria-pressed',String(!!format?.[flag]));
@@ -1317,7 +1884,7 @@ function render(options?:{preserveViewport:boolean}): void {
   const view=gridReference();
   if(view?.sheet)sheetId=view.sheet.id;
   const s = sheet();
-  const mealVisible=!!mealPanel&&!referenceId&&s.id===mealSheet&&isMasterSheet(book,s);
+  const mealVisible=!!mealPanel&&!referenceId&&s.id===mealSheet&&(mealPanel.tableMode?isIngredientsSheet(s):isMasterSheet(book,s));
   document.body.classList.toggle('meal-log-open',mealVisible);
   if(!mealVisible)document.body.classList.remove('meal-log-keyboard');
   if (!s.rows.length || !s.columns.length) return;
@@ -1473,6 +2040,7 @@ function render(options?:{preserveViewport:boolean}): void {
     <div id="error" role="alert" class="error" ${error?'':'hidden'}><span class="error-message">${esc(error)}</span><button type="button" class="error-dismiss" aria-label="Dismiss error" title="Dismiss error">${toolbarIcon('close')}</button></div>
     <nav class="toolbar" aria-label="Spreadsheet tools">
       <div class="tool-set">${(['undo','redo'] as const).map(name=>`<button class="icon-button" data-action="${name}" aria-label="${name==='undo'?'Undo':'Redo'}" title="${name==='undo'?'Undo (Ctrl+Z)':'Redo (Ctrl+Y)'}" ${(name==='undo'?undo:redo).length?'':'disabled'}>${toolbarIcon(name)}</button>`).join('')}</div>
+      ${!referenceId&&isIngredientsSheet(s)?`<div class="tool-set"><button type="button" class="icon-button" data-action="ingredients-table" data-toolbar-before="action:bold" aria-label="Ingredients TABLE" title="Ingredients TABLE" aria-pressed="${!!mealPanel?.tableMode}">${toolbarIcon('phone')}</button><button type="button" class="icon-button" data-action="nutrition-convert" data-toolbar-before="action:bold" aria-label="Convert table" title="Convert table">${toolbarIcon('convert-table')}</button></div>`:''}
       <div class="tool-set">${(['bold','italic','underline','strikethrough','wrap'] as const).map(name=>{const label={bold:'Bold',italic:'Italic',underline:'Underline',strikethrough:'Strikethrough',wrap:'Wrap text'}[name];return`<button class="icon-button" data-action="${name}" title="${label}" aria-label="${label}">${toolbarIcon(name)}</button>`;}).join('')}<button class="icon-button palette-button" data-action="text-color" title="Text color" aria-label="Text color">${toolbarIcon('text-color',current().format?.color??'#cc1122')}<span class="format-caret">${dropdownArrowHtml}</span></button><button class="icon-button palette-button" data-action="background-color" title="Cell background color" aria-label="Cell background color">${toolbarIcon('background-color',current().format?.background??'#ffdf00')}<span class="format-caret">${dropdownArrowHtml}</span></button><button data-action="format">123</button></div>
       <div class="tool-set">${referenceId?'<button data-action="reference-settings">DD settings</button>':''}<button class="icon-button" data-action="dropdown-source" aria-label="Assign DD" aria-pressed="false" title="Assign a dropdown without changing cell contents">${toolbarIcon('dropdown-source')}</button></div>
       <div class="tool-set"><button type="button" class="icon-button group-menu-button" data-toolbar-id="action:table-selection" aria-label="Group controls" title="Group controls"></button>      <div class="toolbar-split summary-group-control" data-toolbar-id="action:summary-group" role="group" aria-label="Summary group controls" tabindex="-1"><button type="button" class="icon-button group-toggle" data-action="summary-group" aria-label="Remove summary group" aria-pressed="false" title="Remove summary group">${toolbarIcon('summary-group')}</button><button type="button" class="icon-button summary-group-add" data-action="add-summary-group" aria-label="Add summary group" title="Add summary group, including within an existing group">${toolbarIcon('add')}</button></div><button type="button" class="icon-button group-toggle" data-action="plain-group" aria-label="Create/remove plain group" aria-pressed="false" title="Create plain group">${toolbarIcon('plain-group')}</button><button class="icon-button" data-action="structure" title="Rows & columns" aria-label="Rows & columns">${toolbarIcon('structure')}</button>${referenceId?'<button data-action="archive-options">Hide / show selected options</button>':''}</div>
@@ -1481,7 +2049,7 @@ function render(options?:{preserveViewport:boolean}): void {
       ${referenceId?'':`<div class="tool-set"><button class="icon-button" data-action="convert-table" aria-label="Convert to table" title="Create a table, or join selected rows/columns to their surrounding table">${toolbarIcon('convert-table')}</button><button class="icon-button" data-action="move-to-top" data-toolbar-before="action:tables" aria-label="Move to top" title="Move selected rows or a summary group below the table header">${toolbarIcon('move-to-top')}</button><button class="icon-button" data-action="tables" aria-label="Table manager" title="Table manager; rename the table containing the selected cell">${toolbarIcon('tables')}</button><button data-action="block">Meal / day</button></div>`}
       <div class="tool-set toolbar-layout-controls"><button class="icon-button" data-action="toolbar-layout" aria-label="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar'}" aria-pressed="${arrangingToolbar}" title="${arrangingToolbar?'Finish arranging toolbar':'Arrange toolbar: drag tools or use Alt+Left/Right'}">${toolbarIcon('toolbar-layout')}</button></div>
     </nav>
-    ${master?`<nav class="master-toolbar" aria-label="Master logging"><button id="meal-log" class="icon-button group-control summary-chevron outline-text" data-action="meal-log" aria-pressed="${!!mealPanel}">Meal log</button><div class="day-create"><button id="new-day" class="icon-button group-control summary-chevron outline-text" data-action="new-day">+ Day</button><details><summary aria-label="New day options"><span class="format-caret">${dropdownArrowHtml}</span></summary><div class="day-kind-menu"><button data-action="new-hypothetical-day">New hypothetical day</button><button id="date-settings" data-action="date-settings">New day settings</button></div></details></div><button id="add-food" class="icon-button group-control summary-chevron outline-text" data-action="add-food">+ Food</button></nav>`:''}
+    ${master?`<nav class="master-toolbar" aria-label="Master logging"><button id="meal-log" class="icon-button group-control summary-chevron outline-text" data-action="meal-log" aria-pressed="${mealPanel?.tab==='formal'}">Meal log</button><button id="meal-draft" class="icon-button group-control summary-chevron outline-text" data-action="meal-draft" aria-pressed="${mealPanel?.tab==='draft'}">Draft</button><div class="day-create"><button id="new-day" class="icon-button group-control summary-chevron outline-text" data-action="new-day">+ Day</button><details><summary aria-label="New day options"><span class="format-caret">${dropdownArrowHtml}</span></summary><div class="day-kind-menu"><button data-action="new-hypothetical-day">New hypothetical day</button><button id="date-settings" data-action="date-settings">New day settings</button></div></details></div><button type="button" class="icon-button" data-action="nutrition-convert" aria-label="Convert table" title="Convert table">${toolbarIcon('convert-table')}</button><button id="add-food" class="icon-button group-control summary-chevron outline-text" data-action="add-food">+ Food</button></nav>`:''}
     <div class="meal-log-workspace"><div class="meal-log-slot"></div><div class="meal-log-spreadsheet">
     <form class="formula-bar" id="formula-form"><span class="address">${letters(selected.c)}${selected.r+1}</span><span class="fx">fx</span><input id="formula" aria-label="Cell value or formula" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(draft??inputText(current()))}"><button type="button" class="touch-keyboard-toggle" aria-label="Use full keyboard" hidden>ABC</button><button type="button" class="icon-button touch-dropdown-toggle" aria-label="Show cell choices" aria-expanded="false" hidden><span class="format-caret">${dropdownArrowHtml}</span></button><span id="calculation-state"></span></form>
     ${view&&(view.error||referenceNotice)?`<div class="reference-notice" id="reference-notice" role="${view.error?'alert':'status'}">${esc(view.error||referenceNotice)}</div>`:''}
@@ -1491,7 +2059,7 @@ function render(options?:{preserveViewport:boolean}): void {
     <tbody></tbody></table></div></div>
     <div class="grid-footer"><div><button class="selection-count" data-action="range" title="Select a cell range, including on mobile">${selectionCount(selectedRanges)} cells</button><span id="selection-scope-label"></span></div><div class="navigator">${referenceId?'':`<button data-action="page-mode" aria-pressed="${pageConfig?.mode==='calendar'}" title="Switch between one page and calendar date pages">${pageConfig?.mode==='calendar'?datePagesIcon:onePageIcon}<span>${pageConfig?.mode==='calendar'?'Date pages':'One page'}</span></button>`}${calendarPlan?`<button data-action="top" aria-label="Jump to top">${navigationIcon('up')} Top</button><button data-action="bottom" aria-label="Jump to bottom">${navigationIcon('down')} Bottom</button><button data-action="newest-date-page" aria-label="Newest date page" title="Newest date page" ${datePage===0&&!master?'disabled':''}>${navigationIcon('newest')}</button><button data-action="prev" aria-label="Newer dates" title="Newer dates">${navigationIcon('previous')}</button><button class="date-page-label" data-action="date-range" aria-label="Choose date page" title="${datePage===calendarPlan.pages.length?'Choose a dated page':`Page ${datePage+1} of ${calendarPlan.pages.length} — choose a date`}" ${calendarPlan.ranges.length?'':'disabled'}>${datePage===calendarPlan.pages.length?'Undated':`${displayExcelDate(calendarPlan.ranges[datePage].start)}–${displayExcelDate(calendarPlan.ranges[datePage].end)}`}</button><button data-action="next" aria-label="Older dates" title="Older dates">${navigationIcon('next')}</button>${calendarPlan.unassigned.length&&datePage!==calendarPlan.pages.length?`<button data-action="unassigned-date-rows" title="Records without assigned dates">Undated (${calendarPlan.unassigned.length})</button>`:''}`:`<button data-action="top" aria-label="Jump to top">${navigationIcon('up')} Top</button><button data-action="bottom">${navigationIcon('down')} Bottom</button><button data-action="prev" aria-label="Previous rows">${navigationIcon('previous')}</button><input id="row-jump" type="number" min="1" max="${s.rows.length}" aria-label="Jump to row"><span>/ ${s.rows.length}</span><button data-action="next" aria-label="Next rows">${navigationIcon('next')}</button>`}</div></div>
     </div></div><footer class="sheet-bar" aria-label="${referenceId?'Dropdown sources':'Workbook sheets'}">${referenceId?referenceTabsHtml():workbookTabsHtml()}<div class="tab-actions"><button type="button" data-action="${referenceId?'reference-settings':'sheet-settings'}" title="${referenceId?'Dropdown settings':'Sheet settings'}" aria-label="${referenceId?'Dropdown settings':'Sheet settings'}">${toolbarIcon('settings')}</button></div><button class="reference-manager" data-action="references" title="Dropdown sources" aria-label="DD">${toolbarIcon('references')}</button></footer>`;
-  if(mealPanel&&mealVisible){root.querySelector('.meal-log-slot')!.append(mealPanel.element);mealPanel.refresh();mealPanel.restoreScroll();}
+  if(mealPanel&&mealVisible){root.querySelector('.meal-log-slot')!.append(mealPanel.element);mealPanel.refresh();mealPanel.restoreScroll();if(!sameSheet&&mealPanel.tab==='table')mealPanel.tableLast();}
   const grid=root.querySelector<HTMLElement>('#grid-scroll')!,body=grid.querySelector('tbody')!;
   captureViewport=()=>{const at=layout.at(grid.scrollTop),row=rows[at];return row?{row:row.id,index:row.i,offset:grid.scrollTop-layout.offsets[at]}:undefined;};
   grid.dataset.firstRow=String(rows[0]?.i??0);grid.dataset.firstColumn=String(columns[0]?.i??0);
@@ -1791,11 +2359,16 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{
     const position=()=>{
       if(!popup.isConnected)return;
       if(external){
-        const rect=cell!.getBoundingClientRect(),viewport=visualViewport,top=viewport?.offsetTop??0,height=viewport?.height??innerHeight;
-        const keyboard=touchKeyboard?.boundingRect,footer=document.querySelector<HTMLElement>('.meal-log-panel .meal-log-footer');
-        const bottom=Math.min(top+height,keyboard&&keyboard.height>0?keyboard.top:Infinity,footer?.getBoundingClientRect().top??Infinity);
+        const rect=cell!.getBoundingClientRect(),viewport=visualViewport,viewportTop=viewport?.offsetTop??0,height=viewport?.height??innerHeight;
+        const surface=cell!.closest('.meal-log-panel'),scroller=cell!.closest('.meal-log-scroll,.capture-foods');
+        const top=Math.max(viewportTop,scroller?.getBoundingClientRect().top??viewportTop);
+        const keyboard=touchKeyboard?.boundingRect,footer=[...surface?.querySelectorAll<HTMLElement>('.meal-log-footer,.capture-footer')??[]].find(footer=>footer.checkVisibility());
+        const bottom=Math.min(viewportTop+height,keyboard&&keyboard.height>0?keyboard.top:Infinity,footer?.getBoundingClientRect().top??Infinity);
         popup.style.width=Math.min(450,innerWidth-20)+'px';popup.style.maxHeight=Math.max(0,Math.min(360,bottom-top-20))+'px';
-        popup.style.left=Math.max(10,Math.min(rect.left,innerWidth-popup.offsetWidth-10))+'px';popup.style.top=Math.max(top+10,Math.min(rect.bottom+4,bottom-popup.offsetHeight-10))+'px';return;
+        const above=Math.max(0,Math.min(rect.top-4,bottom-10)-top-10),below=Math.max(0,bottom-10-Math.max(rect.bottom+4,top+10));
+        const under=popup.offsetHeight<=below||below>=above;
+        popup.style.maxHeight=Math.min(360,under?below:above)+'px';
+        popup.style.left=Math.max(10,Math.min(rect.left,innerWidth-popup.offsetWidth-10))+'px';popup.style.top=Math.max(top+10,Math.min(under?rect.bottom+4:rect.top-popup.offsetHeight-4,bottom-popup.offsetHeight-10))+'px';return;
       }
       if(sharedInput){
         if(!touchTargetSelected()){close();return;}
@@ -1975,6 +2548,8 @@ function bindRowControls():void {
 }
 function bind(): void {
   root.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(el => el.onclick = () => { void action(el.dataset.action!); });
+  // Commit TABLE edits in the action before blur can redraw and detach its button.
+  root.querySelectorAll<HTMLButtonElement>('[data-action="nutrition-convert"]').forEach(button=>{button.onpointerdown=event=>{if(mealPanel?.tableMode&&!arrangingToolbar)event.preventDefault();};});
   tableSelectionControl=mountTableSelection(root.querySelector('.table-selection-control')!,{enabled:()=>tableSelectionMode,target:()=>tableSelectionTarget,choices:[{id:'',name:'Auto'},...allTables(book).filter(table=>table.sheet===sheetId&&(!gridReference()||table.id===gridReference()?.table?.id)).map(table=>({id:table.id,name:table.name}))],choose:id=>{
     tableSelectionTarget=id||undefined;tableSelectionMode=true;refreshTableSelectionControl();rememberView();
   }});
@@ -2295,7 +2870,7 @@ function commitDraft():boolean{
 function dialog(title:string,html:string,onMount?:(d:HTMLDialogElement)=>void): HTMLDialogElement {
   hideShortcutHint();
   groupManager?.close();
-  document.querySelector('dialog')?.remove();
+  const previous=document.querySelector('dialog');if(previous?.open)previous.close();previous?.remove();
   const d=document.createElement('dialog');d.className='dialog-surface';d.setAttribute('aria-label',title);d.innerHTML=`<div class="dialog-heading"><h1 class="dialog-title">${esc(title)}</h1><button type="button" class="close" aria-label="Close dialog">${toolbarIcon('close')}</button></div>${html}`;
   document.body.append(d);const close=d.querySelector<HTMLButtonElement>('.close')!;close.setAttribute('aria-keyshortcuts','Escape');close.onclick=()=>d.close();d.onclose=()=>{if(hintButton?.closest('dialog')===d)hideShortcutHint();d.remove();};d.showModal();onMount?.(d);return d;
 }
@@ -2479,6 +3054,9 @@ async function action(name:string):Promise<void> {
   if(referenceId&&!editableReference()&&!['back-workbook','reference-settings','references','new-reference','copy','save','file','find','hypothetical-settings','undo','redo','range','top','bottom','next','prev','dropdown-source','table-selection'].includes(name)){flash('This is a read-only live list. Edit its source table or change its connection.');return;}
   switch(name) {
     case 'meal-log':openMealLog();break;
+    case 'meal-draft':openMealLog('draft');break;
+    case 'ingredients-table':openMealLog('table');break;
+    case 'nutrition-convert':openNutritionConverter();break;
     case 'table-selection':
       tableSelectionMode=!tableSelectionMode;
       selectionScope=undefined;extendHeaderSelection=false;extraSelections=[];selectionKind='cells';anchor={...selected};movingRows=movingColumns=undefined;clearMovePreview();
@@ -3873,7 +4451,7 @@ async function importReferenceSources(file?:File):Promise<void>{
   finally{busy=false;renderStatus();openReferences(undefined,notice);}
 }
 function openFind():void {
-  dialog('Find and Replace',`<div class="find-tabs" role="tablist" aria-label="Search mode"><button id="text-tab" role="tab" aria-controls="find-controls">Text</button><button id="membership-tab" role="tab" aria-controls="membership-panel">Rows/Columns</button></div>
+  dialog('Find and Replace',`<div class="find-tabs panel-tabs" role="tablist" aria-label="Search mode"><button id="text-tab" role="tab" aria-controls="find-controls">Text</button><button id="membership-tab" role="tab" aria-controls="membership-panel">Rows/Columns</button></div>
     <div id="find-controls" class="find-controls" role="tabpanel"><label>Find<input id="find-text" type="search" autocomplete="off"></label><div id="replace-fields"></div>
     <details class="find-options" open><summary>Search options</summary><div class="find-selectors"><label>Within<select id="find-within"><option value="selected">Selected sheets</option><option value="workbook">Workbook</option></select></label><label>Direction<select id="find-direction"><option value="down">Down</option><option value="up">Up</option></select></label></div>
     <div class="find-flags"><label class="inline"><input id="find-case" type="checkbox">Match case</label><label class="inline"><input id="find-entire" type="checkbox">Match entire cell contents</label></div>
@@ -4138,9 +4716,14 @@ function download(name:string,data:string,type='application/json'):void {
 }
 async function exportBackup():Promise<void> {
   try {
-    await flush();const backup=await store.backup({...state,book:clone(book)});
+    await flush();const backup=await store.backup({...state,book:clone(book)},[...pendingPhotoBlobs.values()]);
     if(savedGeneration!==generation)backup.state.pending.push({id:uid(),label:'Unsaved edits included in emergency backup',time:new Date().toISOString()});
-    download(`fnt-${new Date().toISOString().slice(0,10)}.fnt.json`,stringifyArchive(backup));
+    const save=()=>download(`fnt-${new Date().toISOString().slice(0,10)}.fnt.json`,stringifyArchive(backup));
+    if(backup.missingPhotos?.length){
+      dialog('Backup missing photo originals',`<p>${backup.missingPhotos.length} referenced photos are unavailable on this device. This backup preserves their references but cannot contain their original bytes. Retrieve the originals from your private gallery or another complete backup before relying on this copy.</p><button type="button" data-incomplete-backup>Download incomplete backup</button>`,surface=>{
+        surface.querySelector<HTMLButtonElement>('[data-incomplete-backup]')!.onclick=()=>{save();surface.close();};
+      });
+    }else save();
   }catch(e){flash(e);}
 }
 function openFile():void {
@@ -4262,7 +4845,7 @@ function openFile():void {
     d.querySelector<HTMLButtonElement>('#backup')!.onclick=()=>{void exportBackup();};
     const originalButton=d.querySelector<HTMLButtonElement>('#original');if(originalButton)originalButton.onclick=async()=>{
       try{
-        const original=(await store.backup(state)).originals.find(o=>o.id===book.importReport!.originalId);if(!original)throw Error('Original package is missing. Restore a complete backup before relying on this copy.');
+        const original=(await store.originals()).find(o=>o.id===book.importReport!.originalId);if(!original)throw Error('Original package is missing. Restore a complete backup before relying on this copy.');
         const bytes=Uint8Array.from(atob(original.data),c=>c.charCodeAt(0)),url=URL.createObjectURL(new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'})),a=document.createElement('a');
         a.href=url;a.download=original.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
       }catch(e){flash(e);}
@@ -4273,7 +4856,7 @@ function openFile():void {
       try{
         await flush();if(savedGeneration!==generation)throw Error('Save failed. Restore cancelled.');
         const backup=input.id==='recover-xlsx'?await (await import('./xlsx')).recoverXlsxBackup(await file.arrayBuffer()):parseArchive(await file.text()) as Backup;
-        state=await store.restore(normalizedBackup(backup),state.version);token='';adoptSavedWorkbook();status='Restored locally - sync disconnected; full pre-restore archive in recovery';channel?.postMessage({version:state.version});render();d.close();
+        state=await store.restore(normalizedBackup(backup),state.version);token='';adoptSavedWorkbook();status='Restored locally - sync disconnected; full pre-restore archive in recovery'+(backup.missingPhotos?.length?`; restored archive excludes ${backup.missingPhotos.length} photo originals - check the photo gallery`: '');channel?.postMessage({version:state.version});render();d.close();
       }catch(e){status='Restore failed - previous workbook retained';flash(e);}
       finally{busy=false;renderStatus();}
     });
@@ -4339,7 +4922,7 @@ async function openHistory():Promise<void> {
         try{
           await flush();if(savedGeneration!==generation)throw Error('Save failed. Restore cancelled.');
           const checkpoint=history[Number(el.dataset.checkpoint)],backup=checkpoint.backup?parseArchive(checkpoint.backup) as Backup:await store.backup({...state,book:clone(checkpoint.book)});
-          state=await store.restore(normalizedBackup(backup),state.version);token='';adoptSavedWorkbook();status='Checkpoint restored locally - sync disconnected; full pre-restore archive in recovery';channel?.postMessage({version:state.version});render();d.close();
+          state=await store.restore(normalizedBackup(backup),state.version);token='';adoptSavedWorkbook();status='Checkpoint restored locally - sync disconnected; full pre-restore archive in recovery'+(backup.missingPhotos?.length?`; restored archive excludes ${backup.missingPhotos.length} photo originals - check the photo gallery`: '');channel?.postMessage({version:state.version});render();d.close();
         }catch(e){status='Checkpoint restore failed - previous workbook retained';flash(e);}
         finally{busy=false;renderStatus();}
       });
@@ -4348,7 +4931,7 @@ async function openHistory():Promise<void> {
 }
 function openSync(options?:{readOnly:boolean;complete:(connected:boolean)=>void}):void {
   const cfg=githubFormDefaults(state.sync),pathNote=state.sync&&cfg.path!==state.sync.path?`<p class="muted" id="sync-path-note">Saved destination: ${esc(state.sync.path)}. The renamed default is ${esc(cfg.path)}. Connecting updates this device's destination; it does not rename or delete files on GitHub.</p>`:'';
-  dialog('Optional private GitHub sync',`<p>Opt-in only. This uploads workbook data to the private repository you choose. Never use your website source or a public repository. Existing remote files are not overwritten on conflict.</p><form id="sync-form"><label>Personal repository owner<input id="sync-owner" value="${esc(cfg?.owner)}" required autocomplete="off"></label><label>Private data repository<input id="sync-repo" value="${esc(cfg?.repo)}" required></label><label>Existing branch<input id="sync-branch" value="${esc(cfg?.branch??'main')}" required></label><label>JSON path<input id="sync-path" value="${esc(cfg.path)}" required></label>${pathNote}<label>Fine-grained token: Contents read/write, only this data repository<input id="sync-token" type="password" autocomplete="off" required></label><label class="inline"><input id="sync-remember" type="checkbox" ${rememberPrivateSync?'checked':''}>Remember on this trusted device</label><p class="muted">Unchecked: token stays in this tab's memory; sign in again after reloading. Checked: token is stored in this browser's IndexedDB, separately from workbook data, never in backups or Git. Anyone with access to this browser or malicious app code could read it. Use only a fine-grained token restricted to this data repository. Disconnect forgets it on this device.</p><p class="muted">Saved edits batch after a 15-second pause. Clean authenticated tabs check no more often than every 60 seconds; startup/resume/reconnection may also check. Ordinary sync does not block editing or refresh the grid. Conflicts pause uploads and require submitted comparison decisions. Save syncs immediately unless review is unresolved. GitHub must already contain the branch. Large files may exceed the Contents API limit.</p><button class="primary">Connect & sync now</button><button id="disconnect" type="button">Disconnect</button></form>`,d=>{
+  dialog('Optional private GitHub sync',`<p>Opt-in only. This uploads workbook data to the private repository you choose. Never use your website source or a public repository. Existing remote files are not overwritten on conflict.</p><form id="sync-form"><label>Personal repository owner<input id="sync-owner" value="${esc(cfg?.owner)}" required autocomplete="off"></label><label>Private data repository<input id="sync-repo" value="${esc(cfg?.repo)}" required></label><label>Existing branch<input id="sync-branch" value="${esc(cfg?.branch??'main')}" required></label><label>JSON path<input id="sync-path" value="${esc(cfg.path)}" required></label>${pathNote}<label>Fine-grained token: Contents read/write, only this data repository<input id="sync-token" type="password" autocomplete="off" required></label><label class="inline"><input id="sync-remember" type="checkbox" ${rememberPrivateSync?'checked':''}>Remember on this trusted device</label><p class="muted">Unchecked: token stays in this tab's memory; sign in again after reloading. Checked: token is stored in this browser's IndexedDB, separately from workbook data, never in backups or Git. Anyone with access to this browser or malicious app code could read it. Use only a fine-grained token restricted to this data repository. Disconnect forgets it on this device.</p><p class="muted">Saved edits batch after about two seconds. Clean visible authenticated tabs check remote revisions about every ten seconds; startup/resume/reconnection may also check. Compatible changes merge automatically by stable identity, including offline edits after reconnect. Incoming updates wait for the current editor or dialog to close and require local edits and photos to be saved first. Manual nutrition is preserved for review when incoming source values change. Toolbar layout and navigation preferences stay local to each device. Incompatible changes preserve both copies and pause uploads for submitted comparison decisions. Save syncs immediately unless review is unresolved. GitHub must already contain the branch. Large files may exceed the Contents API limit.</p><button class="primary">Connect & sync now</button><button id="disconnect" type="button">Disconnect</button></form>`,d=>{
     let connected=false,connecting=false;
     const actions=document.createElement('div');actions.className='button-row';
     const connect=d.querySelector<HTMLButtonElement>('.primary')!;
@@ -4432,8 +5015,12 @@ function deleteSelection(structural:boolean):void {
   });
 }
 document.addEventListener('keydown',e=>{
-  if(e.isComposing||e.keyCode===229||e.altKey||!(e.ctrlKey||e.metaKey)||e.key.toLowerCase()!=='f')return;
+  if(e.isComposing||e.keyCode===229||e.altKey||!(e.ctrlKey||e.metaKey)||!['f','s'].includes(e.key.toLowerCase()))return;
   e.preventDefault();e.stopPropagation();
+  if(e.key.toLowerCase()==='s'){
+    if(book&&!comparisonActive&&!document.querySelector('dialog[open]:not(.color-picker)'))void manualSave();
+    return;
+  }
   const existing=document.querySelector<HTMLInputElement>('.find-dialog[open] #find-text');
   if(existing){document.querySelector<HTMLButtonElement>('.find-dialog[open] #text-tab')!.click();existing.focus();existing.select();return;}
   if(!book)return;
@@ -4447,7 +5034,6 @@ document.addEventListener('keydown',e=>{
   if(busy)return;
   const target=e.target as HTMLElement,editing=['INPUT','TEXTAREA','SELECT'].includes(target.tagName)||target.isContentEditable;
   if(target.closest('.sheet-tab,.tab-context-menu'))return;
-  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();void manualSave();return;}
   if(editing)return;
   if(e.altKey&&e.key==='ArrowDown'){e.preventDefault();openCellDropdown();return;}
   const mod=e.ctrlKey||e.metaKey;
@@ -4527,6 +5113,7 @@ window.addEventListener('resize',()=>drawRowWindow?.());
 window.addEventListener('online',()=>{if(state?.sync){status=token?'Online — private sync pending':'Online — saved locally; sign in to resume private sync';renderStatus();schedulePrivateSync(0);}});
 window.addEventListener('offline',()=>{clearTimeout(privateSyncTimer);status='Offline - local autosave remains available';renderStatus();});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')schedulePrivateSync(0);});
+window.addEventListener('focus',()=>schedulePrivateSync(0));
 window.addEventListener('pageshow',()=>schedulePrivateSync(0));
 channel?.addEventListener('message',e=>{if(state&&e.data.version>state.version){error='Another tab saved newer changes. Download a backup of this tab before reloading; further saves are blocked by revision checks.';renderStatus();}});
 async function start():Promise<void> {

@@ -2,6 +2,8 @@ import {masterDayBlocks,masterLogging} from './day-logging';
 import {compile,Engine,scalar,type Ast} from './formula';
 import {addRow,allSheets,allTables,getCell,isFault,key,moveRows,setInput,uid,type Sheet,type Table,type Workbook} from './model';
 import {validationChoiceGroups} from './references';
+import {captureData,ingredientKey} from './food-capture';
+import {ingredientConsumptionCalculations} from './ingredient-calculation';
 
 export const mealFields=['food','calories','protein','fat','carbs','sugar','sodium','weight','amount','unit','notes'] as const;
 export type MealField=typeof mealFields[number];
@@ -23,7 +25,7 @@ export function validateMealLog(config:MealLogConfig):void{
   const valid=(target:MealLogConfig|NonNullable<MealLogConfig['ingredients']>)=>target&&id(target.table)&&target.fields&&typeof target.fields==='object'&&!Array.isArray(target.fields)&&Object.entries(target.fields).every(([field,value])=>mealFields.includes(field as MealField)&&id(value));
   if(!valid(config)||config.ingredients!==undefined&&!valid(config.ingredients)||config.meals!==undefined&&!id(config.meals))throw Error('Invalid Meal log field identities.');
 }
-function mapFields(table:Table,ingredients=false):Partial<Record<MealField,string>>{
+export function mapMealFields(table:Table,ingredients=false):Partial<Record<MealField,string>>{
   const result:Partial<Record<MealField,string>>={};
   for(const field of mealFields){
     const aliases=ingredients?ingredientNames[field]??names[field]:names[field];
@@ -38,11 +40,11 @@ export function mealLogConfig(book:Workbook,sheet:Sheet):MealLogConfig{
     validateMealLog(sheet.mealLog);
     const saved=sheet.mealLog,table=allTables(book).find(table=>table.id===saved.table);
     const ingredients=allTables(book).find(table=>saved.ingredients?table.id===saved.ingredients.table:table.name.toLowerCase()==='ingredients');
-    const target=saved.ingredients??(ingredients?{table:ingredients.id,fields:mapFields(ingredients,true)}:undefined);
-    return{...saved,...(meals?{meals}:{}),fields:{...(table?mapFields(table):{}),...saved.fields},...(target?{ingredients:{...target,fields:{...(ingredients?mapFields(ingredients,true):{}),...target.fields}}}:{})};
+    const target=saved.ingredients??(ingredients?{table:ingredients.id,fields:mapMealFields(ingredients,true)}:undefined);
+    return{...saved,...(meals?{meals}:{}),fields:{...(table?mapMealFields(table):{}),...saved.fields},...(target?{ingredients:{...target,fields:{...(ingredients?mapMealFields(ingredients,true):{}),...target.fields}}}:{})};
   }
   const {table,food}=masterLogging(book,sheet),ingredients=allTables(book).find(table=>table.name.toLowerCase()==='ingredients');
-  return{table:table.id,...(meals?{meals}:{}),fields:{...mapFields(table),...(food?{food:food.id}:{})},...(ingredients?{ingredients:{table:ingredients.id,fields:mapFields(ingredients,true)}}:{})};
+  return{table:table.id,...(meals?{meals}:{}),fields:{...mapMealFields(table),...(food?{food:food.id}:{})},...(ingredients?{ingredients:{table:ingredients.id,fields:mapMealFields(ingredients,true)}}:{})};
 }
 export function mealNeedsNutrition(book:Workbook,sheet:Sheet,row:string,engine=new Engine(book)):boolean{
   const config=mealLogConfig(book,sheet),table=allTables(book).find(table=>table.id===config.table);
@@ -55,10 +57,10 @@ export function mealNeedsNutrition(book:Workbook,sheet:Sheet,row:string,engine=n
   const source=ingredients?allSheets(book).find(sheet=>sheet.id===ingredients.sheet):sheet;
   const fields=ingredients?target!.fields:config.fields,sourceTable=ingredients??table,sourceRow=ingredients?binding!.row:row;
   if(binding&&target&&binding.table===target.table&&(!ingredients||!source||!ingredients.rows.includes(sourceRow)))return true;
-  return (['calories','protein','fat','carbs'] as const).some(field=>{
+  return (['calories','protein','fat','carbs','sugar','sodium'] as const).some(field=>{
     const column=sourceTable.columns.find(column=>column.id===fields[field]);
     const value=column&&source?scalar(engine.cell(source.id,sourceRow,column.column)):null;
-    return value===null||isFault(value)||typeof value==='string'&&!value.trim();
+    return typeof value==='number'?!Number.isFinite(value):typeof value!=='string'||!value.trim()||!Number.isFinite(Number(value));
   });
 }
 export function markMealNeedsNutrition(book:Workbook,sheet:Sheet,row:string):void{
@@ -105,6 +107,8 @@ export function addMealIngredient(book:Workbook,sheet:Sheet,row:string):{table:s
   if(!context.blocks.some(block=>block.rows.slice(1).includes(row)))throw Error('This food no longer belongs to a day.');
   const target=config.ingredients,table=allTables(book).find(table=>table.id===target?.table),destination=allSheets(book).find(sheet=>sheet.id===table?.sheet);
   if(!target||!table||!destination)throw Error('Restore the Ingredients table before adding an ingredient.');
+  const linked=context.fields.get('food'),binding=linked?getCell(sheet,row,linked.column).binding:undefined;
+  if(binding?.table===table.id&&table.rows.includes(binding.row))throw Error('An Ingredient link already exists. Choose another Ingredient from the Food dropdown instead.');
   const engine=new Engine(book),values=new Map<MealField,string>();
   for(const [field,column]of context.fields){
     const value=scalar(engine.cell(sheet.id,row,column.column));
@@ -126,8 +130,24 @@ export function addMealIngredient(book:Workbook,sheet:Sheet,row:string):{table:s
     const value=field==='food'?name:field==='amount'&&!amount&&!unit?weight:field==='unit'&&!amount&&!unit?(weight?'g':''):values.get(field)??'';
     setInput(book,destination,next.id,column.column,field==='food'||field==='unit'?"'"+value:value);
   }
+  const data=captureData(book),mapping=data.ingredientMappings.find(mapping=>mapping.table===table.id);
+  const type=table.columns.find(column=>mapping?.fields.type?column.id===mapping.fields.type:column.name.toLowerCase()==='type');
+  if(type)setInput(book,destination,next.id,type.column,"'Premade");
+  if(!mapping)data.ingredientMappings.push({table:table.id,fields:{...target.fields,...(type?{type:type.id}:{})}});
+  else if(type&&!mapping.fields.type)mapping.fields.type=type.id;
+  data.ingredientDetails[ingredientKey({table:table.id,row:next.id})]={notes:values.get('notes')??'',photos:[]};
   const food=context.fields.get('food')!,previous=getCell(sheet,row,food.column);
   sheet.cells[key(row,food.column)]={...previous,value:undefined,formula:undefined,foodDraft:undefined,binding:{table:table.id,row:next.id,column:label.id}};
+  const calculations=ingredientConsumptionCalculations(
+    {sheet:sheet.id,row,fields:new Map([...context.fields].map(([field,column])=>[field,column.column]))},
+    {sheet:destination.id,row:next.id,fields:new Map([...columns].map(([field,column])=>[field,column.column]))},
+  );
+  for(const [field,formula]of calculations.nutrition){
+    const column=context.fields.get(field);if(!column)continue;
+    const cell=getCell(sheet,row,column.column);
+    if(!cell.formula&&!cell.binding&&(cell.value===null||cell.value===undefined||cell.value===''))
+      sheet.cells[key(row,column.column)]={...cell,value:undefined,formula:cell.calculation??formula};
+  }
   markMealNeedsNutrition(book,sheet,row);
   const validation=sheet.validations.find(source=>source.rows.includes(row)&&source.columns.includes(food.column));
   if(!validation||!validationChoiceGroups(book,validation,row,food.column,new Engine(book)).some(group=>group.target?.table===table.id&&group.target.column===label.id)){

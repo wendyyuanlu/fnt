@@ -285,11 +285,15 @@ for(const stale of [false,true])test(stale?'explicit GitHub submission rejects a
   });
   await page.reload();await expect(page.locator('#save-state')).toContainText(/Saved|Synced/);
   const right=clone((await saved(page)).book);right.title='Chosen remote title';
+  const sheet=right.sheets[0],address=key(sheet.rows[1].id,sheet.columns[0].id),previousNote=sheet.cells[address]?.note;
+  sheet.cells[address]={...sheet.cells[address],note:'Unselected remote note'};
   remote=encode64(JSON.stringify({format:'fnt-sync-v1',book:right,operations:[]}));sha='donor-sha';
   const comparison=await open(page);
   await comparison.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();
   await comparison.getByRole('option',{name:'Latest saved workbook',exact:true}).click();
-  await expect(comparison.locator('#selection-progress')).toContainText('0 of 1 chosen');
+  await expect(comparison.locator('#selection-progress')).toContainText('0 of 2 chosen');
+  await comparison.getByRole('button',{name:'Settings 1',exact:true}).click();
+  await comparison.locator('[data-category="structure"]').click();
   await comparison.locator('#keep-right button').click();await comparison.locator('#submit-decision').click();
   await expect(comparison.locator('#apply-sync')).not.toBeChecked();
   expect(uploads).toBe(0);await comparison.locator('#apply-sync').check();
@@ -301,7 +305,8 @@ for(const stale of [false,true])test(stale?'explicit GitHub submission rejects a
   }else{
     await expect(page.locator('.comparison-view')).toHaveCount(0);expect(uploads).toBe(1);
     const envelope=JSON.parse(Buffer.from(uploaded,'base64').toString('utf8'));
-    expect((decompressArchive(envelope.payload) as {book:Workbook}).book.title).toBe('Chosen remote title');
+    const sent=(decompressArchive(envelope.payload) as {book:Workbook}).book;
+    expect(sent.title).toBe('Chosen remote title');expect(sent.sheets[0].cells[address]?.note).toBe(previousNote);
     const result=await saved(page);expect(result.book.title).toBe('Chosen remote title');expect(result.remoteSha).toBe('saved-sha');expect(result.syncPaused).toBe(false);
     await page.locator('[data-action="undo"]').click();
     await expect.poll(async()=>(await saved(page)).book.title).toBe(before.book.title);
