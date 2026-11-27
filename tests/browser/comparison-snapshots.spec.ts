@@ -92,7 +92,7 @@ for(const failSecond of [false,true])test(`upload management confirms bulk delet
   const date=(await option.locator('.snapshot-date').boundingBox())!,device=(await option.locator('.snapshot-device').boundingBox())!;
   expect(device.x).toBeGreaterThan(date.x);
   await option.click();
-  await expect(comparison.locator('#left-local')).toBeDisabled();releaseRead();
+  await expect(comparison.locator('#left-local')).toBeDisabled();await expect(comparison.locator('#right-local')).toBeDisabled();releaseRead();
   await expect(comparison.locator('#left-kind')).toHaveText('Phone upload');
   await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
   await comparison.locator('#left-local').click();

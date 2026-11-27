@@ -666,13 +666,16 @@ async function selectComparisonSource(side:'left'|'right',read:()=>Promise<Compa
   }catch(error){showError(error);}
   finally{if(totals.textContent===reading)totals.textContent=previousTotals;setSourcesBusy(false);}
 }
-const localButton=el<HTMLButtonElement>('left-local');
-localButton.innerHTML=toolbarIcon('computer');
-if(!host)localButton.remove();
-else localButton.onclick=()=>{
-  if(sourcesBusy||sourceCopies.left?.book===host.local.book)return;
-  void selectComparisonSource('left',async()=>host.local,'Reading this device’s local changes...');
-};
+const localButtons=(['left','right'] as const).map(side=>{
+  const button=el<HTMLButtonElement>(side+'-local');
+  button.innerHTML=toolbarIcon('computer');
+  if(!host)button.remove();
+  else button.onclick=()=>{
+    if(sourcesBusy||sourceCopies[side]?.book===host.local.book)return;
+    void selectComparisonSource(side,async()=>host.local,'Reading this device’s local changes...');
+  };
+  return button;
+});
 for(const side of ['left','right'] as const){
   const trigger=el<HTMLButtonElement>(side+'-commits');
   mountCommitPicker(trigger,{
@@ -699,7 +702,7 @@ for(const side of ['left','right'] as const){
 }
 function setSourcesBusy(busy:boolean){
   sourcesBusy=busy;
-  localButton.disabled=busy||!host||!left;
+  localButtons.forEach(button=>button.disabled=busy||!host||!left);
   const unavailable=busy||!left||(!host&&!right);
   for(const side of ['left','right']){
     el<HTMLButtonElement>(side+'-github').disabled=false;

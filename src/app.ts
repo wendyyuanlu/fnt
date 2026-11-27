@@ -1089,7 +1089,7 @@ function openComparison(conflict?:SyncConflict):void{
       save:review=>{
         if(reviewClosed)return Promise.resolve();
         // Only the captured device source can rebase a saved review.
-        if(review.left.book===local.book)reviewRevision=captured.book.revision;
+        if(review.left.book===local.book||review.right?.book===local.book)reviewRevision=captured.book.revision;
         const target=config&&remoteHead?{config:clone(config),...remoteHead}:undefined;
         const snapshot={...review,baseRevision:reviewRevision,sync:target};
         const write=reviewWrites.then(async()=>{

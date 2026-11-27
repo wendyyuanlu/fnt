@@ -92,5 +92,6 @@ test('standalone published comparison never loads private prototype files',async
   await page.goto('http://127.0.0.1:4184/comparison.html');
   await expect(page.locator('#error')).toContainText('Open Compare versions from Recovery');
   await expect(page.locator('#left-local')).toHaveCount(0);
+  await expect(page.locator('#right-local')).toHaveCount(0);
   expect(privateFiles).toEqual([]);
 });

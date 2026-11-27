@@ -1017,9 +1017,11 @@ Dialog action footers reuse the shared `.button-row` spacing and button styles;
 never place adjacent unwrapped actions or add independent footer styles.
 The top-level Sync text button and underlined connection notice open the same
 read-only private-sync dialog.
-The left source's computer icon returns to this device's local workbook,
-including pending local edits, without refreshing or reading GitHub. It preserves
-the right source and resets choices only when replacing the left source.
+Each source's computer icon selects this device's local workbook, including
+pending local edits, without refreshing or reading GitHub. It preserves the
+opposite source and resets choices only when replacing the selected source.
+Computer and attachment controls share their button and glyph sizing. On narrower
+screens, source-picker chevrons disappear before the source cards stack.
 Refreshing a tab reopens its comparison and restores locally saved sources,
 choices, choice Undo, filters and display preferences. Reviews are stored only in
 IndexedDB, separately from workbook data and sync, and are isolated per tab.

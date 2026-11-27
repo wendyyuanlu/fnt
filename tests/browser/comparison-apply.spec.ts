@@ -30,8 +30,9 @@ test('computer action restores local edits offline without replacing the right c
   left.title='Invented historical JSON';right.title='Invented right JSON';
   const comparison=await open(page),computer=comparison.getByRole('button',{name:"Use this device's local changes",exact:true});
   await expect(computer).toHaveCount(1);await expect(computer).toHaveClass('icon-button');
-  const size=(await computer.boundingBox())!;expect(size.width).toBe(32);expect(size.height).toBe(32);
-  await expect(computer.locator('svg')).toHaveClass('toolbar-icon');await expect(computer.locator('svg')).toHaveCSS('width','18px');
+  const size=(await computer.boundingBox())!,attachment=(await comparison.locator('#left-file').locator('..').boundingBox())!;
+  expect(size.width).toBe(attachment.width);expect(size.height).toBe(attachment.height);
+  await expect(computer.locator('svg')).toHaveClass('toolbar-icon');await expect(computer.locator('svg')).toHaveCSS('width','14px');
   await expect(computer.locator('svg')).toHaveAttribute('viewBox','0 0 24 24');
   await comparison.locator('#left-file').setInputFiles({name:'invented-left.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(left))});
   await expect(comparison.locator('#left-source')).toHaveText('invented-left.json');
@@ -76,7 +77,57 @@ test('computer action refuses an unrelated right workbook without losing sources
   expect((await saved(page)).book).toEqual(before.book);
 });
 
-test('computer action rebases a restored stale review only after discarding its old decisions',async({page})=>{
+test('right computer action preserves the left copy and repeated selections preserve decisions',async({page})=>{
+  let requests=0;await page.route('https://api.github.com/**',async route=>{requests++;await route.abort();});
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  const before=await saved(page),left=clone(before.book),right=clone(before.book);
+  left.title='Invented left history';right.title='Invented right history';
+  const comparison=await open(page),computer=comparison.locator('#right-local');
+  await computer.click();await expect(comparison.locator('#right-source')).toHaveText('Current local workbook');
+  await expect(comparison.locator('#selection-progress')).toContainText('0 of 0 chosen');
+  for(const [side,book]of [['left',left],['right',right]] as const)await comparison.locator(`#${side}-file`).setInputFiles({name:`invented-${side}.json`,mimeType:'application/json',buffer:Buffer.from(JSON.stringify(book))});
+  await expect(comparison.locator('#right-source')).toHaveText('invented-right.json');
+  await comparison.locator('#keep-left button').click();await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
+  await computer.click();await expect(comparison.locator('#right-source')).toHaveText('Current local workbook');
+  await expect(comparison.locator('#left-source')).toHaveText('invented-left.json');
+  await expect(comparison.locator('#detail-right')).toContainText(before.book.title);
+  await expect(comparison.locator('#selection-progress')).toContainText('0 of 1 chosen');
+  await expect(comparison.locator('#undo-choice')).toBeDisabled();
+  await comparison.locator('#keep-right button').click();await computer.click();
+  await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
+  expect((await saved(page)).book).toEqual(before.book);expect((await saved(page)).pending).toEqual(before.pending);expect(requests).toBe(0);
+  await page.reload();
+  await expect(comparison.locator('#right-source')).toHaveText('Current local workbook');
+  await expect(comparison.locator('#left-source')).toHaveText('invented-left.json');
+  await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
+});
+
+test('source icon sizes match attachments and chevrons disappear before source cards stack',async({page,isMobile})=>{
+  test.skip(isMobile,'Desktop context exercises the responsive viewport boundaries.');
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  const comparison=await open(page);
+  for(const width of [1200,1100,721,720,650,390,320]){
+    await page.setViewportSize({width,height:900});
+    for(const side of ['left','right']){
+      const computer=comparison.locator(`#${side}-local`),attachment=comparison.locator(`#${side}-file`).locator('..');
+      const buttonSize=(await computer.boundingBox())!,fileSize=(await attachment.boundingBox())!;
+      expect(buttonSize.width).toBe(fileSize.width);expect(buttonSize.height).toBe(fileSize.height);
+      expect(buttonSize.width).toBeCloseTo(width<=720?30:27.2,1);
+      for(const control of [computer,attachment]){
+        await expect(control.locator('svg')).toHaveCSS('width','14px');await expect(control.locator('svg')).toHaveCSS('height','14px');
+      }
+      for(const id of ['commits','github']){
+        const chevron=comparison.locator(`#${side}-${id}>svg`);
+        if(width<=1150)await expect(chevron).toBeHidden();else await expect(chevron).toBeVisible();
+      }
+    }
+    const cards=await comparison.locator('.source').evaluateAll(elements=>elements.map(element=>({top:element.getBoundingClientRect().top,left:element.getBoundingClientRect().left})));
+    if(width>650)expect(cards[1].left).toBeGreaterThan(cards[0].left);else expect(cards[1].top).toBeGreaterThan(cards[0].top);
+    expect(await comparison.locator('.source-actions').evaluateAll(elements=>elements.some(element=>[...element.children].some(child=>child.getBoundingClientRect().right>element.closest('.source')!.getBoundingClientRect().right)))).toBe(false);
+  }
+});
+
+for(const localSide of ['left','right'] as const)test(`${localSide} computer action rebases a restored stale review only after discarding its old decisions`,async({page})=>{
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
   const before=await saved(page),right=clone(before.book);right.title='Invented chosen donor';
   const comparison=await open(page);
@@ -97,15 +148,15 @@ test('computer action rebases a restored stale review only after discarding its 
   await expect(comparison.locator('#apply-error')).toContainText('changed since this comparison was saved');
   expect((await saved(page)).book.title).toBe('Invented newer local workbook');
   await comparison.locator('#submit-back').click();
-  await comparison.locator('#left-local').click();
-  await expect(comparison.locator('#detail-left')).toContainText('Invented newer local workbook');
-  await expect(comparison.locator('#right-source')).toHaveText('invented-right.json');
+  await comparison.locator(`#${localSide}-local`).click();
+  await expect(comparison.locator(`#detail-${localSide}`)).toContainText('Invented newer local workbook');
+  await expect(comparison.locator(`#${localSide==='left'?'right':'left'}-source`)).toHaveText(localSide==='left'?'invented-right.json':'Current local workbook');
   await expect(comparison.locator('#selection-progress')).toContainText('0 of 1 chosen');
   await expect(comparison.locator('#undo-choice')).toBeDisabled();
   await page.reload();await expect(comparison.locator('#selection-progress')).toContainText('0 of 1 chosen');
   await comparison.locator('#keep-right button').click();await comparison.locator('#submit-decision').click();await comparison.locator('#apply-selection').click();
   await expect(page.locator('.comparison-view')).toHaveCount(0);
-  expect((await saved(page)).book.title).toBe(right.title);
+  expect((await saved(page)).book.title).toBe(localSide==='left'?right.title:'Invented newer local workbook');
 });
 test('submission rejects newer edits in another tab without losing decisions',async({page,context,isMobile})=>{
   await page.goto('/',{waitUntil:'domcontentloaded'});await expect(page.locator('#save-state')).toContainText('Saved');
