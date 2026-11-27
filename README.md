@@ -1017,13 +1017,17 @@ Dialog action footers reuse the shared `.button-row` spacing and button styles;
 never place adjacent unwrapped actions or add independent footer styles.
 The top-level Sync text button and underlined connection notice open the same
 read-only private-sync dialog.
+The left source's computer icon returns to this device's local workbook,
+including pending local edits, without refreshing or reading GitHub. It preserves
+the right source and resets choices only when replacing the left source.
 Refreshing a tab reopens its comparison and restores locally saved sources,
 choices, choice Undo, filters and display preferences. Reviews are stored only in
 IndexedDB, separately from workbook data and sync, and are isolated per tab.
 Back to workbook or a successful submission clears that tab's review. Reloading
 never submits choices, reconnects, or fetches a replacement source automatically;
 if workbook content changed while a review was closed by refresh, applying its
-older choices is blocked until a new comparison is opened.
+older choices is blocked until a new comparison is opened or the computer icon
+explicitly selects the current local copy and resets the stale choices.
 Selecting a commit loads only that comparison side; it never restores,
 uploads, or syncs until a decision is explicitly submitted. Recognized historical
 JSON filenames remain readable across the default private-data filename rename;

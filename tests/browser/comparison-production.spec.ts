@@ -1,5 +1,6 @@
 import {expect,test} from '@playwright/test';
 import {createDemo,key} from '../../src/model';
+import type {ComparisonFrame} from '../../src/comparison-host';
 
 test('published Recovery confirms real replacement, preserves review navigation and works offline',async({page,context})=>{
   const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
@@ -66,6 +67,20 @@ test('published Recovery confirms real replacement, preserves review navigation 
     await page.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
     await expect(comparison.getByRole('heading',{name:'Compare versions',exact:true})).toBeVisible();
     await expect(comparison.locator('#totals')).toContainText('Choose a right copy');
+    const offlineRight=await page.locator('iframe.comparison-frame').evaluate(frame=>{
+      const host=(frame as ComparisonFrame).comparisonHost;
+      if(!host)throw Error('The synthetic production comparison host is missing.');
+      return structuredClone(host.local.book);
+    });
+    const offlineSheet=offlineRight.sheets[0],offlineCell=key(offlineSheet.rows[1].id,offlineSheet.columns[0].id);
+    offlineSheet.cells[offlineCell]={...offlineSheet.cells[offlineCell],value:'Invented older offline value'};
+    await comparison.locator('#left-file').setInputFiles({name:'invented-left.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(left))});
+    await expect(comparison.locator('#left-source')).toHaveText('invented-left.json');
+    await comparison.getByRole('button',{name:"Use this device's local changes",exact:true}).click();
+    await expect(comparison.locator('#left-source')).toHaveText('Current local workbook');
+    await comparison.locator('#right-file').setInputFiles({name:'invented-right.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(offlineRight))});
+    await expect(comparison.locator('#left-grid')).toContainText('Invented deployed comparison');
+    await expect(comparison.locator('#selection-progress')).toContainText('0 of 1 chosen');
     await comparison.getByRole('button',{name:'Back to workbook',exact:true}).click();
   }finally{await context.setOffline(false);}
   expect(githubRequests).toBe(0);
@@ -76,5 +91,6 @@ test('standalone published comparison never loads private prototype files',async
   page.on('request',request=>{if(/\/(?:left|right|source-meta)\.json(?:\?|$)/.test(request.url()))privateFiles.push(request.url());});
   await page.goto('http://127.0.0.1:4184/comparison.html');
   await expect(page.locator('#error')).toContainText('Open Compare versions from Recovery');
+  await expect(page.locator('#left-local')).toHaveCount(0);
   expect(privateFiles).toEqual([]);
 });

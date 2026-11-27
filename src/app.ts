@@ -1063,6 +1063,7 @@ function openComparison(conflict?:SyncConflict):void{
   const source=(copy:Workbook,kind:string,label:string,revision?:string):ComparisonSource=>({
     book:clone(copy),kind,label,revision,freshness:`Comparison copy captured: ${new Date().toLocaleString()}.`,
   });
+  const local=source(captured.book,'This device','Current local workbook');
   const view=document.createElement('section');view.className='comparison-view';view.setAttribute('aria-label','Compare versions');
   const wasInert=root.inert;comparisonActive=true;root.inert=true;
   clearTimeout(privateSyncTimer);
@@ -1073,7 +1074,7 @@ function openComparison(conflict?:SyncConflict):void{
   let files:ComparisonSnapshot[]=[];
   const commits=new Map<string,ComparisonCommit>();
   const dispose=mountWorkbookComparison(view,{
-    local:source(captured.book,'This device','Current local workbook'),
+    local,
     remote:conflict?source(conflict.remote,'GitHub','Preserved sync-conflict copy',conflict.sha):undefined,
     review:{
       load:async()=>{
@@ -1087,6 +1088,8 @@ function openComparison(conflict?:SyncConflict):void{
       },
       save:review=>{
         if(reviewClosed)return Promise.resolve();
+        // Only the captured device source can rebase a saved review.
+        if(review.left.book===local.book)reviewRevision=captured.book.revision;
         const target=config&&remoteHead?{config:clone(config),...remoteHead}:undefined;
         const snapshot={...review,baseRevision:reviewRevision,sync:target};
         const write=reviewWrites.then(async()=>{
@@ -1143,7 +1146,7 @@ function openComparison(conflict?:SyncConflict):void{
       await pause;await privateSyncFlight;
       if(applied||busy)throw Error('This comparison has already been applied or another operation is running.');
       if(capturedGeneration!==generation||JSON.stringify(book)!==JSON.stringify(captured.book))throw Error('The local workbook changed after comparison opened. Close and compare again; your newer edits were not replaced.');
-      if(reviewRevision!==captured.book.revision)throw Error('The local workbook changed since this comparison was saved. Your choices were retained, but close and compare again before applying them.');
+      if(reviewRevision!==captured.book.revision)throw Error('The local workbook changed since this comparison was saved. Your choices were retained. Use the computer icon to compare the current local copy, or close and compare again before applying.');
       request.progress?.('Checking selected changes and formula dependencies...',0,6);
       const merged=await mergeComparison(request.left,request.right,request.choices);
       if(request.sync&&(!config||!credential||!remoteHead))throw Error('Read the current GitHub copy before applying and syncing.');

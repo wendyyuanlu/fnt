@@ -92,6 +92,11 @@ test('historical comparison sources stay read-only until submission and use the 
     await frame.locator(`[data-commit="${sha}"]`).click();await expect(frame.locator(`#${side}-kind`)).toHaveText('GitHub commit');
     await expect(frame.locator(`#${side}-source`)).toContainText(sha.slice(0,8));
   }
+  const readsBeforeLocal=remoteReads;
+  await frame.locator('#left-local').click();await expect(frame.locator('#left-source')).toHaveText('Current local workbook');
+  await expect(frame.locator('#right-source')).toContainText(b.slice(0,8));expect(remoteReads).toBe(readsBeforeLocal);expect(writes).toBe(0);
+  await frame.getByRole('combobox',{name:'Commits for left comparison',exact:true}).click();
+  await frame.locator(`[data-commit="${a}"]`).click();await expect(frame.locator('#left-kind')).toHaveText('GitHub commit');
   const settingsScope=await frame.locator('.scope-button[aria-current="true"]').getAttribute('data-scope');
   await frame.locator('#navigation>div').filter({has:frame.locator('.sheet-heading',{hasText:'Notebook'})}).getByRole('button').click();
   await expect(frame.locator('#region-picker-trigger')).toBeVisible();
@@ -106,7 +111,7 @@ test('historical comparison sources stay read-only until submission and use the 
   expect(widths.longer).toBeGreaterThan(widths.before);expect(widths.after).toBe(widths.before);
   await frame.locator(`.scope-button[data-scope="${settingsScope}"]`).click();
   await frame.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();await frame.locator(`[data-commit="${c}"]`).click();
-  expect(historyReads).toBe(4);
+  expect(historyReads).toBe(5);
   await expect(frame.locator('#error')).toContainText('different workbook');await expect(frame.locator('#right-source')).toContainText(b.slice(0,8));
   expect(writes).toBe(0);
   const after=await page.evaluate(async()=>{const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();try{return(await store.load())!.book;}finally{store.close();}});

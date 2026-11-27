@@ -1,7 +1,9 @@
 import {expect,test} from '@playwright/test';
 
 for(const failSecond of [false,true])test(`upload management confirms bulk deletion and preserves comparison data${failSecond?' through a partial failure':''}`,async({page})=>{
-  let remote='',uploads=0,deletions=0,deleteRequests=0,failed=false;
+  let remote='',uploads=0,deletions=0,deleteRequests=0,failed=false,blobReads=0;
+  let releaseRead:()=>void=()=>{};
+  const readGate=new Promise<void>(resolve=>releaseRead=resolve);
   const files=new Map<string,{sha:string;content:string}>();
   await page.route('https://api.github.com/**',async route=>{
     const request=route.request(),url=new URL(request.url());
@@ -25,6 +27,7 @@ for(const failSecond of [false,true])test(`upload management confirms bulk delet
     }
     if(url.pathname.includes('/git/trees/')){await route.fulfill({json:{tree:[...files].map(([path,file])=>({path,sha:file.sha,type:'blob'})),truncated:false}});return;}
     if(url.pathname.includes('/git/blobs/')){
+      if(++blobReads===1)await readGate;
       const file=[...files.values()].find(file=>file.sha===url.pathname.split('/').at(-1))!;
       await route.fulfill({json:{encoding:'base64',content:file.content}});return;
     }
@@ -89,8 +92,13 @@ for(const failSecond of [false,true])test(`upload management confirms bulk delet
   const date=(await option.locator('.snapshot-date').boundingBox())!,device=(await option.locator('.snapshot-device').boundingBox())!;
   expect(device.x).toBeGreaterThan(date.x);
   await option.click();
+  await expect(comparison.locator('#left-local')).toBeDisabled();releaseRead();
   await expect(comparison.locator('#left-kind')).toHaveText('Phone upload');
   await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
+  await comparison.locator('#left-local').click();
+  await expect(comparison.locator('#left-source')).toHaveText('Current local workbook');expect(blobReads).toBe(1);expect(await local()).toEqual(before);
+  await comparison.locator('#left-github').click();await comparison.getByRole('option').filter({hasText:'Phone'}).click();
+  await expect(comparison.locator('#left-kind')).toHaveText('Phone upload');
   await comparison.locator('#keep-left button').click();
   await expect(comparison.locator('#selection-progress')).toContainText('1 of');
   await comparison.locator('#left-github').click();await comparison.getByRole('button',{name:'Manage',exact:true}).click();

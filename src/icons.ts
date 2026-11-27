@@ -11,6 +11,7 @@ export const toolbarIconPaths={
   previous:navigationIconPaths.previous,
   next:navigationIconPaths.next,
   attach:'M7 15l7-7a2.1 2.1 0 0 1 3 3l-8 8a4.2 4.2 0 0 1-6-6l9-9a6.4 6.4 0 0 1 9 9l-8 8',
+  computer:'M3 4h18v13H3ZM12 17v4M8 21h8',
   references:'M7 16H3V4h5a6 6 0 0 1 4.472 2',
   settings:'M10 2h4l.7 3 2 .9 2.8-.9 2 3.5-2.1 2.1V13l2.1 2.1-2 3.5-2.8-.9-2 .9L14 22h-4l-.7-3-2-.9-2.8.9-2-3.5L4.6 13v-2.4L2.5 8.5l2-3.5 2.8.9 2-.9ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
   'convert-table':'M3 2h18v9H3ZM3 6.5h18M9 2v9M3 19h18v4H3ZM9 19v4M12 17v-4m-3 3 3-3 3 3',
