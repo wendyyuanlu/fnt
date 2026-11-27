@@ -1,13 +1,42 @@
-import {syncCodec,type SyncCodecRequest} from './sync-codec';
+import {syncCodec,type SyncCodecRequest,type SyncCodecMessage} from './sync-codec';
 
-export function runSyncCodec(request:SyncCodecRequest):Promise<unknown>{
+const afterPaint=(done:()=>void)=>{
+  if(typeof document==='undefined'||document.visibilityState!=='visible'){setTimeout(done,0);return;}
+  let completed=false,frame=0;
+  const finish=()=>{if(completed)return;completed=true;clearTimeout(timer);cancelAnimationFrame(frame);done();};
+  const timer=setTimeout(finish,50);
+  frame=requestAnimationFrame(()=>setTimeout(finish,0));
+};
+export function runSyncCodec(request:SyncCodecRequest,options?:{snapshots?:boolean}):Promise<unknown>{
   if(typeof Worker==='undefined')return Promise.resolve(syncCodec(request));
   return new Promise((resolve,reject)=>{
     const worker=new Worker(new URL('./sync-codec-worker.ts',import.meta.url),{type:'module'});
-    const finish=()=>{clearTimeout(timer);worker.terminate();};
+    let finished=false;
+    const finish=()=>{finished=true;clearTimeout(timer);worker.terminate();};
     const timer=setTimeout(()=>{finish();reject(Error('Private sync processing timed out. Local edits retained.'));},90000);
-    worker.onmessage=event=>{finish();const result=event.data as {value?:unknown;error?:string};if(result.error)reject(Error(result.error));else resolve(result.value);};
+    worker.onmessage=event=>{
+      finish();const result=event.data as {value?:unknown;error?:string};
+      if(result.error){reject(Error(result.error));return;}
+      // Paint a received snapshot before serializing the next large worker request.
+      afterPaint(()=>resolve(result.value));
+    };
     worker.onerror=event=>{finish();reject(Error(`Private sync processing failed: ${event.message}`));};
-    worker.postMessage(request);
+    const post=(message:SyncCodecMessage)=>worker.postMessage(message);
+    if(options?.snapshots&&(request.kind==='merge'||request.kind==='equal'||request.kind==='history')){
+      // These callers own immutable snapshots, so each large book can yield separately.
+      const send=async()=>{
+        post({kind:'start',operation:request.kind});
+        for(const [field,value]of Object.entries(request)){
+          if(field==='kind')continue;
+          await new Promise<void>(afterPaint);if(finished)return;
+          post({kind:'part',field,value});
+        }
+        post({kind:'run'});
+      };
+      void send().catch(error=>{finish();reject(error);});
+    }else{
+      try{post({kind:'complete',request});}
+      catch(error){finish();reject(error);}
+    }
   });
 }

@@ -60,7 +60,7 @@ test('in-flight sync leaves fields, picker and scroll intact, preserving edits m
   const sheet=uploadedBook.sheets.find(sheet=>sheet.name==='Quiet sync log')!,table=uploadedBook.tables.find(table=>table.sheet===sheet.id)!;
   expect(sheet.cells[`${table.rows.at(-1)}:${table.columns[4].column}`].value).toBe(101);
 });
-test('remote changes and unsubmitted choices never replace local data or upload on resume, Save or reload',async({page})=>{
+test('genuinely conflicting changes and unsubmitted choices never replace local data or upload on resume, Save or reload',async({page})=>{
   let content='',sha='original-sha',writes=0,guard=false;
   await page.route('https://api.github.com/**',async route=>{
     if(route.request().method()==='PUT'){
@@ -72,10 +72,16 @@ test('remote changes and unsubmitted choices never replace local data or upload 
   await fixture(page);const local=(await saved(page)).book;
   content=encode64(JSON.stringify({format:'fnt-sync-v1',book:local,operations:[]}));
   await page.reload();await expect(page.locator('#save-state')).toContainText('Synced');
+  await page.context().setOffline(true);
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Rename workbook',exact:true}).click();
+  const rename=page.getByRole('dialog',{name:'Rename workbook',exact:true});
+  await rename.locator('input').fill('Deliberate local title');await rename.locator('button.primary').click();
+  await expect(page.locator('#save-state')).toContainText('Saved locally');local.title='Deliberate local title';
   guard=true;
   const remote=structuredClone(local);remote.title='Never adopted without submission';content=encode64(JSON.stringify({format:'fnt-sync-v1',book:remote,operations:[]}));sha='changed-remote';
+  await page.context().setOffline(false);
   await page.locator('[data-action="save"]').click();
-  await expect(page.locator('#save-state')).toHaveText('Sync conflict — saved locally');
+  await expect(page.locator('#save-state')).toContainText(/Sync conflict|sync paused/);
   await expect(page.locator('.save-area #sync-review')).toHaveText('Compare');
   expect(await page.locator('#sync-review').evaluate(element=>getComputedStyle(element).fontSize)).toBe(await page.locator('[data-action="file"]').evaluate(element=>getComputedStyle(element).fontSize));
   expect((await saved(page)).book.title).toBe(local.title);expect((await saved(page)).syncReview).toBe(true);

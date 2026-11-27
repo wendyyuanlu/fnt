@@ -6,8 +6,9 @@ import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,re
 import {githubFormDefaults} from './github-client';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
-import { Store, SyncConflict, syncGitHub, hasPendingContent,validateBook,validateBackup,validateBookMetadata,validateCellChanges, type Backup, type LocalState } from './storage';
-import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch} from './undo-history';
+import { Store, SyncConflict, SyncPaused, syncGitHub,mergeForSync, hasPendingContent,validateBook,validateBackup,validateBookMetadata,validateCellChanges, type Backup, type LocalState,type SyncResult,type SyncConfig } from './storage';
+import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch,type UndoHistory} from './undo-history';
+import {runSyncCodec} from './sync-processing';
 import {cachedCellText,dateFormatContext} from './display-values';
 import { parseArchive, stringifyArchive,compressArchive } from './archive';
 import { parseTsv,serializeTsv } from './clipboard';
@@ -908,22 +909,77 @@ async function compactSavedChanges():Promise<void>{
   await saving;
 }
 let privateSyncTimer:ReturnType<typeof setTimeout>|undefined;
+let privateSyncDue=0;
 let privateSyncConflict=false;
 let privateSyncFlight:Promise<void>|undefined;
 let preservedSyncConflict:SyncConflict|undefined;
 let comparisonActive=false;
 let rememberPrivateSync=false;
-function schedulePrivateSync(delay=15000):void{
+function schedulePrivateSync(delay=2000):void{
   clearTimeout(privateSyncTimer);
-  if(!state?.sync||state.syncPaused||state.syncReview||!token||privateSyncConflict||comparisonActive||privateSyncFlight||!navigator.onLine)return;
+  if(!state?.sync||state.syncPaused||state.syncReview||!token||privateSyncConflict||comparisonActive||privateSyncFlight||!navigator.onLine){privateSyncDue=0;return;}
+  const due=Date.now()+(delay===0?0:hasPendingContent(state)?delay:Math.max(delay,10000));
+  privateSyncDue=privateSyncDue?Math.min(privateSyncDue,due):due;
   privateSyncTimer=setTimeout(()=>{
-    if(document.visibilityState!=='visible'||busy||comparisonActive||draft!==undefined||touchCell||appendDraft||colorPicker?.pending||document.querySelector('dialog[open]')){schedulePrivateSync();return;}
+    privateSyncDue=0;
+    if(document.visibilityState!=='visible'||busy||comparisonActive){schedulePrivateSync();return;}
     void manualSave(true);
-  },hasPendingContent(state)?delay:Math.max(delay,60000));
+  },Math.max(0,privateSyncDue-Date.now()));
 }
 async function updateSyncMetadata(change:Parameters<Store['syncMetadata']>[1]):Promise<void>{
-  const operation=saving.then(async()=>{const metadata=await store.syncMetadata(state.version,change);state={...state,...metadata};});
+  const connection=JSON.stringify(state.sync);
+  const operation=saving.then(async()=>{
+    if(JSON.stringify(state.sync)!==connection)throw Error('Sync destination changed. The previous response was not applied.');
+    const metadata=await store.syncMetadata(state.version,change);state={...state,...metadata};
+  });
   saving=operation.catch(()=>{});await operation;
+}
+function incomingSyncBlocked():boolean{
+  const active=document.activeElement;
+  return busy||draft!==undefined||!!touchCell||!!appendDraft||!!colorPicker?.pending||!!document.querySelector('dialog[open],.cell-dropdown')||
+    (active instanceof HTMLInputElement||active instanceof HTMLTextAreaElement)&&active!==document.querySelector('#formula')&&root.contains(active);
+}
+async function receiveIncomingSync(base:Workbook,result:SyncResult,config:SyncConfig,credential:string,submittedComparison=false):Promise<void>{
+  const valid=()=>token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)&&!state.syncReview&&(!comparisonActive||submittedComparison);
+  for(let attempt=0;attempt<5;attempt++){
+    while(incomingSyncBlocked()){
+      if(!valid())throw new SyncPaused('Incoming sync paused. Local edits and the remote copy are retained.');
+      status='Remote updates ready - finish the current edit to apply';renderStatus();
+      await new Promise(resolve=>setTimeout(resolve,200));
+    }
+    if(!valid())throw new SyncPaused('Incoming sync paused. Local edits and the remote copy are retained.');
+    await flush();
+    const before=clone(book),g=generation,merged=await mergeForSync(base,before,result.remote!);
+    if(merged.conflicts.length){
+      const conflict=new SyncConflict(merged.remote,result.sha,result.originals??[],merged.local,base,result.remote,merged.conflicts);
+      conflict.confirmed=result;throw conflict;
+    }
+    const history=await runSyncCodec({kind:'history',before,after:merged.local,history:clone({undo,redo})},{snapshots:true}) as UndoHistory;
+    if(g!==generation||incomingSyncBlocked())continue;
+    let applied=false;
+    const operation=saving.then(async()=>{
+      if(g!==generation||incomingSyncBlocked()||!valid())return;
+      rememberView();
+      const previousGeneration=savedGeneration;
+      book=clone(merged.local);book.revision=Math.max(before.revision,book.revision)+1;
+      generation++;const acceptedGeneration=generation;
+      undo.splice(0,undo.length,...history.undo);redo.splice(0,redo.length,...history.redo);
+      engine=new Engine(book);displayedVersion++;
+      if(!allSheets(book).some(sheet=>sheet.id===sheetId)){sheetId=book.sheets[0].id;referenceId=undefined;}
+      restoreView();render({preserveViewport:true});groupManager?.refresh();
+      try{
+        state=await store.acceptSync(state.version,config,result,book,history);
+        savedGeneration=acceptedGeneration;compactionWrites=0;applied=true;
+        channel?.postMessage({version:state.version});
+      }catch(error){
+        savedGeneration=previousGeneration;fullSaveRequired=true;
+        throw error;
+      }
+    });
+    saving=operation.catch(()=>{});await operation;
+    if(applied)return;
+  }
+  throw Error('Local edits continued during incoming sync. Changes retained; automatic sync will retry.');
 }
 async function manualSave(automatic=false,progress?:(message:string,completed:number,total:number)=>void): Promise<void> {
   if(automatic&&(!state?.sync||state.syncPaused||state.syncReview||!token||!navigator.onLine||privateSyncConflict||comparisonActive)){schedulePrivateSync();return;}
@@ -953,15 +1009,14 @@ async function manualSave(automatic=false,progress?:(message:string,completed:nu
     const captured={...state,pending:[...state.pending]},config=state.sync,credential=token;
     await store.assertVersion(captured.version);
     progress?.('Checking private GitHub revision...',0,2);
-    const originals=hasPendingContent(captured)?await store.originals():[];
-    const result=await syncGitHub(captured,credential,fetch,originals,{canUpload:()=>!state.syncReview&&!privateSyncConflict&&(!comparisonActive||!!progress)&&token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)});
+    const originals=hasPendingContent(captured)?await store.originals():[],base=await store.syncBase(config,captured.remoteSha),attempt=await store.syncAttempt(config);
+    const result=await syncGitHub(captured,credential,fetch,originals,{base,attempt,beforeUpload:transfer=>store.rememberSyncAttempt(config,transfer),canUpload:()=>!state.syncReview&&!privateSyncConflict&&(!comparisonActive||!!progress)&&token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)});
     if(token!==credential||JSON.stringify(state.sync)!==JSON.stringify(config))throw Error('Sync connection changed during transfer. Local edits retained; acknowledgement not applied.');
-    if(result.remote){
-      throw new SyncConflict(result.remote,result.sha,result.originals??[]);
+    if(result.remote)await receiveIncomingSync(captured.book,result,config,credential,!!progress);
+    else if(result.confirmed||result.sha!==state.remoteSha||result.acknowledged?.length){
+      await updateSyncMetadata({sha:result.sha,acknowledged:result.acknowledged,confirmed:result.confirmed,originals:result.originals});
     }
-    if(!captured.pending.length&&result.sha===state.remoteSha){status='Synced with private repository';return;}
     progress?.('Recording confirmed GitHub revision...',1,2);
-    await updateSyncMetadata({sha:result.sha,acknowledged:captured.pending.map(operation=>operation.id)});
     status=generation!==savedGeneration?'Unsaved changes - saving locally...':hasPendingContent(state)?'Saved locally — newer edits pending sync':'Synced with private repository';
     progress?.('Selected data synced with private GitHub.',2,2);
   } catch(e) {
@@ -969,11 +1024,31 @@ async function manualSave(automatic=false,progress?:(message:string,completed:nu
       status='Sync connection changed — local copy retained';
       flash('The previous sync response was not applied to this connection. Local edits were retained. An upload already sent may still have reached GitHub.');return;
     }
+    if(e instanceof SyncPaused){status='Saved locally — sync paused';return;}
     if (e instanceof SyncConflict) {
-      privateSyncConflict=true;preservedSyncConflict=e;
       try{
-        await updateSyncMetadata({paused:true,review:true,clearConflict:true});
-        await store.checkpoint('Remote conflict - not applied',e.remote,e.originals,true,connection?{config:connection,sha:e.sha}:undefined);
+        if(e.base&&connection){
+          while(incomingSyncBlocked()&&!comparisonActive){
+            status='Conflicting updates ready - finish the current edit to review';renderStatus();
+            await new Promise(resolve=>setTimeout(resolve,200));
+          }
+          if(comparisonActive&&!progress||state.syncReview||token!==credentialAtStart||JSON.stringify(state.sync)!==JSON.stringify(connection))throw Error('Sync connection or review changed. Incoming conflict was not applied.');
+          await flush();
+          const current=clone(book),merged=await mergeForSync(e.base,current,e.originalRemote);
+          e.local=merged.local;e.remote=merged.remote;e.conflicts=merged.conflicts;
+          if(!merged.unchangedLocal){
+            await store.checkpoint('Local copy before automatic conflict merge',current,[],true);
+            await receiveIncomingSync(current,{sha:e.sha,remote:merged.local,confirmed:e.confirmed?.confirmed??e.originalRemote,originals:e.originals,acknowledged:e.confirmed?.acknowledged},connection,credentialAtStart,!!progress);
+          }else if(e.confirmed){
+            await updateSyncMetadata({sha:e.sha,confirmed:e.confirmed.confirmed,acknowledged:e.confirmed.acknowledged,originals:e.originals});
+          }
+          if(!merged.conflicts.length){status='Compatible incoming changes saved - sync pending';return;}
+        }
+        if(token!==credentialAtStart||JSON.stringify(state.sync)!==JSON.stringify(connection))throw Error('Sync connection changed. Incoming conflict was not applied.');
+        privateSyncConflict=true;preservedSyncConflict=e;
+        await updateSyncMetadata({paused:true,review:true,clearConflict:true,...(e.base?{sha:e.sha,confirmed:e.confirmed?.confirmed??e.originalRemote}:{})});
+        if(e.originalRemote!==e.remote)await store.checkpoint('Original remote before automatic conflict merge',e.originalRemote,e.originals,true);
+        await store.checkpoint('Remote conflict - not applied',e.remote,e.originals,true,connection?{config:connection,sha:e.sha,local:e.local}:undefined);
         await store.checkpoint('Local conflict - not uploaded',book);
       }catch(recoveryError){status='Sync conflict — recovery failed; saved locally';flash(recoveryError);return;}
       status = 'Sync conflict — saved locally';
@@ -985,17 +1060,17 @@ async function manualSave(automatic=false,progress?:(message:string,completed:nu
   try{await privateSyncFlight;}finally{privateSyncFlight=undefined;schedulePrivateSync();}
 }
 function openConflict(conflict:SyncConflict):void {
-  dialog('Sync conflict - choose deliberately',`<div class="menu"><button id="upload-local" ${state.sync&&token?'':'disabled'}>Upload local data to GitHub</button><button id="compare-conflict" class="primary">Compare versions or a backup</button></div><p>Both copies are in recovery. Upload creates a separate comparison snapshot; it does not resolve this conflict.</p><details class="file-imports"><summary>Choose a whole copy instead</summary><div class="menu"><button id="use-remote">Use remote version on this device</button><button id="keep-local">Keep local version and explicitly replace remote</button></div><p class="muted">These actions replace a whole copy. A new remote change still causes another conflict.</p></details>`,d=>{
+  dialog('Sync conflict - choose deliberately',`<div class="menu"><button id="upload-local" ${state.sync&&token?'':'disabled'}>Upload local data to GitHub</button><button id="compare-conflict" class="primary">Compare versions or a backup</button></div><p>Both copies are in recovery. Upload creates a separate comparison snapshot; it does not resolve this conflict.</p><details class="file-imports"><summary>Choose a whole copy instead</summary><div class="menu"><button id="use-remote">Use remote version on this device</button><button id="keep-local">Keep local version and explicitly replace remote</button></div><p class="muted">These actions choose all unresolved values from one copy. New compatible remote changes can still merge; incompatible edits pause sync again.</p></details>`,d=>{
     d.querySelector<HTMLButtonElement>('#upload-local')!.onclick=()=>{d.close();openSnapshotUpload(()=>openConflict(conflict));};
     d.querySelector<HTMLButtonElement>('#compare-conflict')!.onclick=()=>openComparison(conflict);
     d.querySelector<HTMLButtonElement>('#use-remote')!.onclick=async()=>{
       if(busy)return;
       try{
         const received=migrateDropdownData(conflict.remote);
-        state=await store.metadata(state.version,s=>({...s,book:clone(received.book),remoteSha:conflict.sha,pending:received.changed?[{id:uid(),label:'Move dropdown records into DD storage',time:new Date().toISOString()}]:[]}));
+        state=await store.metadata(state.version,s=>({...s,book:clone(received.book),remoteSha:conflict.sha,pending:[{id:uid(),label:'Resolve sync conflicts using remote values',time:new Date().toISOString()}]}));
         adoptSavedWorkbook();
         await updateSyncMetadata({paused:false,review:false});privateSyncConflict=false;preservedSyncConflict=undefined;schedulePrivateSync(0);
-        error='';status='Remote version saved locally - previous local version in recovery';render();d.close();
+        error='';status='Remote choices saved locally - previous local version in recovery; sync pending';render();d.close();
       }catch(e){flash(e);}
     };
     d.querySelector<HTMLButtonElement>('#keep-local')!.onclick=()=>{
@@ -1043,7 +1118,18 @@ async function openSyncComparison():Promise<void>{
     if(!conflict&&state.syncReview&&config){
       const saved=await store.syncConflict(config);
       if(JSON.stringify(state.sync)!==JSON.stringify(config))throw Error('The sync destination changed. Open comparison again.');
-      if(saved)conflict=new SyncConflict(saved.book,saved.sha);
+      if(saved)conflict=new SyncConflict(saved.book,saved.sha,[],saved.local);
+    }
+    if(conflict?.local){
+      for(let attempt=0;attempt<5;attempt++){
+        if(!commitDraft())return;
+        await flush();const g=generation,current=clone(book);
+        const merged=await mergeForSync(conflict.local,current,conflict.remote);
+        if(g!==generation||draft!==undefined)continue;
+        conflict=new SyncConflict(merged.remote,conflict.sha,conflict.originals,current);
+        openComparison(conflict);return;
+      }
+      throw Error('Finish the current edit before opening the conflicting changes. Your edits are retained.');
     }
     openComparison(conflict);
   }catch(error){flash(error);}
@@ -4348,7 +4434,7 @@ async function openHistory():Promise<void> {
 }
 function openSync(options?:{readOnly:boolean;complete:(connected:boolean)=>void}):void {
   const cfg=githubFormDefaults(state.sync),pathNote=state.sync&&cfg.path!==state.sync.path?`<p class="muted" id="sync-path-note">Saved destination: ${esc(state.sync.path)}. The renamed default is ${esc(cfg.path)}. Connecting updates this device's destination; it does not rename or delete files on GitHub.</p>`:'';
-  dialog('Optional private GitHub sync',`<p>Opt-in only. This uploads workbook data to the private repository you choose. Never use your website source or a public repository. Existing remote files are not overwritten on conflict.</p><form id="sync-form"><label>Personal repository owner<input id="sync-owner" value="${esc(cfg?.owner)}" required autocomplete="off"></label><label>Private data repository<input id="sync-repo" value="${esc(cfg?.repo)}" required></label><label>Existing branch<input id="sync-branch" value="${esc(cfg?.branch??'main')}" required></label><label>JSON path<input id="sync-path" value="${esc(cfg.path)}" required></label>${pathNote}<label>Fine-grained token: Contents read/write, only this data repository<input id="sync-token" type="password" autocomplete="off" required></label><label class="inline"><input id="sync-remember" type="checkbox" ${rememberPrivateSync?'checked':''}>Remember on this trusted device</label><p class="muted">Unchecked: token stays in this tab's memory; sign in again after reloading. Checked: token is stored in this browser's IndexedDB, separately from workbook data, never in backups or Git. Anyone with access to this browser or malicious app code could read it. Use only a fine-grained token restricted to this data repository. Disconnect forgets it on this device.</p><p class="muted">Saved edits batch after a 15-second pause. Clean authenticated tabs check no more often than every 60 seconds; startup/resume/reconnection may also check. Ordinary sync does not block editing or refresh the grid. Conflicts pause uploads and require submitted comparison decisions. Save syncs immediately unless review is unresolved. GitHub must already contain the branch. Large files may exceed the Contents API limit.</p><button class="primary">Connect & sync now</button><button id="disconnect" type="button">Disconnect</button></form>`,d=>{
+  dialog('Optional private GitHub sync',`<p>Opt-in only. This uploads workbook data to the private repository you choose. Never use your website source or a public repository. Existing remote files are not overwritten on conflict.</p><form id="sync-form"><label>Personal repository owner<input id="sync-owner" value="${esc(cfg?.owner)}" required autocomplete="off"></label><label>Private data repository<input id="sync-repo" value="${esc(cfg?.repo)}" required></label><label>Existing branch<input id="sync-branch" value="${esc(cfg?.branch??'main')}" required></label><label>JSON path<input id="sync-path" value="${esc(cfg.path)}" required></label>${pathNote}<label>Fine-grained token: Contents read/write, only this data repository<input id="sync-token" type="password" autocomplete="off" required></label><label class="inline"><input id="sync-remember" type="checkbox" ${rememberPrivateSync?'checked':''}>Remember on this trusted device</label><p class="muted">Unchecked: token stays in this tab's memory; sign in again after reloading. Checked: token is stored in this browser's IndexedDB, separately from workbook data, never in backups or Git. Anyone with access to this browser or malicious app code could read it. Use only a fine-grained token restricted to this data repository. Disconnect forgets it on this device.</p><p class="muted">Saved edits batch after about two seconds. Visible authenticated tabs check clean remote revisions about every ten seconds; startup/resume/reconnection may also check. Compatible changes merge automatically, including offline edits after reconnect. Incoming updates wait until the current editor or dialog closes. Toolbar layout and navigation preferences stay local to each device. Incompatible edits preserve both copies and pause uploads for submitted comparison decisions. Save syncs immediately unless review is unresolved. GitHub must already contain the branch. Large files may exceed the Contents API limit.</p><button class="primary">Connect & sync now</button><button id="disconnect" type="button">Disconnect</button></form>`,d=>{
     let connected=false,connecting=false;
     const actions=document.createElement('div');actions.className='button-row';
     const connect=d.querySelector<HTMLButtonElement>('.primary')!;
@@ -4527,6 +4613,7 @@ window.addEventListener('resize',()=>drawRowWindow?.());
 window.addEventListener('online',()=>{if(state?.sync){status=token?'Online — private sync pending':'Online — saved locally; sign in to resume private sync';renderStatus();schedulePrivateSync(0);}});
 window.addEventListener('offline',()=>{clearTimeout(privateSyncTimer);status='Offline - local autosave remains available';renderStatus();});
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')schedulePrivateSync(0);});
+window.addEventListener('focus',()=>schedulePrivateSync(0));
 window.addEventListener('pageshow',()=>schedulePrivateSync(0));
 channel?.addEventListener('message',e=>{if(state&&e.data.version>state.version){error='Another tab saved newer changes. Download a backup of this tab before reloading; further saves are blocked by revision checks.';renderStatus();}});
 async function start():Promise<void> {

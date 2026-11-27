@@ -21,22 +21,22 @@ function reorder<T extends {id:string}>(items:T[],source:T[],ids:Set<string>):T[
   for(const item of source)if(ids.has(item.id)&&byId.has(item.id))pending.push(item.id);else if(byId.has(item.id)){if(pending.length)before.set(item.id,pending);pending=[];}
   return kept.flatMap(item=>[...(before.get(item.id)??[]).map(id=>byId.get(id)!),item]).concat(pending.map(id=>byId.get(id)!));
 }
-function missingDependencies(book:Workbook):Set<string>{
+export function missingDependencies(book:Workbook):Set<string>{
   const missing=new Set<string>(),sheets=new Map(allSheets(book).map(sheet=>[sheet.id,{sheet,rows:new Set(sheet.rows.map(row=>row.id)),columns:new Set(sheet.columns.map(column=>column.id))}])),tables=new Map(allTables(book).map(table=>[table.id,table])),names=new Set(book.names.map(name=>name.id));
-  const ast=(node:Ast):void=>{
-    if(node.kind==='ref'){const sheet=sheets.get(node.sheet);if(!sheet?.rows.has(node.row)||!sheet.columns.has(node.column))missing.add(`cell reference ${node.sheet}/${node.row}/${node.column}`);}
-    else if(node.kind==='structured'){const table=tables.get(node.table);if(!table||node.columns.some(id=>!table.columns.some(column=>column.id===id)))missing.add(`table reference ${node.table}/${node.columns.join(',')}`);}
-    else if(node.kind==='name'){if(!names.has(node.id))missing.add(`named formula ${node.id}`);}
-    else if(node.kind==='binary'){ast(node.left);ast(node.right);}
-    else if(node.kind==='range'){ast(node.start);ast(node.end);}
-    else if(node.kind==='unary'||node.kind==='spill')ast(node.child);
-    else if(node.kind==='call')node.args.forEach(ast);
+  const ast=(node:Ast,source:string):void=>{
+    if(node.kind==='ref'){const sheet=sheets.get(node.sheet);if(!sheet?.rows.has(node.row)||!sheet.columns.has(node.column))missing.add(`cell reference ${node.sheet}/${node.row}/${node.column} in ${source}`);}
+    else if(node.kind==='structured'){const table=tables.get(node.table);if(!table||node.columns.some(id=>!table.columns.some(column=>column.id===id)))missing.add(`table reference ${node.table}/${node.columns.join(',')} in ${source}`);}
+    else if(node.kind==='name'){if(!names.has(node.id))missing.add(`named formula ${node.id} in ${source}`);}
+    else if(node.kind==='binary'){ast(node.left,source);ast(node.right,source);}
+    else if(node.kind==='range'){ast(node.start,source);ast(node.end,source);}
+    else if(node.kind==='unary'||node.kind==='spill')ast(node.child,source);
+    else if(node.kind==='call')node.args.forEach(node=>ast(node,source));
   };
   for(const {sheet,rows,columns}of sheets.values()){
     for(const [address,cell]of Object.entries(sheet.cells)){
       const [row,column]=address.split(':');
       if(!rows.has(row)||!columns.has(column))missing.add(`cell outside its sheet ${sheet.id}/${address}`);
-      if(cell.formula)ast(cell.formula);if(cell.calculation)ast(cell.calculation);
+      if(cell.formula)ast(cell.formula,`${sheet.id}/${address}/formula`);if(cell.calculation)ast(cell.calculation,`${sheet.id}/${address}/calculation`);
       if(cell.binding){const table=tables.get(cell.binding.table);if(!table?.rows.includes(cell.binding.row)||!table.columns.some(column=>column.id===cell.binding!.column))missing.add(`linked source ${cell.binding.table}/${cell.binding.row}/${cell.binding.column}`);}
     }
     for(const group of sheet.groups)if(group.members.some(id=>!(group.axis==='row'?rows:columns).has(id))||group.table&&!tables.has(group.table))missing.add(`group ${group.id}`);
@@ -48,7 +48,7 @@ function missingDependencies(book:Workbook):Set<string>{
     if(!sheet?.rows.has(table.header)||table.rows.some(id=>!sheet.rows.has(id))||table.columns.some(column=>!sheet.columns.has(column.column)))missing.add(`table membership ${table.id}`);
     for(const field of table.columns){const label=sheet?.sheet.cells[`${table.header}:${field.column}`]?.value;if(label!==field.name)missing.add(`table header ${table.id}/${field.id}`);}
   }
-  for(const name of book.names)ast(name.formula);
+  for(const name of book.names)ast(name.formula,name.id);
   return missing;
 }
 export async function mergeComparison(left:Workbook,right:Workbook,choices:readonly ComparisonChoice[]):Promise<Workbook>{

@@ -474,7 +474,8 @@ remain viewable only in history.
   **Arrange toolbar** enables individual tool dragging, including touch dragging.
   Use Alt+Left/Right for keyboard rearrangement, then **Finish arranging toolbar**
   to restore normal tool actions. The order is undoable and saved with the workbook,
-  including native backups and private sync, across sheets and DD views.
+  including native backups, across sheets and DD views. Automatic private sync
+  retains each device's own toolbar order and dividers.
   In arrange mode, hover between tools and click the ghost divider to add one;
   click an existing divider to remove it. Gap controls also support touch and
   keyboard activation. All dividers share one fixed-height style, and their
@@ -910,15 +911,43 @@ is provisioned automatically.
 
 Save batches pending edits; there is no per-keystroke network upload. Uploads
 check repository privacy, require GitHub Pages to be disabled, and use the remote
-file SHA for compare-and-swap. Routine Save/sync never locks editing, rebuilds the
-grid, closes a dropdown, or changes Meal log scroll. Acknowledgements clear only
-the captured operation IDs; edits made during transfer remain locally saved and
-pending. Sync compression runs in a worker rather than on the UI thread.
+file SHA for compare-and-swap. Confirmed server snapshots are retained separately
+from the local edit journal as destination-scoped shared ancestors. Three-way
+merging matches rows, columns, sheets, tables and groups by stable identities,
+not their screen positions. Disjoint edits, independent insertions, compatible
+structural changes and identical concurrent cell inputs merge automatically,
+including offline changes after reconnect. Simultaneous insertions have
+deterministic ordering. Cell input/formula state stays atomic; independent cell
+formatting and notes can merge.
+
+Acknowledgements clear only captured operation IDs; edits made during transfer
+remain locally saved and pending. A durable attempted-transfer snapshot and
+receipt recognize a successful upload whose acknowledgement was lost, even
+after reload and a newer local edit. Per-device receipts survive rolling journal
+trimming; the last proven attempted ancestor survives later failed attempts.
+Stale-SHA uploads refetch and remerge, with
+at most three upload attempts per sync. Network/API failures retain pending
+edits. Compression, merging, dependency checks and undo rebasing run in a worker;
+normal journaled edits do not copy the shared ancestor on every keystroke.
 Compressed archives include original imported packages; larger files use the
-Git blob read endpoint. Operation IDs recognize lost-ack retries. Divergence
-preserves local and remote checkpoints and requires an explicit choice; **there
-is no automatic structural merge or last-write-wins overwrite**. Network/API
-failures retain pending local edits. Authorized synthetic-only live checks
+Git blob read endpoint.
+
+Genuinely divergent edits to the same cell input, incompatible reorderings,
+delete-versus-edit and newly broken structural/formula dependencies preserve both
+copies in Recovery and pause uploads. Focused conflict variants already contain
+accepted disjoint edits on both sides; no silent last-write-wins is used.
+Coupled structural conflicts conservatively retain the original valid copies
+rather than manufacturing an invalid merged workbook. Older devices without a
+provable shared ancestor may require a one-time deliberate comparison; the app
+does not guess which old copy is authoritative. Saved comparison source pairs,
+choices and undo history are not rewritten beneath an existing review.
+
+Toolbar order/dividers, collapsed sheet categories, table-manager sort, table
+activity, outline presentation and existing groups' collapse state remain local
+to each device during automatic sync. Their native backup/export representation
+is unchanged; group definitions, labels and membership remain shared.
+
+Earlier authorized synthetic-only live checks
 against private `wendyyuanlu/fnt-data` passed actual GitHub writes/reads, independent
 desktop/mobile-emulated clients, offline reload/divergence, a real stale-SHA 409,
 lost-ack idempotency, explicit conflict recovery and a concurrent local-tab edit.
@@ -930,17 +959,21 @@ reload unless the user opts into remembering a repository-only token on that
 trusted device; offline local editing remains available without authentication.
 GitHub history is not an independent backup.
 
-While a private connection is authenticated, local commits trigger an automatic
-sync after a 15-second pause. Idle visible tabs check remote revisions at most once
-per minute; offline edits remain durably pending. Resume/reconnection schedules
-the same batched check rather than interrupting an active input.
+While a private connection is authenticated, local commits schedule an automatic
+sync after about two seconds; continual edits cannot indefinitely postpone an
+already scheduled check. Visible tabs check clean remote revisions about every
+ten seconds. Offline edits remain durably pending. Resume/reconnection schedules
+the same batched check. These are best-effort foreground timers, not a realtime
+service or a guarantee while the browser is suspended.
 Unchanged remote revisions do not download/decompress the workbook blob or create
-another full local checkpoint. Response headers time out after 30 seconds; a
+another full local checkpoint once ancestry is established. Response headers time out after 30 seconds; a
 90-second overall deadline also covers stalled response bodies and aborts transfers
 rather than leaving a transfer hanging. Navigation-only visit journals do not
-create remote commits. Changed remote content is saved in Recovery for explicit
-comparison, never automatically installed over this device's workbook, even
-when there are no pending content edits. Opening comparison or finding a
+create remote commits. Compatible incoming content is adopted automatically,
+retaining recovery and rebased Undo/Redo. Reads/uploads do not lock source editing;
+incoming application waits for a safe editor/dialog boundary and rechecks edits
+made during the transfer. Applying structural changes refreshes the grid while
+retaining stable selection and viewport. Opening comparison or finding a
 conflict persistently pauses uploads across reloads until a decision is submitted.
 Save alone cannot bypass an unresolved review.
 The compact **Compare** button and linked conflict/status message open the
@@ -1277,9 +1310,10 @@ Other remaining work before migration:
   intentionally refused to protect record identities. Cross-page touch
   autoscrolling and advanced multi-seed numeric-series inference remain missing;
   explicit range selection and fill down work across pages.
-- Automatic nonconflicting content merging, closed-app/background sync,
-  and physical-device credential setup. Live synthetic authenticated integration
-  passed; current conflict resolution is conservative and user-directed.
+- Closed-app/background sync and physical-device credential setup. Automatic
+  nonconflicting merging is covered by controlled independent-browser regressions;
+  genuine conflicts remain conservative and user-directed. The new co-authoring
+  path has not been validated against private personal workbooks or physical devices.
 - OCR/photo entry and tailored workflows for secondary sheets remain deferred.
 
 Import safety limits: 30 MB compressed, 180 MB expanded, 100,000 rows and

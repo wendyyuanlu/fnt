@@ -1,7 +1,6 @@
 import {expect,test,type Page} from '@playwright/test';
 import {blankSheet,clone,createDemo,key} from '../../src/model';
 import {encode64} from '../../src/storage';
-import {decompressArchive} from '../../src/archive';
 import type {Workbook} from '../../src/model';
 
 async function saved(page:Page){
@@ -261,13 +260,13 @@ test('submission rejects newer edits in another tab without losing decisions',as
   await expect(comparison.locator('#apply-selection')).toBeEnabled();
 });
 
-for(const stale of [false,true])test(stale?'explicit GitHub submission rejects a changed remote SHA':'explicit GitHub submission writes selected data only after confirmation',async({page})=>{
-  let remote='',sha='initial-sha',uploads=0,uploaded='';
+for(const stale of [false,true])test(stale?'explicit GitHub submission rejects a changed remote SHA':'explicit GitHub submission acknowledges equivalent selected data only after confirmation',async({page})=>{
+  let remote='',sha='initial-sha',uploads=0;
   await page.route('https://api.github.com/**',async route=>{
     const request=route.request(),url=new URL(request.url());
     if(request.method()==='PUT'){
       const body=request.postDataJSON() as {sha:string;content:string};
-      expect(body.sha).toBe('donor-sha');uploads++;uploaded=body.content;
+      expect(body.sha).toBe('donor-sha');uploads++;
       remote=body.content;sha='saved-sha';await route.fulfill({json:{content:{sha}}});return;
     }
     await route.fulfill({json:url.pathname.includes('/contents/')?{sha,content:remote,encoding:'base64'}:{private:true,has_pages:false}});
@@ -299,10 +298,8 @@ for(const stale of [false,true])test(stale?'explicit GitHub submission rejects a
     await expect(comparison.locator('#apply-error')).toContainText('GitHub changed');
     expect((await saved(page)).book.title).toBe(before.book.title);expect(uploads).toBe(0);
   }else{
-    await expect(page.locator('.comparison-view')).toHaveCount(0);expect(uploads).toBe(1);
-    const envelope=JSON.parse(Buffer.from(uploaded,'base64').toString('utf8'));
-    expect((decompressArchive(envelope.payload) as {book:Workbook}).book.title).toBe('Chosen remote title');
-    const result=await saved(page);expect(result.book.title).toBe('Chosen remote title');expect(result.remoteSha).toBe('saved-sha');expect(result.syncPaused).toBe(false);
+    await expect(page.locator('.comparison-view')).toHaveCount(0);expect(uploads).toBe(0);
+    const result=await saved(page);expect(result.book.title).toBe('Chosen remote title');expect(result.remoteSha).toBe('donor-sha');expect(result.syncPaused).toBe(false);
     await page.locator('[data-action="undo"]').click();
     await expect.poll(async()=>(await saved(page)).book.title).toBe(before.book.title);
   }
