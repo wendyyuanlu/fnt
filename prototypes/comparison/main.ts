@@ -6,7 +6,8 @@ import {displayExcelDate,parseDateInput} from '../../src/dates';
 import {displayFraction} from '../../src/quantity';
 import {dateFormatContext} from '../../src/display-values';
 import {hypotheticalProjection} from '../../src/grouping';
-import {comparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,snapshotDate,type ComparisonSnapshot} from '../../src/github-snapshots';
+import {comparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,listComparisonCommits,readComparisonCommit,snapshotDate,type ComparisonSnapshot} from '../../src/github-snapshots';
+import {mountCommitPicker} from '../../src/commit-picker';
 import {mountSelectDropdown} from '../../src/dropdown-ui';
 import {navigationIcon,toolbarIcon} from '../../src/icons';
 import {githubFormDefaults} from '../../src/github-client';
@@ -21,6 +22,7 @@ let category:Category|'all'='all',regions:Chunk[]=[],region=0,selected:number|un
 let specific='';
 let focus:{difference:number;row?:string;column?:string}|undefined;
 let sourcesBusy=true;
+const commitSelections:Partial<Record<'left'|'right',string>>={};
 const sharedDropdowns=new Map<string,ReturnType<typeof mountSelectDropdown>>();
 type Pick='left'|'right';
 const choices=new Map<number,Pick>(),choiceHistory:Map<number,Pick>[]=[];
@@ -528,6 +530,7 @@ function sourceTime(time:string,timeZone?:string):string{
   return date.toLocaleString('en-US',{timeZone,timeZoneName:'short'}).replace(', ',' @ ');
 }
 function setSource(side:'left'|'right',label:string,kind:string,commit?:string){
+  delete commitSelections[side];
   el(`${side}-source`).textContent=label;
   document.querySelector<HTMLElement>(`.${side}-pane > header b`)!.textContent=kind;
   el(`${side}-grid`).setAttribute('aria-label',kind+' spreadsheet preview');
@@ -542,9 +545,10 @@ function setSource(side:'left'|'right',label:string,kind:string,commit?:string){
 }
 function setHostSource(side:'left'|'right',source:ComparisonSource){
   setSource(side,source.label,source.kind);
+  if(source.kind==='GitHub commit')commitSelections[side]=source.revision;
   if(source.freshness)el(`${side}-source-freshness`).textContent=source.freshness;
   if(side==='right'){
-    el('right-source-commit').textContent=source.revision?`File revision: ${source.revision}`:'';
+    el('right-source-commit').textContent=source.revision?`${source.kind==='GitHub commit'?'Commit':'File revision'}: ${source.revision}`:'';
     el('right-source-commit').hidden=!source.revision;
   }
 }
@@ -592,6 +596,28 @@ for(const side of ['left','right'] as const)el(side+'-github').onclick=()=>{
 };
 el('snapshot-close').onclick=()=>picker.close();
 let snapshotConfig:SyncConfig|undefined,snapshotToken='',uploadedFiles:ComparisonSnapshot[]=[];
+for(const side of ['left','right'] as const)mountCommitPicker(el<HTMLButtonElement>(side+'-commits'),{
+  selected:()=>commitSelections[side],
+  list:page=>host?.commits?host.commits.list(page):listComparisonCommits(snapshotConfig,snapshotToken,page),
+  choose:entry=>{
+    if(sourcesBusy||commitSelections[side]===entry.sha)return;
+    setSourcesBusy(true);
+    const totals=el('totals'),previousTotals=totals.textContent,reading=`Reading commit ${entry.sha.slice(0,8)}...`;
+    totals.textContent=reading;
+    void (async()=>{
+      try{
+        const loaded=host?.commits?await host.commits.read(entry):await readComparisonCommit(snapshotConfig,snapshotToken,entry);
+        const source:ComparisonSource='kind'in loaded?loaded:{book:loaded.book,kind:'GitHub commit',label:`${loaded.path} · ${entry.sha.slice(0,8)}`,revision:entry.sha,freshness:`Committed: ${sourceTime(entry.time)}.`};
+        const other=side==='left'?right:left;
+        if(other&&source.book.id!==other.id)throw Error('This commit belongs to a different workbook. Neither comparison source was replaced.');
+        el('error').hidden=true;
+        if(side==='left'&&!right){left=source.book;setHostSource(side,source);waitForCopy();return;}
+        await loadComparison(side==='left'?source.book:left,side==='right'?source.book:right,()=>setHostSource(side,source));
+      }catch(error){showError(error);}
+      finally{if(totals.textContent===reading)totals.textContent=previousTotals;setSourcesBusy(false);}
+    })();
+  },
+});
 const snapshotControls=(['left','right'] as const).map(side=>{
   const select=el<HTMLSelectElement>(`uploaded-${side}`);
   const control=mountSelectDropdown(select,{renderOption:(button,option)=>{
@@ -625,6 +651,7 @@ function setSourcesBusy(busy:boolean){
   for(const side of ['left','right']){
     el<HTMLButtonElement>(side+'-github').disabled=unavailable||!!host&&!host.uploads;
     el<HTMLInputElement>(side+'-file').disabled=unavailable;
+    el<HTMLButtonElement>(side+'-commits').disabled=unavailable||(host?!host.commits:!snapshotConfig||!snapshotToken);
   }
   el<HTMLButtonElement>('snapshot-list').disabled=unavailable||!!host&&!host.uploads;
   const remote=el<HTMLButtonElement>('comparison-github');if(remote)remote.disabled=unavailable||!host?.readRemote;

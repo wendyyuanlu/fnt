@@ -146,8 +146,8 @@ export function dropdownOptionsKey(e:KeyboardEvent,search:HTMLInputElement,list:
   const focused=document.activeElement;
   if((focused===search&&['ArrowDown','ArrowUp'].includes(e.key))||(focused?.getAttribute('role')==='option'&&['ArrowDown','ArrowUp','Home','End'].includes(e.key))){
     const navigate=optionNavigation.get(list);if(navigate){e.preventDefault();navigate(e.key,focused);return;}
-    e.preventDefault();const entries=[...list.querySelectorAll<HTMLButtonElement>('[role="option"]')],at=entries.indexOf(focused as HTMLButtonElement);
+    e.preventDefault();const entries=[...list.querySelectorAll<HTMLButtonElement>('[role="option"]')].filter(entry=>entry.checkVisibility()),at=entries.indexOf(focused as HTMLButtonElement);
     const next=e.key==='Home'?0:e.key==='End'?entries.length-1:(at+(e.key==='ArrowDown'?1:at<0?0:-1)+entries.length)%entries.length;
     if(entries.length){entries.forEach((entry,i)=>entry.tabIndex=i===next?0:-1);entries[next].focus({preventScroll:true});entries[next].scrollIntoView({block:'nearest'});}
-  }else if(e.key==='Enter'&&focused===search){e.preventDefault();list.querySelector<HTMLButtonElement>('[role="option"]')?.click();}
+  }else if(e.key==='Enter'&&focused===search){e.preventDefault();[...list.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(entry=>entry.checkVisibility())?.click();}
 }

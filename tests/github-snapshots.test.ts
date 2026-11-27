@@ -1,7 +1,8 @@
 import {afterEach,describe,expect,it,vi} from 'vitest';
 import {createDemo} from '../src/model';
 import {decode64,encode64,type SyncConfig} from '../src/storage';
-import {uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,comparisonSnapshot} from '../src/github-snapshots';
+import {uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,comparisonSnapshot,listComparisonCommits,readComparisonCommit} from '../src/github-snapshots';
+import {syncCodec} from '../src/sync-codec';
 import {githubFormDefaults} from '../src/github-client';
 
 const config:SyncConfig={owner:'example',repo:'private-data',branch:'main',path:'personal/workbook.json'};
@@ -52,6 +53,72 @@ describe('private comparison snapshots',()=>{
     expect(list.map(file=>file.device)).toEqual(['Desktop','Phone']);
     expect(await readComparisonSnapshot(config,token,list[1],fetcher)).toEqual(book);
     expect(JSON.stringify(book)).toBe(before);
+  });
+  describe('read-only comparison commits',()=>{
+    const sha='a'.repeat(40),commit={sha,time:'2026-11-25T22:00:00Z',message:'Fnt save (7 pending changes)'};
+    it('loads large historical JSON from its immutable blob rather than the branch or a download URL',async()=>{
+      const blob='d'.repeat(40),book=createDemo(),requests:string[]=[],fetcher:typeof fetch=vi.fn(async(input,init)=>{
+        expect(init?.method).not.toBe('PUT');const url=new URL(String(input));requests.push(url.toString());
+        if(url.pathname.includes('/contents/')){
+          expect(url.searchParams.get('ref')).toBe(sha);
+          return Response.json({sha:blob,size:2*1024*1024,encoding:'none',content:''});
+        }
+        if(url.pathname.includes('/git/blobs/')){
+          expect(url.pathname.endsWith(blob)).toBe(true);
+          return Response.json({encoding:'base64',content:encode64(JSON.stringify({format:'fnt-sync-v1',book}))});
+        }
+        return Response.json({private:true,has_pages:false});
+      });
+      expect((await readComparisonCommit(config,token,commit,fetcher)).book).toEqual(book);expect(requests).toHaveLength(3);
+    });
+    it('lists bounded history pages and preserves recorded counts without inventing counts for other commits',async()=>{
+      const requests:string[]=[],fetcher:typeof fetch=vi.fn(async(input,init)=>{
+        expect(init?.method).not.toBe('PUT');const url=new URL(String(input));requests.push(url.toString());
+        if(!url.pathname.endsWith('/commits'))return Response.json({private:true,has_pages:false});
+        return Response.json([{sha,commit:{committer:{date:commit.time},message:commit.message}},{sha:'b'.repeat(40),commit:{committer:{date:commit.time},message:'Rename workbook JSON'}}],{headers:{Link:'<https://api.github.com/next>; rel="next"'}});
+      });
+      const page=await listComparisonCommits(config,token,2,fetcher);
+      expect(page).toEqual({next:3,commits:[{...commit,changes:7},{sha:'b'.repeat(40),time:commit.time,message:'Rename workbook JSON'}]});
+      expect(requests[1]).toContain('per_page=100&page=2');expect(requests[1]).toContain('sha=main');
+    });
+    it('reads the selected immutable revision across the recognized filename rename without writing or changing its connection',async()=>{
+      const destination={owner:'wendyyuanlu',repo:'fnt-data',branch:'main',path:'fnt-data.json'},book=createDemo(),paths:string[]=[];
+      const content=String(syncCodec({kind:'pack',value:{format:'fnt-sync-v1',book,operations:[]}}));
+      const fetcher:typeof fetch=vi.fn(async(input,init)=>{
+        expect(init?.method).not.toBe('PUT');const url=new URL(String(input));
+        if(!url.pathname.includes('/contents/'))return Response.json({private:true,has_pages:false});
+        expect(url.searchParams.get('ref')).toBe(sha);const path=url.pathname.split('/contents/')[1];paths.push(path);
+        return path==='personal-workbook.json'?Response.json({encoding:'base64',content}):new Response(null,{status:404});
+      });
+      expect(await readComparisonCommit(destination,token,commit,fetcher)).toEqual({book,path:'personal-workbook.json'});
+      expect(paths).toEqual(['fnt-data.json','personal-workbook.json']);expect(destination.path).toBe('fnt-data.json');
+    });
+    it('rejects malformed metadata and missing custom JSON versions rather than falling back to an unrelated workbook',async()=>{
+      const invalid:typeof fetch=vi.fn(async input=>Response.json(String(input).includes('/commits?')?[{sha:'invalid'}]:{private:true,has_pages:false}));
+      await expect(listComparisonCommits(config,token,1,invalid)).rejects.toThrow('invalid');
+      const paths:string[]=[],missing:typeof fetch=vi.fn(async input=>{
+        const url=new URL(String(input));if(!url.pathname.includes('/contents/'))return Response.json({private:true,has_pages:false});
+        paths.push(url.pathname);return new Response(null,{status:404});
+      });
+      await expect(readComparisonCommit(config,token,commit,missing)).rejects.toThrow('does not contain');
+      expect(paths).toHaveLength(1);expect(paths[0]).toContain('/contents/personal/workbook.json');
+      await expect(readComparisonCommit(config,token,{...commit,sha:'bad'},missing)).rejects.toThrow('Invalid comparison commit');
+    });
+    it('reports damaged history payloads and permission failures without trying unrelated filenames',async()=>{
+      for(const payload of [[null],[{...commit,sha:'a'.repeat(41)}]]){
+        const fetcher:typeof fetch=vi.fn(async input=>Response.json(String(input).includes('/commits?')?payload:{private:true,has_pages:false}));
+        await expect(listComparisonCommits(config,token,1,fetcher)).rejects.toThrow('invalid');
+      }
+      for(const status of [403,500]){
+        let reads=0;const fetcher:typeof fetch=vi.fn(async input=>{
+          if(!String(input).includes('/contents/'))return Response.json({private:true,has_pages:false});
+          reads++;return new Response(null,{status});
+        });
+        await expect(readComparisonCommit(config,token,commit,fetcher)).rejects.toThrow(String(status));expect(reads).toBe(1);
+      }
+      const corrupt:typeof fetch=vi.fn(async input=>Response.json(String(input).includes('/contents/')?{encoding:'base64',content:encode64('null')}:{private:true,has_pages:false}));
+      await expect(readComparisonCommit(config,token,commit,corrupt)).rejects.toThrow();
+    });
   });
   it.each([{private:false,has_pages:false},{private:true,has_pages:true}])('refuses unsafe repository settings before creating a file: %j',async info=>{
     const fetcher:typeof fetch=vi.fn(async()=>Response.json(info));

@@ -44,14 +44,16 @@ test('conflict snapshots upload separately and comparison lists dated device cop
   await page.getByRole('button',{name:'Private GitHub sync',exact:true}).click();
   for(const [name,value]of [['owner','example'],['repo','private-test'],['branch','main'],['path','private/synthetic.json'],['token','invented-token']])await page.locator(`#sync-${name}`).fill(value);
   await page.getByRole('button',{name:'Connect & sync now',exact:true}).click();
-  await expect(page.locator('#save-state')).toContainText('CONFLICT');
+  await expect(page.locator('#save-state')).toContainText(/conflict/i);
   const local=()=>page.evaluate(async()=>{
     const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
     try{const state=(await store.load())!;return {book:JSON.stringify(state.book),pending:state.pending,remoteSha:state.remoteSha};}finally{store.close();}
   });
-  const before=await local(),conflict=page.getByRole('dialog',{name:'Sync conflict - choose deliberately',exact:true});
-  await expect(conflict.locator('.menu > button').first()).toHaveText('Upload local data to GitHub');
-  await conflict.getByRole('button',{name:'Upload local data to GitHub',exact:true}).click();
+  const before=await local();
+  await expect(page.getByRole('dialog',{name:'Sync conflict - choose deliberately',exact:true})).toHaveCount(0);
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();
+  const recovery=page.getByRole('dialog',{name:'Recovery',exact:true});
+  await recovery.getByRole('button',{name:'Upload local data to GitHub',exact:true}).click();
   const upload=page.getByRole('dialog',{name:'Upload local data to GitHub',exact:true});
   await upload.locator('#snapshot-device').fill('Phone');
   await upload.getByRole('button',{name:'Upload local data to GitHub',exact:true}).click();
@@ -61,8 +63,8 @@ test('conflict snapshots upload separately and comparison lists dated device cop
   await expect(upload.locator('#snapshot-upload-status')).toContainText('[Desktop]');
   expect(uploads).toBe(2);expect(await local()).toEqual(before);
   await upload.getByRole('button',{name:'Close dialog',exact:true}).click();
-  await expect(conflict).toBeVisible();await expect(page.locator('#save-state')).toContainText('CONFLICT');
-  await conflict.getByRole('button',{name:'Compare versions or a backup',exact:true}).click();
+  await expect(recovery).toBeVisible();await expect(page.locator('#save-state')).toContainText(/conflict/i);
+  await recovery.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
   await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
   await comparison.locator('#left-github').click();
   await expect(comparison.locator('#snapshot-status')).toContainText('2 uploaded copies, newest first');

@@ -212,6 +212,7 @@ remain viewable only in history.
   quantities stay blank. This requires the Ingredients serving, conversion
   and nutrition fields; missing fields or duplicate names produce explicit
   errors. Field mappings use stable identities across column moves/renames.
+
   Logged overrides are not rewritten when adding an ingredient. Returning to a
   linked Food restores untouched nutrition snapshots from this panel, but keeps
   explicitly edited nutrition overrides; their calculations remain restorable.
@@ -979,6 +980,16 @@ private repository and branch. It shows the path actually read and preserves
 the saved connection, acknowledgment and pending edits. Existing files, custom
 destinations and permission failures are not redirected. Ordinary sync still
 refuses to recreate a removed file; reconnect explicitly to change its destination.
+
+Comparison sources each have **Commits**: a read-only private GitHub history
+picker with sticky Time/Changes/Commit columns and collapsible device-local date
+sections. Times include the device's time zone. Changes shows a recorded pending
+save count when available, otherwise the commit message. Earlier history loads
+on request. Selecting a commit loads only that comparison side; it never restores,
+uploads, or syncs until a decision is explicitly submitted. Recognized historical
+JSON filenames remain readable across the default private-data filename rename;
+custom destinations are never guessed or changed. Large historical files use
+their immutable blob revisions, not the latest branch contents or download URLs.
 
 **Upload local data to GitHub**, directly below Private GitHub sync in Recovery
 and at the top of the conflict dialog, saves a separate, immutable `.json`

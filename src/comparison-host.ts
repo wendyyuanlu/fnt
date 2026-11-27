@@ -1,5 +1,5 @@
 import type {Workbook} from './model';
-import type {ComparisonSnapshot} from './github-snapshots';
+import type {ComparisonSnapshot,ComparisonCommit,ComparisonCommitPage} from './github-snapshots';
 import type {ComparisonChoice} from './comparison-merge';
 
 export interface ComparisonSource {
@@ -16,6 +16,10 @@ export interface ComparisonHost {
   uploads?:{
     list:(workbook:string)=>Promise<ComparisonSnapshot[]>;
     read:(entry:ComparisonSnapshot)=>Promise<ComparisonSource>;
+  };
+  commits?:{
+    list:(page:number)=>Promise<ComparisonCommitPage>;
+    read:(entry:ComparisonCommit)=>Promise<ComparisonSource>;
   };
   syncDestination?:()=>string|undefined;
   apply?:(request:{left:Workbook;right:Workbook;choices:ComparisonChoice[];sync:boolean;progress?:(message:string,completed:number,total:number)=>void})=>Promise<void>;

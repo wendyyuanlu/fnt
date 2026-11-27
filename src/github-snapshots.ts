@@ -1,11 +1,56 @@
 import {compressArchive,decompressArchive} from './archive';
 import {uid,type Workbook} from './model';
 import {encode64,decode64,validateBook,type SyncConfig} from './storage';
-import {withPrivateGitHub} from './github-client';
+import {githubFormDefaults,withPrivateGitHub} from './github-client';
+import {runSyncCodec} from './sync-processing';
 
 export interface ComparisonSnapshot {path:string;sha:string;time:string;device:string;workbook:string}
+export interface ComparisonCommit {sha:string;time:string;message:string;changes?:number}
+export interface ComparisonCommitPage {commits:ComparisonCommit[];next?:number}
 interface SnapshotFile {format:'fnt-comparison-snapshot';version:1;time:string;device:string;workbook:string;payload:string}
-const revision=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{40,64}$/i.test(value);
+const revision=(value:unknown):value is string=>typeof value==='string'&&/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
+export async function listComparisonCommits(config:SyncConfig|undefined,token:string,page=1,fetcher:typeof fetch=fetch):Promise<ComparisonCommitPage>{
+  if(!Number.isSafeInteger(page)||page<1)throw Error('Invalid commit history page.');
+  return withPrivateGitHub(config,token,fetcher,async client=>{
+    const response=await client.request(`${client.root}/commits?sha=${encodeURIComponent(client.config.branch)}&per_page=100&page=${page}`,{headers:client.headers,cache:'no-store',redirect:'error'});
+    if(!response.ok)throw Error(`Cannot read commit history (${response.status}). Previous comparison retained.`);
+    const rows=await response.json() as {sha?:unknown;commit?:{message?:unknown;committer?:{date?:unknown}}}[];
+    if(!Array.isArray(rows)||rows.length>100)throw Error('GitHub returned invalid commit history.');
+    const commits=rows.map(row=>{
+      if(!row||typeof row!=='object')throw Error('A commit has invalid revision or date metadata.');
+      const time=row.commit?.committer?.date,message=row.commit?.message;
+      if(!revision(row.sha)||typeof time!=='string'||!Number.isFinite(Date.parse(time))||typeof message!=='string')throw Error('A commit has invalid revision or date metadata.');
+      const count=/^Fnt save \((\d+) pending changes?\)/i.exec(message),changes=count?Number(count[1]):undefined;
+      if(changes!==undefined&&!Number.isSafeInteger(changes))throw Error('A commit has invalid saved-change metadata.');
+      return{sha:row.sha,time,message:message.split('\n')[0],...(changes!==undefined?{changes}:{})};
+    });
+    return{commits,...(response.headers.get('link')?.includes('rel="next"')?{next:page+1}:{})};
+  });
+}
+export async function readComparisonCommit(config:SyncConfig|undefined,token:string,commit:ComparisonCommit,fetcher:typeof fetch=fetch):Promise<{book:Workbook;path:string}>{
+  if(!revision(commit.sha))throw Error('Invalid comparison commit selection.');
+  return withPrivateGitHub(config,token,fetcher,async client=>{
+    const defaults=githubFormDefaults(client.config),paths=[client.config.path,defaults.path];
+    if(defaults.path==='fnt-data.json'&&githubFormDefaults({...client.config,path:'personal-workbook.json'}).path==='fnt-data.json')paths.push('personal-workbook.json','workbook.json');
+    for(const path of new Set(paths)){
+      const url=new URL(client.contentURL(path));url.searchParams.set('ref',commit.sha);
+      const response=await client.request(url.toString(),{headers:client.headers,cache:'no-store',redirect:'error'});
+      if(response.status===404)continue;
+      if(!response.ok)throw Error(`Cannot read this commit's workbook (${response.status}). Previous comparison retained.`);
+      let data=await response.json() as {content?:unknown;encoding?:unknown;sha?:unknown;size?:unknown};
+      if(data?.encoding==='none'||(!data?.content&&typeof data?.size==='number'&&data.size>0)){
+        if(!revision(data.sha))throw Error("GitHub did not return this commit's workbook revision.");
+        const blob=await client.request(`${client.root}/git/blobs/${encodeURIComponent(data.sha)}`,{headers:client.headers,cache:'no-store',redirect:'error'});
+        if(!blob.ok)throw Error(`Cannot read this commit's larger workbook (${blob.status}). Previous comparison retained.`);
+        data=await blob.json() as typeof data;
+      }
+      if(data?.encoding!=='base64'||typeof data.content!=='string')throw Error("GitHub did not return this commit's workbook content.");
+      const envelope=await runSyncCodec({kind:'unpack',value:data.content}) as {book?:Workbook};
+      const book=envelope?.book;validateBook(book);return{book,path};
+    }
+    throw Error('This commit does not contain the configured workbook JSON, including its recognized previous filenames. Previous comparison retained.');
+  });
+}
 export function comparisonDeviceName(value:string):string{
   const name=value.trim();
   if(!name||name.length>64||new TextEncoder().encode(name).length>96||/[\u0000-\u001f\u007f]/.test(name))throw Error('Enter a device name of 1–64 characters (at most 96 UTF-8 bytes), without control characters.');
