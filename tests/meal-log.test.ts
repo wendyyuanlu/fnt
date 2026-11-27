@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import {addMasterFood,masterLogging,masterDayBlocks} from '../src/day-logging';
 import {Engine,scalar} from '../src/formula';
-import {addMealIngredient,editMealDayWeight,markMealDraft,mealLogConfig,mealLogContext,moveMealFood} from '../src/meal-log';
+import {addMealIngredient,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealLogConfig,mealLogContext,moveMealFood} from '../src/meal-log';
 import {addTableColumns,blankSheet,clone,createDemo,getCell,moveColumns,renameColumn,setInput} from '../src/model';
 import {applyUndo,structuralUndo} from '../src/undo-history';
 import {validationChoiceGroups} from '../src/references';
@@ -93,14 +93,43 @@ it('copies manual nutrition to Ingredients, links the Food cell, and reverses th
   expect(restored.tables.find(table=>table.id===target.id)!.rows).not.toContain(added.row);
   expect(()=>addMealIngredient(book,sheet,row)).toThrow('already exists');validateBook(book);
 });
-it('quietly marks blank manual macros as draft, accepts zero, and clears the marker when complete or linked',()=>{
+it('marks missing core nutrition, accepts zero and optional blanks, and retains incompleteness after Ingredient promotion',()=>{
   const {book,sheet,input}=fixture(),row=sheet.rows[2].id,food=mealLogContext(book,sheet).fields.get('food')!.column;
-  markMealDraft(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
-  for(let c=4;c<10;c++)input(2,c,'0');
-  markMealDraft(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBeUndefined();
-  input(2,4,'=""');markMealDraft(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
-  const added=addMealIngredient(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBeUndefined();
+  markMealNeedsNutrition(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
+  for(let c=4;c<8;c++)input(2,c,'0');
+  markMealNeedsNutrition(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBeUndefined();
+  input(2,4,'=""');markMealNeedsNutrition(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
+  const added=addMealIngredient(book,sheet,row);expect(getCell(sheet,row,food).foodDraft).toBe(true);
   expect(getCell(sheet,row,food).binding?.row).toBe(added.row);validateBook(book);
+});
+it('checks linked Ingredient source nutrition rather than zero-filled consumption formulas, with live stable identities',()=>{
+  const {book,sheet,input}=fixture(),row=sheet.rows[2].id;
+  for(let c=4;c<8;c++)input(2,c,'0');
+  const added=addMealIngredient(book,sheet,row),table=book.tables.find(table=>table.id===added.table)!,source=book.sheets.find(sheet=>sheet.id===table.sheet)!;
+  const fields=sheet.mealLog!.ingredients!.fields,calories=table.columns.find(column=>column.id===fields.calories)!;
+  for(let c=4;c<8;c++)input(2,c,'=0');
+  expect(mealNeedsNutrition(book,sheet,row)).toBe(false);
+  setInput(book,source,added.row,calories.column,'');
+  const before=clone(book);
+  expect(mealNeedsNutrition(book,sheet,row)).toBe(true);expect(book).toEqual(before);
+  for(const column of table.columns)renameColumn(book,table,column.id,'Renamed '+column.id);
+  moveColumns(book,source,[calories.column],0);
+  for(const value of ['=""','=NA()',' ']){
+    setInput(book,source,added.row,calories.column,value);expect(mealNeedsNutrition(book,sheet,row)).toBe(true);
+  }
+  setInput(book,source,added.row,calories.column,'=0');
+  expect(mealNeedsNutrition(book,sheet,row)).toBe(false);
+  const restored=applyUndo(book,structuralUndo(before,book)).book,restoredSheet=restored.sheets.find(item=>item.id===sheet.id)!;
+  expect(mealNeedsNutrition(restored,restoredSheet,row)).toBe(true);validateBook(book);
+});
+it('does not label unnamed food slots and reports unknown or faulted manual nutrition without changing data',()=>{
+  const {book,sheet,input}=fixture(),row=sheet.rows[2].id;
+  input(2,3,'');expect(mealNeedsNutrition(book,sheet,row)).toBe(false);
+  input(2,3,'Invented food');for(let c=4;c<8;c++)input(2,c,'0');
+  for(const value of ['=""','=NA()',' ']){
+    input(2,4,value);const before=clone(book);
+    expect(mealNeedsNutrition(book,sheet,row)).toBe(true);expect(book).toEqual(before);
+  }
 });
 it('adds the Ingredients picker source only to the linked Food cell without changing other dropdown targets',()=>{
   const {book,sheet}=fixture(),row=sheet.rows[2].id,other=sheet.rows[3].id,fields=mealLogContext(book,sheet).fields,food=fields.get('food')!.column,unit=fields.get('unit')!.column;

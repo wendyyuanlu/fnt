@@ -41,7 +41,7 @@ import {createTextSearch} from './find';
 import {loadPublishedTesting,publishedTestingId,untouchedStarter} from './published';
 import {migrateDropdownData} from './dd-storage';
 import {numericKeyboardFields,numericKeyboardCell,virtualKeyboard as touchKeyboard} from './touch-keyboard';
-import {addMealIngredient,editMealDayWeight,markMealDraft,mealFields,mealLogConfig,mealLogContext,moveMealFood,type MealField} from './meal-log';
+import {addMealIngredient,editMealDayWeight,markMealNeedsNutrition,mealNeedsNutrition,mealFields,mealLogConfig,mealLogContext,moveMealFood,type MealField} from './meal-log';
 import {mountMealLog,type MealLogInputField,type MealLogView} from './meal-log-ui';
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
@@ -193,7 +193,7 @@ function mealView():MealLogView{
       const food=getCell(s,row,context.fields.get('food')!.column);
       const foodColumn=context.fields.get('food')!.column,manualPreference=(book.pickerSources[`default:${s.id}:${foodColumn}`]??book.pickerSources[`${s.id}:${foodColumn}`])==='manual';
       return{id:row,values:Object.fromEntries(mealFields.map(field=>[field,value(row,field)])),calculated:mealFields.filter(field=>{const column=context.fields.get(field);return!!column&&!!(getCell(s,row,column.column).formula||getCell(s,row,column.column).binding);}),manual:!food.binding&&!food.formula&&(mealManual.has(row)||manualPreference||!cellValidation(s,row,foodColumn)||food.value!==undefined&&food.value!==null&&food.value!==''),
-        ...(food.binding?.table===config.meals?{meal:food.binding?.row}:{}),totals:totals(row)};
+        ...(food.binding?.table===config.meals?{meal:food.binding?.row}:{}),needsNutrition:mealNeedsNutrition(book,s,row,engine),totals:totals(row)};
     })};
 }
 function selectMealField(row:string,field:MealLogInputField,repaint=false):void{
@@ -290,7 +290,7 @@ function openMealLog():void{
                   }
                 }
                 writeGridCell(book,s,row,food.column,String(value??''),true);
-                markMealDraft(book,s,row);
+                markMealNeedsNutrition(book,s,row);
               }
             })){if(field==='food'){mealManual.add(row);if(calculated.size)mealCalculated.set(row,calculated);mealPanel?.foodMode(row,true);}mealPanel?.refresh();mealPanel?.reveal(row,field,true);}
           },linked:()=>{
@@ -814,9 +814,9 @@ function sheetPath(s:Sheet=sheet()):Patch['path']{
 function mutateCell(s:Sheet,row:string,column:string,fn:()=>void):boolean{
   if(busy){flash('Wait for the current save or sync to finish.');return false;}
   const config=s.mealLog,table=config?allTables(book).find(table=>table.id===config.table):undefined,food=table?.columns.find(field=>field.id===config?.fields.food);
-  const tracksDraft=!!food&&!!table?.rows.includes(row)&&[...mealFields.slice(0,7)].some(field=>table.columns.find(column=>column.id===config?.fields[field])?.column===column);
-  const addresses=[...new Set([key(row,column),...(tracksDraft?[key(row,food!.column)]:[])])],inverse:History={cells:addresses.map(address=>({sheet:s.id,key:address,value:clone(s.cells[address])}))};
-  try{fn();if(tracksDraft)markMealDraft(book,s,row);validateCellChanges(book,inverse.cells);}catch(e){
+  const tracksNutrition=!!food&&!!table?.rows.includes(row)&&[...mealFields.slice(0,7)].some(field=>table.columns.find(column=>column.id===config?.fields[field])?.column===column);
+  const addresses=[...new Set([key(row,column),...(tracksNutrition?[key(row,food!.column)]:[])])],inverse:History={cells:addresses.map(address=>({sheet:s.id,key:address,value:clone(s.cells[address])}))};
+  try{fn();if(tracksNutrition)markMealNeedsNutrition(book,s,row);validateCellChanges(book,inverse.cells);}catch(e){
     for(const change of inverse.cells){if(change.value)s.cells[change.key]=change.value;else delete s.cells[change.key];}
     flash(e);render();return false;
   }
@@ -1820,7 +1820,7 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{
         if(!s.rows.some(r=>r.id===row)||!s.columns.some(c=>c.id===column)||cellValidation(s,row,column)?.id!==validation.id)throw Error('The dropdown target changed. Open it again.');
         if(choice.binding){writeLinkedCell(s,row,column,choice.binding);external?.linked?.();}
         else writeGridCell(book,s,row,column,String(choice.raw??''),typeof choice.raw==='string');
-        if(s.mealLog&&allTables(book).find(table=>table.id===s.mealLog!.table)?.columns.find(field=>field.id===s.mealLog!.fields.food)?.column===column)markMealDraft(book,s,row);
+        if(s.mealLog&&allTables(book).find(table=>table.id===s.mealLog!.table)?.columns.find(field=>field.id===s.mealLog!.fields.food)?.column===column)markMealNeedsNutrition(book,s,row);
       });
       if(!ok&&sharedInput&&previousDraft!==undefined){syncDraft(previousDraft,true,previousLiteral);return;}
       if(ok&&external)external.chosen();else if(!external)root.querySelector<HTMLElement>('#grid-scroll')?.focus({preventScroll:true});

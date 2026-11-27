@@ -83,7 +83,7 @@ test('full-field Food tapping opens the shared picker below the field, manual in
   await page.reload();await page.locator('#meal-log').click();await panel.locator('.meal-log-notes summary').click();
   await expect(panel.getByRole('textbox',{name:'Notes',exact:true})).toHaveValue('=Literal notes\nSecond line\nhttps://example.invalid/recipe');
 });
-test('manual macros stay collapsed and blank macro draft metadata persists quietly through edits and reload',async({page})=>{
+test('manual macros stay collapsed and Needs nutrition tracks missing core values through edits and reload',async({page})=>{
   const fixture=await setup(page);await page.locator('#meal-log').click();
   const panel=page.locator('.meal-log-panel'),card=panel.locator('[data-log-card]').last(),food=card.getByRole('textbox',{name:'Food',exact:true});
   await food.click();await page.getByRole('button',{name:'Custom',exact:true}).click();
@@ -93,15 +93,43 @@ test('manual macros stay collapsed and blank macro draft metadata persists quiet
     const state=await read(page,fixture.sheet),table=state.book.tables.find((table:{id:string})=>table.id===fixture.table)!;
     return state.sheet.cells[`${fixture.latest}:${table.columns.find((column:{name:string})=>column.name==='Food')!.column}`];
   };
-  expect((await cell()).foodDraft).toBe(true);await expect(card).not.toContainText(/draft/i);
+  expect((await cell()).foodDraft).toBe(true);await expect(card.locator('[data-log-needs-nutrition]')).toBeVisible();await expect(card).not.toContainText(/draft/i);
   await card.locator('.meal-log-macros summary').click();
-  for(const name of ['Calories','Protein (g)','Fat (g)','Carbs (g)','Sugar (g)','Sodium (mg)'])await card.getByRole('textbox',{name,exact:true}).fill('0');
+  for(const name of ['Calories','Protein (g)','Fat (g)','Carbs (g)'])await card.getByRole('textbox',{name,exact:true}).fill('0');
   expect((await cell()).foodDraft).toBeUndefined();
-  await card.getByRole('textbox',{name:'Fat (g)',exact:true}).fill('');await food.fill('');expect((await cell()).foodDraft).toBe(true);
+  await expect(card.locator('[data-log-needs-nutrition]')).toBeHidden();
+  await card.getByRole('textbox',{name:'Fat (g)',exact:true}).fill('');await expect(card.locator('[data-log-needs-nutrition]')).toBeVisible();
+  await food.fill('');expect((await cell()).foodDraft).toBeUndefined();await expect(card.locator('[data-log-needs-nutrition]')).toBeHidden();
+  await food.fill('Invented incomplete food');
+  expect((await cell()).foodDraft).toBe(true);
   await page.reload();await page.locator('#meal-log').click();
   await expect(card.locator('.meal-log-macros')).not.toHaveAttribute('open','');await expect(food).not.toHaveAttribute('readonly','');await food.click();
-  await expect(page.locator('.cell-dropdown')).toHaveCount(0);expect((await cell()).foodDraft).toBe(true);
+  await expect(page.locator('.cell-dropdown')).toHaveCount(0);expect((await cell()).foodDraft).toBe(true);await expect(card.locator('[data-log-needs-nutrition]')).toBeVisible();
   await expect(card).not.toContainText(/draft/i);
+});
+test('linked foods use current Ingredient reference nutrition without changing links, consumption or formulas',async({page})=>{
+  const fixture=await setup(page);await page.locator('#meal-log').click();
+  const card=page.locator(`[data-log-card="${fixture.latest}"]`),tag=card.locator('[data-log-needs-nutrition]');
+  await expect(tag).toBeVisible();await expect(card.getByRole('textbox',{name:'Food',exact:true})).toHaveAttribute('readonly','');
+  const original=await read(page,fixture.sheet);
+  const updateIngredient=async(complete:boolean)=>page.evaluate(async({fixture,complete})=>{
+    const storage='/src/storage.ts',model='/src/model.ts',logging='/src/meal-log.ts';
+    const {Store}=await import(/* @vite-ignore */storage) as typeof import('../../src/storage'),{setInput}=await import(/* @vite-ignore */model) as typeof import('../../src/model'),{mealLogConfig}=await import(/* @vite-ignore */logging) as typeof import('../../src/meal-log'),store=await Store.open();
+    try{
+      const state=(await store.load())!,sheet=state.book.sheets.find(sheet=>sheet.id===fixture.sheet)!,target=mealLogConfig(state.book,sheet).ingredients!;
+      const table=state.book.tables.find(table=>table.id===target.table)!,source=state.book.sheets.find(sheet=>sheet.id===table.sheet)!;
+      for(const field of ['calories','protein','fat','carbs'] as const)setInput(state.book,source,table.rows[0],table.columns.find(column=>column.id===target.fields[field])!.column,complete?'0':'');
+      await store.save(state.book,state.version,'Synthetic reference nutrition edit');
+    }finally{store.close();}
+  },{fixture,complete});
+  await updateIngredient(true);await page.reload();await page.locator('#meal-log').click();
+  await expect(tag).toBeHidden();
+  const complete=await read(page,fixture.sheet);
+  expect(complete.sheet.cells).toEqual(original.sheet.cells);expect(complete.blocks).toEqual(original.blocks);
+  await updateIngredient(false);await page.reload();await page.locator('#meal-log').click();
+  await expect(tag).toBeVisible();
+  const incomplete=await read(page,fixture.sheet);
+  expect(incomplete.sheet.cells).toEqual(original.sheet.cells);expect(incomplete.blocks).toEqual(original.blocks);
 });
 test('public-sized food reordering finishes promptly and keeps stable row identities and Undo',async({page})=>{
   const fixture=await setup(page,6000,true);await page.locator('#meal-log').click();

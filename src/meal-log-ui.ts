@@ -8,7 +8,7 @@ export interface MealLogView{
   header:string;date:string;totals:string;undo:boolean;redo:boolean;busy:boolean;
   weight:{value:string;numeric:boolean;calculated:boolean};
   fields:Partial<Record<MealField,{name:string;numeric:boolean}>>;
-  rows:{id:string;values:Partial<Record<MealField,string>>;calculated:MealField[];manual:boolean;meal?:string;totals:string}[];
+  rows:{id:string;values:Partial<Record<MealField,string>>;calculated:MealField[];manual:boolean;meal?:string;needsNutrition:boolean;totals:string}[];
 }
 export type MealLogInputField=MealField|'dayWeight';
 export interface MealLogHost{
@@ -86,7 +86,7 @@ export function mountMealLog(host:MealLogHost){
           const dropdown=name==='food';
           const attributes=`data-log-row="${row.id}" data-log-field="${name}" aria-label="${captions[name]}" autocomplete="off" enterkeyhint="next"`;
           const input=name==='notes'?`<textarea ${attributes} rows="3">${esc(row.values[name])}</textarea>`:`<input ${attributes} inputmode="${info.numeric||mealFields.slice(1,7).includes(name)?'decimal':'text'}" value="${esc(row.values[name])}" ${name==='food'?`data-log-manual="${row.manual}" ${row.manual?'placeholder="Manual input"':'readonly'}`:''}>`;
-          return`<label class="meal-log-field" title="${esc(info.name)}">${name==='notes'?'':`<span>${captions[name]}</span>`}<span class="meal-log-input">${input}${dropdown?`<button type="button" class="icon-button" data-log-dropdown="${name}" aria-label="Choose ${captions[name]}"><span class="format-caret">${dropdownArrowHtml}</span></button>`:''}</span></label>`;
+          return`<label class="meal-log-field" title="${esc(info.name)}">${name==='notes'?'':`<span>${captions[name]}${name==='food'?' <span class="count" data-log-needs-nutrition hidden>Needs nutrition</span>':''}</span>`}<span class="meal-log-input">${input}${dropdown?`<button type="button" class="icon-button" data-log-dropdown="${name}" aria-label="Choose ${captions[name]}"><span class="format-caret">${dropdownArrowHtml}</span></button>`:''}</span></label>`;
         };
         const quantities=`<div class="meal-log-fields">${(['weight','amount','unit'] as const).map(field).join('')}</div>`,quantityKey=row.id+':'+row.meal;
         return`<section class="meal-log-card" data-log-card="${row.id}" aria-label="Food ${i+1}">${field('food')}<details class="meal-log-macros" ${expanded.has(row.id)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Macros</span><span data-log-totals></span></summary><div class="meal-log-fields">${mealFields.slice(1,7).map(field).join('')}</div></details>${row.meal?`<details class="meal-log-quantities" data-quantity-key="${quantityKey}" ${quantitiesExpanded.has(quantityKey)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Grams</span></summary>${quantities}</details>`:quantities}${view.fields.notes?`<details class="meal-log-notes" ${notesExpanded.has(row.id)?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Notes</span></summary>${field('notes')}</details>`:''}${row.manual?'<label class="inline meal-log-ingredient"><input type="checkbox" data-log-ingredient>Add to Ingredients</label>':''}<div class="meal-log-row-actions">${icon('Move food up',navigationIcon('up'),i===0)}${icon('Move food down',navigationIcon('down'),i===view.rows.length-1)}<button type="button" data-log-insert>+ Food</button>${icon('Delete food',toolbarIcon('trash'))}</div></section>`;
@@ -99,6 +99,7 @@ export function mountMealLog(host:MealLogHost){
     weight.disabled=view.busy;weight.classList.toggle('calculated',view.weight.calculated);
     for(const row of view.rows){
       element.querySelector<HTMLElement>(`[data-log-card="${row.id}"] [data-log-totals]`)!.textContent=row.totals;
+      element.querySelector<HTMLElement>(`[data-log-card="${row.id}"] [data-log-needs-nutrition]`)!.hidden=!row.needsNutrition;
       for(const field of mealFields){const input=fieldInput(row.id,field),value=row.values[field]??'';if(input&&(!writing||input!==document.activeElement)&&input.value!==value)input.value=value;if(input){input.disabled=view.busy;input.classList.toggle('calculated',row.calculated.includes(field));}}
     }
     element.querySelector<HTMLElement>('[data-log-date]')!.textContent=view.date;

@@ -211,8 +211,13 @@ remain viewable only in history.
   whole numbers; field values themselves retain precision. Today and the
   calendar open an existing day or create one without advancing the logging
   cursor. Inline + Food inserts below that food and joins its day summary.
-  Manual Food keeps macros collapsed by default. A manual Food cell gets a
-  quiet persistent draft marker while any macro is blank; zero is complete.
+  Manual Food keeps macros collapsed by default. Named foods show **Needs
+  nutrition** when Calories, Protein, Fat or Carbs is blank or a calculation
+  error; genuine zero is complete, and blank optional Sugar/Sodium does not
+  trigger the tag. Linked Ingredients are checked against their reference
+  nutrition, not zero-filled consumption formulas. The tag is recalculated
+  from current data, including after reload and Ingredient edits; it does not
+  turn an existing logged food into a Draft or change its quantities or link.
   Adding to Ingredients creates a new row and links Food to that row, hides
   the checkbox, and can be undone back to manual input in one action:
   blank amount/unit inherit entered weight and `g`, while completely blank

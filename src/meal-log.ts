@@ -44,16 +44,27 @@ export function mealLogConfig(book:Workbook,sheet:Sheet):MealLogConfig{
   const {table,food}=masterLogging(book,sheet),ingredients=allTables(book).find(table=>table.name.toLowerCase()==='ingredients');
   return{table:table.id,...(meals?{meals}:{}),fields:{...mapFields(table),...(food?{food:food.id}:{})},...(ingredients?{ingredients:{table:ingredients.id,fields:mapFields(ingredients,true)}}:{})};
 }
-export function markMealDraft(book:Workbook,sheet:Sheet,row:string):void{
+export function mealNeedsNutrition(book:Workbook,sheet:Sheet,row:string,engine=new Engine(book)):boolean{
   const config=mealLogConfig(book,sheet),table=allTables(book).find(table=>table.id===config.table);
   const foodColumn=table?.columns.find(column=>column.id===config.fields.food);
-  if(!foodColumn||!table?.rows.includes(row))return;
-  const food=getCell(sheet,row,foodColumn.column),engine=new Engine(book);
-  const incomplete=!food.binding&&!food.formula&&mealFields.slice(1,7).some(field=>{
-    const column=table.columns.find(column=>column.id===config.fields[field]);
-    const value=column?scalar(engine.cell(sheet.id,row,column.column)):null;
-    return value===null||typeof value==='string'&&!value.trim();
+  if(!foodColumn||!table?.rows.includes(row))return false;
+  const food=getCell(sheet,row,foodColumn.column),name=scalar(engine.cell(sheet.id,row,foodColumn.column));
+  if(name===null||typeof name==='string'&&!name.trim())return false;
+  const target=config.ingredients,binding=food.binding;
+  const ingredients=binding&&binding.table===target?.table?allTables(book).find(table=>table.id===binding.table):undefined;
+  const source=ingredients?allSheets(book).find(sheet=>sheet.id===ingredients.sheet):sheet;
+  const fields=ingredients?target!.fields:config.fields,sourceTable=ingredients??table,sourceRow=ingredients?binding!.row:row;
+  if(binding&&target&&binding.table===target.table&&(!ingredients||!source||!ingredients.rows.includes(sourceRow)))return true;
+  return (['calories','protein','fat','carbs'] as const).some(field=>{
+    const column=sourceTable.columns.find(column=>column.id===fields[field]);
+    const value=column&&source?scalar(engine.cell(source.id,sourceRow,column.column)):null;
+    return value===null||isFault(value)||typeof value==='string'&&!value.trim();
   });
+}
+export function markMealNeedsNutrition(book:Workbook,sheet:Sheet,row:string):void{
+  const config=mealLogConfig(book,sheet),table=allTables(book).find(table=>table.id===config.table),foodColumn=table?.columns.find(column=>column.id===config.fields.food);
+  if(!foodColumn||!table?.rows.includes(row))return;
+  const food=getCell(sheet,row,foodColumn.column),incomplete=mealNeedsNutrition(book,sheet,row);
   if(incomplete)sheet.cells[key(row,foodColumn.column)]={...food,foodDraft:true};
   else if(food.foodDraft){const cell={...food};delete cell.foodDraft;sheet.cells[key(row,foodColumn.column)]=cell;}
 }
@@ -117,6 +128,7 @@ export function addMealIngredient(book:Workbook,sheet:Sheet,row:string):{table:s
   }
   const food=context.fields.get('food')!,previous=getCell(sheet,row,food.column);
   sheet.cells[key(row,food.column)]={...previous,value:undefined,formula:undefined,foodDraft:undefined,binding:{table:table.id,row:next.id,column:label.id}};
+  markMealNeedsNutrition(book,sheet,row);
   const validation=sheet.validations.find(source=>source.rows.includes(row)&&source.columns.includes(food.column));
   if(!validation||!validationChoiceGroups(book,validation,row,food.column,new Engine(book)).some(group=>group.target?.table===table.id&&group.target.column===label.id)){
     const source:Ast={kind:'structured',table:table.id,columns:[label.id],mode:'data'};

@@ -14,7 +14,7 @@ export interface Cell {
   value?: Scalar; formula?: Ast; calculation?: Ast; original?: string; format?: Format; note?: string; link?: string;
   spillHint?: boolean; dateLiteral?: boolean; fractionInput?:string; fractionLiteral?:boolean;
   dayDateTable?:string;
-  foodDraft?:boolean;
+  foodDraft?:boolean; // Legacy serialized Needs nutrition marker, not an unlogged Draft.
   binding?: { table: string; row: string; column: string };
 }
 export interface Column { id: string; label: string; width?: number; wrap?:boolean; hidden?: boolean; hypothetical?:boolean; hypotheticalTables?:Record<string,boolean> }
