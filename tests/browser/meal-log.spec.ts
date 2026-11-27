@@ -1017,7 +1017,13 @@ test('a populated thousand-food day opens promptly and retains unrelated live fi
   const updates=await first.evaluateHandle(card=>{
     const records:string[]=[],observer=new MutationObserver(changes=>records.push(...changes.map(change=>`${change.type}:${change.attributeName??''}`)));
     observer.observe(card,{attributes:true,childList:true,characterData:true,subtree:true});
-    return{records,observer};
+    const ancestors=new Set<Node>(),disconnections:string[]=[];
+    for(let node:Node|null=card;node;node=node.parentNode)ancestors.add(node);
+    const attachment=new MutationObserver(changes=>{
+      for(const change of changes)for(const node of change.removedNodes)if(ancestors.has(node))disconnections.push(node.nodeName);
+    });
+    attachment.observe(document.documentElement,{childList:true,subtree:true});
+    return{records,observer,disconnections,attachment};
   });
   const checkRetained=async()=>{
     expect(await retained!.evaluate(card=>card.isConnected)).toBe(true);
@@ -1027,6 +1033,7 @@ test('a populated thousand-food day opens promptly and retains unrelated live fi
     await expect(first.locator('.meal-log-notes')).toHaveAttribute('open','');
     await expect(first.getByRole('textbox',{name:'Restaurant',exact:true})).toHaveValue('Invented retained cafe');
     expect(await updates.evaluate(state=>state.records)).toEqual([]);
+    expect(await updates.evaluate(state=>state.disconnections)).toEqual([]);
   };
   await panel.locator('[data-log-card]').last().getByRole('button',{name:'Delete food',exact:true}).dispatchEvent('click');
   await expect(panel.locator('[data-log-card]')).toHaveCount(1000);await checkRetained();
@@ -1036,7 +1043,7 @@ test('a populated thousand-food day opens promptly and retains unrelated live fi
   expect(saved.sheet.cells[`${fixture.latest}:${table.columns.find((column:{name:string})=>column.name==='Amount (g)')!.column}`].value).toBe(321);
   await panel.getByRole('button',{name:'Redo',exact:true}).dispatchEvent('click');
   await expect(panel.locator('[data-log-card]')).toHaveCount(1000);await checkRetained();
-  await updates.evaluate(state=>state.observer.disconnect());await updates.dispose();
+  await updates.evaluate(state=>{state.observer.disconnect();state.attachment.disconnect();});await updates.dispose();
 });
 test('public-sized food reordering finishes promptly and keeps stable row identities and Undo',async({page})=>{
   const fixture=await setup(page,6000,true);await page.locator('#meal-log').click();

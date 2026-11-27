@@ -2042,7 +2042,7 @@ function render(options?:{preserveViewport:boolean}): void {
   const t = view?.table??tableAt(book,s.id,s.rows[selected.r].id,s.columns[selected.c].id);
   if(selectionKind==='cells')selectionTable=t?.id;
   const scroll = document.querySelector('#grid-scroll')?.scrollLeft ?? 0;
-  root.innerHTML = `
+  const html = `
     <header class="app-header">
       <div class="workbook-heading"><span id="save-state" class="save-state">${esc(status)}</span></div>
       <div class="save-area"><button id="sync-review" hidden title="Compare versions for merge conflict">Compare</button><button class="primary" data-action="save">Save <span class="desktop">workbook</span></button><button data-action="file" aria-label="Recovery" title="Import Excel, export and browser-local recovery">Recovery</button></div>
@@ -2069,8 +2069,20 @@ function render(options?:{preserveViewport:boolean}): void {
     <tbody></tbody></table></div></div>
     <div class="grid-footer"><div><button class="selection-count" data-action="range" title="Select a cell range, including on mobile">${selectionCount(selectedRanges)} cells</button><span id="selection-scope-label"></span></div><div class="navigator">${referenceId?'':`<button data-action="page-mode" aria-pressed="${pageConfig?.mode==='calendar'}" title="Switch between one page and calendar date pages">${pageConfig?.mode==='calendar'?datePagesIcon:onePageIcon}<span>${pageConfig?.mode==='calendar'?'Date pages':'One page'}</span></button>`}${calendarPlan?`<button data-action="top" aria-label="Jump to top">${navigationIcon('up')} Top</button><button data-action="bottom" aria-label="Jump to bottom">${navigationIcon('down')} Bottom</button><button data-action="newest-date-page" aria-label="Newest date page" title="Newest date page" ${datePage===0&&!master?'disabled':''}>${navigationIcon('newest')}</button><button data-action="prev" aria-label="Newer dates" title="Newer dates">${navigationIcon('previous')}</button><button class="date-page-label" data-action="date-range" aria-label="Choose date page" title="${datePage===calendarPlan.pages.length?'Choose a dated page':`Page ${datePage+1} of ${calendarPlan.pages.length} — choose a date`}" ${calendarPlan.ranges.length?'':'disabled'}>${datePage===calendarPlan.pages.length?'Undated':`${displayExcelDate(calendarPlan.ranges[datePage].start)}–${displayExcelDate(calendarPlan.ranges[datePage].end)}`}</button><button data-action="next" aria-label="Older dates" title="Older dates">${navigationIcon('next')}</button>${calendarPlan.unassigned.length&&datePage!==calendarPlan.pages.length?`<button data-action="unassigned-date-rows" title="Records without assigned dates">Undated (${calendarPlan.unassigned.length})</button>`:''}`:`<button data-action="top" aria-label="Jump to top">${navigationIcon('up')} Top</button><button data-action="bottom">${navigationIcon('down')} Bottom</button><button data-action="prev" aria-label="Previous rows">${navigationIcon('previous')}</button><input id="row-jump" type="number" min="1" max="${s.rows.length}" aria-label="Jump to row"><span>/ ${s.rows.length}</span><button data-action="next" aria-label="Next rows">${navigationIcon('next')}</button>`}</div></div>
     </div></div><footer class="sheet-bar" aria-label="${referenceId?'Dropdown sources':'Workbook sheets'}">${referenceId?referenceTabsHtml():workbookTabsHtml()}<div class="tab-actions"><button type="button" data-action="${referenceId?'reference-settings':'sheet-settings'}" title="${referenceId?'Dropdown settings':'Sheet settings'}" aria-label="${referenceId?'Dropdown settings':'Sheet settings'}">${toolbarIcon('settings')}</button></div><button class="reference-manager" data-action="references" title="Dropdown sources" aria-label="DD">${toolbarIcon('references')}</button></footer>`;
+  const workspace=root.querySelector<HTMLElement>(':scope > .meal-log-workspace');
+  const slot=workspace?.querySelector<HTMLElement>(':scope > .meal-log-slot');
+  if(mealPanel&&mealVisible&&workspace&&mealPanel.element.parentElement===slot){
+    const content=document.createElement('template');content.innerHTML=html;
+    const nextWorkspace=content.content.querySelector('.meal-log-workspace')!;
+    // Replacing or moving the workspace would disconnect the live panel again.
+    workspace.querySelector(':scope > .meal-log-spreadsheet')!.replaceWith(nextWorkspace.querySelector('.meal-log-spreadsheet')!);
+    for(const node of [...root.childNodes])if(node!==workspace)node.remove();
+    while(content.content.firstChild&&content.content.firstChild!==nextWorkspace)root.insertBefore(content.content.firstChild,workspace);
+    while(nextWorkspace.nextSibling)root.append(nextWorkspace.nextSibling);
+  }else root.innerHTML=html;
   if(mealPanel&&mealVisible){
-    root.querySelector('.meal-log-slot')!.append(mealPanel.element);
+    const target=root.querySelector('.meal-log-slot')!;
+    if(mealPanel.element.parentElement!==target)target.append(mealPanel.element);
     if(mealPanel.tab==='table')mealPanel.restoreScroll();
     mealPanel.refresh();mealPanel.restoreScroll();
     if(!sameSheet&&mealPanel.tab==='table')mealPanel.tableLast();
