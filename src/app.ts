@@ -1802,8 +1802,10 @@ function renderSaveStatus():void{
 function renderStatus(): void {
   renderSaveStatus();
   updateCalculationState();
-  root.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('#formula,.cell-inline-editor').forEach(el=>el.disabled=busy||!editableReference()||!!gridReference()?.error);
-  if(expandedEditor)expandedEditor.input.disabled=busy||!editableReference()||!!gridReference()?.error;
+  const disableEditor=(input:HTMLInputElement|HTMLTextAreaElement)=>{input.disabled=busy||!editableReference()||!!gridReference()?.error;};
+  const formula=root.querySelector<HTMLInputElement>('#formula');if(formula)disableEditor(formula);
+  root.querySelector('#grid-scroll')?.querySelectorAll<HTMLTextAreaElement>('.cell-inline-editor').forEach(disableEditor);
+  if(expandedEditor)disableEditor(expandedEditor.input);
   if(root.querySelector('[data-action="bold"]')){
     const format=inGrid(selected.r,selected.c)?current().format:undefined;
     for(const flag of ['bold','italic','underline','strikethrough','wrap'] as const)root.querySelector(`[data-action="${flag}"]`)?.setAttribute('aria-pressed',String(!!format?.[flag]));
@@ -2540,7 +2542,8 @@ function openCellDatePicker(cell:HTMLElement):boolean{
   return true;
 }
 function bindRowControls():void {
-  root.querySelectorAll<HTMLElement>('td[data-r]').forEach(el=>{
+  const grid=root.querySelector<HTMLElement>('#grid-scroll')!;
+  grid.querySelectorAll<HTMLElement>('td[data-r]').forEach(el=>{
     el.onpointerdown=e=>{
       if((e.target as HTMLElement).closest('a,textarea,input,button'))return;
       if(!inGrid(Number(el.dataset.r),Number(el.dataset.c)))return;
@@ -2556,20 +2559,20 @@ function bindRowControls():void {
     el.onclick=e=>{if(touchInputDevice&&e.timeStamp-touchTapHandled<100)return;if(!e.shiftKey&&!e.ctrlKey&&!e.metaKey&&!extraSelections.length&&e.detail<2&&!(e.target as HTMLElement).closest('a,textarea,input,button')&&anchor.r===selected.r&&anchor.c===selected.c){if(touchInputDevice)openTouchCell(el);else if(!openCellDatePicker(el))openCellDropdown(el,false);}};
     el.ondblclick=()=>{if(touchInputDevice&&!touchDoubleTap)return;closeCellDropdown?.();openEditor();};
   });
-  root.querySelector<HTMLButtonElement>('[data-fill-handle]')?.addEventListener('pointerdown',e=>{
+  grid.querySelector<HTMLButtonElement>('[data-fill-handle]')?.addEventListener('pointerdown',e=>{
     e.preventDefault();e.stopPropagation();if(!commitDraft())return;if(calendarPlan){flash('Use One page for drag fill across rows.');return;}const range=requireRectangle('Fill');if(!range)return;extraSelections=[];anchor={r:range.r1,c:range.c1};selected={r:range.r2,c:range.c2};fillSource={...range};fillPointer=e.pointerId;(root.querySelector('#grid-scroll') as HTMLElement).setPointerCapture(e.pointerId);
   });
-  root.querySelectorAll<HTMLButtonElement>('[data-insert-row]').forEach(el=>el.onclick=e=>{
+  grid.querySelectorAll<HTMLButtonElement>('[data-insert-row]').forEach(el=>el.onclick=e=>{
     e.stopPropagation();if(!commitDraft())return;const at=Number(el.dataset.insertRow),s=sheet();
     if(!editableReference()){flash('This is a read-only live list. Edit its source table.');return;}
     if(movingRows){dropRows(movingRows,at);return;}
     requestInsert('row',at,Number(el.closest<HTMLElement>('[data-row-select]')!.dataset.rowSelect));
   });
-  root.querySelectorAll<HTMLButtonElement>('[data-insert-row]').forEach(el=>{
+  grid.querySelectorAll<HTMLButtonElement>('[data-insert-row]').forEach(el=>{
     const index=Number(el.closest<HTMLElement>('[data-row-select]')!.dataset.rowSelect),boundary=Number(el.dataset.insertRow);
     bindMoveBoundaryPreview(el,'row',boundary,index,boundary>index);
   });
-  root.querySelectorAll<HTMLElement>('[data-row-select]').forEach(el=>{
+  grid.querySelectorAll<HTMLElement>('[data-row-select]').forEach(el=>{
     const select=(e:MouseEvent)=>{
       if((e.target as HTMLElement).closest('button')||!commitDraft())return;
       headerSelection(e,'row',Number(el.dataset.rowSelect));
@@ -2577,22 +2580,24 @@ function bindRowControls():void {
     el.onclick=select;
     el.querySelector<HTMLElement>('.row-index')!.onclick=e=>{e.stopPropagation();select(e);};
   });
-  root.querySelectorAll<HTMLButtonElement>('[data-move-row]').forEach(el=>{
+  grid.querySelectorAll<HTMLButtonElement>('[data-move-row]').forEach(el=>{
     const ids=()=>{const at=prepareAxisOperation('row',Number(el.dataset.moveRow));const indices=selectedAxisIndices('row'),block=selectionMode()==='rows'&&indices.includes(at),s=sheet();return summaryMoveMembers(selectionScope?{...s,groups:s.groups.filter(g=>g.table===selectionScope)}:s,'row',s.rows.filter((r,i)=>(block?indices.includes(i):i===at)&&(!gridReference()||gridReference()!.rows.includes(r.id))).map(r=>r.id),selectionScope);};
     el.onclick=e=>{e.stopPropagation();if(!commitDraft()||!sheetAxisSelectionAllowed('Moving rows'))return;try{clearMovePreview();movingRows=movingRows?undefined:ids();movingColumns=undefined;render();}catch(error){flash(error);}};
     el.ondragstart=e=>{e.stopPropagation();if(!commitDraft()||!sheetAxisSelectionAllowed('Moving rows')){e.preventDefault();return;}try{clearMovePreview();movingRows=ids();movingColumns=undefined;paintMoving();e.dataTransfer?.setData('application/x-fnt-rows',JSON.stringify(movingRows));if(e.dataTransfer)e.dataTransfer.effectAllowed='move';}catch(error){e.preventDefault();flash(error);}};
     el.ondragend=()=>{movingRows=undefined;paintMoving();root.querySelectorAll('.row-drop-before,.row-drop-after').forEach(n=>n.classList.remove('row-drop-before','row-drop-after'));};
   });
-  root.querySelectorAll<HTMLElement>('[data-row-select]').forEach(el=>{
+  grid.querySelectorAll<HTMLElement>('[data-row-select]').forEach(el=>{
     el.ondragover=e=>{if(!e.dataTransfer?.types.includes('application/x-fnt-rows'))return;e.preventDefault();root.querySelectorAll('.row-drop-before,.row-drop-after').forEach(n=>n.classList.remove('row-drop-before','row-drop-after'));const after=e.clientY>=el.getBoundingClientRect().top+el.getBoundingClientRect().height/2;el.classList.add(after?'row-drop-after':'row-drop-before');const index=Number(el.dataset.rowSelect);showMovePreview('row',index+Number(after),index,after);};
     el.ondrop=e=>{const value=e.dataTransfer?.getData('application/x-fnt-rows');if(!value)return;e.preventDefault();try{const ids:unknown=JSON.parse(value);if(!Array.isArray(ids)||ids.some(id=>typeof id!=='string'))throw Error('Invalid row drag.');dropRows(ids,Number(el.dataset.rowSelect)+(el.classList.contains('row-drop-after')?1:0));}catch(error){flash(error);}};
   });
   refreshDropdownControl();
 }
 function bind(): void {
-  root.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(el => el.onclick = () => { void action(el.dataset.action!); });
+  const scrolling=root.querySelector<HTMLElement>('#grid-scroll')!,spreadsheet=scrolling.closest<HTMLElement>('.meal-log-spreadsheet')!;
+  const actions=[...root.children].flatMap(region=>[...(region===spreadsheet.parentElement?spreadsheet:region).querySelectorAll<HTMLButtonElement>('[data-action]')]);
+  actions.forEach(el => el.onclick = () => { void action(el.dataset.action!); });
   // Commit TABLE edits in the action before blur can redraw and detach its button.
-  root.querySelectorAll<HTMLButtonElement>('[data-action="nutrition-convert"]').forEach(button=>{button.onpointerdown=event=>{if(mealPanel?.tableMode&&!arrangingToolbar)event.preventDefault();};});
+  actions.filter(button=>button.dataset.action==='nutrition-convert').forEach(button=>{button.onpointerdown=event=>{if(mealPanel?.tableMode&&!arrangingToolbar)event.preventDefault();};});
   tableSelectionControl=mountTableSelection(root.querySelector('.table-selection-control')!,{enabled:()=>tableSelectionMode,target:()=>tableSelectionTarget,choices:[{id:'',name:'Auto'},...allTables(book).filter(table=>table.sheet===sheetId&&(!gridReference()||table.id===gridReference()?.table?.id)).map(table=>({id:table.id,name:table.name}))],choose:id=>{
     tableSelectionTarget=id||undefined;tableSelectionMode=true;refreshTableSelectionControl();rememberView();
   }});
@@ -2609,7 +2614,7 @@ function bind(): void {
   for(const [action,label,key] of [['save','Save','s'],['undo','Undo','z'],['redo','Redo','y'],['find','Find / replace','f'],['copy','Copy','c'],['cut','Cut','x'],['paste','Paste','v'],['select-all','Select all cells','a']]){
     setShortcutHint(root.querySelector<HTMLButtonElement>(`button[data-action="${action}"]`),label,[modifier,key.toUpperCase()],`Control+${key} Meta+${key}`);
   }
-  const scrolling=root.querySelector<HTMLElement>('#grid-scroll')!;let frame=0;
+  let frame=0;
   closeMoveAutoScroll=mountMoveAutoScroll(scrolling);
   scrolling.addEventListener('scroll',()=>{if(!frame)frame=requestAnimationFrame(()=>{frame=0;drawRowWindow?.();stickyTableHeaders?.draw();paintMovePreview();});},{passive:true});
   scrolling.addEventListener('pointerleave',clearMovePreview);
@@ -2655,7 +2660,7 @@ function bind(): void {
     endTouch();if(fillSource){const source=fillSource,target=bounds();fillSource=undefined;fillPointer=undefined;if(JSON.stringify(source)!==JSON.stringify(target))mutate('Drag fill',()=>fillCells(book,sheet(),source,confineRange(target)));}
   });
   root.querySelector('#grid-scroll')!.addEventListener('pointercancel',()=>{endTouch();fillSource=undefined;fillPointer=undefined;});
-  root.querySelectorAll<HTMLElement>('[data-col]').forEach(el=>{
+  scrolling.querySelectorAll<HTMLElement>('[data-col]').forEach(el=>{
     const select=(e:MouseEvent)=>{
       if((e.target as HTMLElement).closest('button')||!commitDraft())return;
       headerSelection(e,'column',Number(el.dataset.col));
@@ -2669,20 +2674,20 @@ function bind(): void {
       try{const ids:unknown=JSON.parse(data);if(!Array.isArray(ids)||ids.some(id=>typeof id!=='string'))throw Error('Invalid column drag.');dropColumns(ids,Number(el.dataset.col)+(el.classList.contains('drop-after')?1:0));}catch(error){flash(error);}
     };
   });
-  root.querySelectorAll<HTMLButtonElement>('[data-move-column]').forEach(el=>{
+  scrolling.querySelectorAll<HTMLButtonElement>('[data-move-column]').forEach(el=>{
     el.onpointerdown=()=>el.focus({preventScroll:true});
     const ids=()=>{const c=prepareAxisOperation('column',Number(el.dataset.moveColumn));const indices=selectedAxisIndices('column'),block=selectionMode()==='columns'&&indices.includes(c),s=sheet();return summaryMoveMembers(selectionScope?{...s,groups:s.groups.filter(g=>g.table===selectionScope)}:s,'column',s.columns.filter((column,i)=>(block?indices.includes(i):i===c)&&(!gridReference()||gridReference()!.columns.includes(column.id))).map(column=>column.id),selectionScope);};
     el.onclick=e=>{e.stopPropagation();if(!commitDraft()||!editableReference()||!sheetAxisSelectionAllowed('Moving columns'))return;try{clearMovePreview();movingRows=undefined;movingColumns=movingColumns?undefined:ids();if(movingColumns){if(selectionMode()!=='columns'){extraSelections=[];const at=sheet().columns.findIndex(c=>c.id===movingColumns![0]);anchor={r:0,c:at};selected={r:sheet().rows.length-1,c:at};selectionKind='columns';}renderedTarget=`${sheetId}:${selected.r}`;}render();}catch(error){flash(error);}};
     el.ondragstart=e=>{e.stopPropagation();if(!commitDraft()||!editableReference()||!sheetAxisSelectionAllowed('Moving columns')){e.preventDefault();return;}try{clearMovePreview();movingColumns=ids();movingRows=undefined;paintMoving();e.dataTransfer?.setData('application/x-fnt-columns',JSON.stringify(movingColumns));if(e.dataTransfer)e.dataTransfer.effectAllowed='move';}catch(error){e.preventDefault();flash(error);}};
     el.ondragend=()=>{movingColumns=undefined;paintMoving();root.querySelectorAll('.drop-before,.drop-after').forEach(n=>n.classList.remove('drop-before','drop-after'));};
   });
-  root.querySelectorAll<HTMLButtonElement>('[data-insert-column]').forEach(el=>el.onclick=e=>{
+  scrolling.querySelectorAll<HTMLButtonElement>('[data-insert-column]').forEach(el=>el.onclick=e=>{
     e.stopPropagation();if(!commitDraft())return;const at=Number(el.dataset.insertColumn);
     if(movingColumns){dropColumns(movingColumns,at);return;}
     if(!editableReference()){flash('Edit the live list source instead.');return;}
     const host=el.closest<HTMLElement>('[data-col]');requestInsert('column',at,host?Number(host.dataset.col):0);
   });
-  root.querySelectorAll<HTMLButtonElement>('[data-insert-column]').forEach(el=>{
+  scrolling.querySelectorAll<HTMLButtonElement>('[data-insert-column]').forEach(el=>{
     const host=el.closest<HTMLElement>('[data-col]'),index=host?Number(host.dataset.col):-1,boundary=Number(el.dataset.insertColumn);
     bindMoveBoundaryPreview(el,'column',boundary,index,index<0||boundary>index);
   });
@@ -4390,7 +4395,8 @@ function selectedReferenceTabs():ReferenceSource[]{
   const collect=(nodes:ReferenceNavigation[])=>{for(const node of nodes){if(selectedTabs.has(node.group?`group:${node.group}`:node.members[0].id))for(const source of node.members)selected.set(source.id,source);collect(node.children);}};collect(referenceNavigation(book));return[...selected.values()];
 }
 function bindTabs():void{
-  root.querySelectorAll<HTMLButtonElement>('[data-sheet-group]').forEach(button=>{
+  const bar=root.querySelector<HTMLElement>(':scope > .sheet-bar')!;
+  bar.querySelectorAll<HTMLButtonElement>('[data-sheet-group]').forEach(button=>{
     button.onclick=()=>{
       if(!commitDraft())return;const group=button.dataset.sheetGroup!;
       selectedTabs.clear();
@@ -4400,7 +4406,7 @@ function bindTabs():void{
     button.ondblclick=()=>openSheetTabSettings(book.sheets.filter(sheet=>book.sheetTabGroups?.[sheet.id]===button.dataset.sheetGroup).map(sheet=>sheet.id));
     button.oncontextmenu=e=>{e.preventDefault();openSheetTabSettings(book.sheets.filter(sheet=>book.sheetTabGroups?.[sheet.id]===button.dataset.sheetGroup).map(sheet=>sheet.id));};
   });
-  const entries=[...root.querySelectorAll<HTMLElement>('[data-sheet],[data-reference]')],token=(el:HTMLElement)=>el.dataset.referenceGroup?`group:${el.dataset.referenceGroup}`:el.dataset.reference??el.dataset.sheet!;
+  const entries=[...bar.querySelectorAll<HTMLElement>('[data-sheet],[data-reference]')],token=(el:HTMLElement)=>el.dataset.referenceGroup?`group:${el.dataset.referenceGroup}`:el.dataset.reference??el.dataset.sheet!;
   for(const id of selectedTabs)if(!entries.some(el=>token(el)===id))selectedTabs.delete(id);
   const highlight=()=>entries.forEach(el=>{const selected=selectedTabs.size>1&&selectedTabs.has(token(el));el.classList.toggle('tab-multi-selected',selected);el.setAttribute('aria-pressed',String(selected));});
   entries.forEach(el=>{

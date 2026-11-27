@@ -383,11 +383,13 @@ test('nutrition requests resume, validate reference servings, keep original desc
   await expect(prompt).toHaveValue(/"originalDescription": "Synthetic curry with 40g rice and sesame oil"/);
   await builder.getByRole('button',{name:'Copy prompt',exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>navigator.clipboard.readText())).toContain('"dishName": "Reviewed synthetic curry"');
+  await expect(page.locator('#grid-scroll .copying')).toHaveCount(0);
   await curry.getByRole('textbox',{name:'Dish name',exact:true}).fill('Revised synthetic curry');
   await expect(builder.locator('[data-copy-status]')).toHaveText('Prompt changed — copy again.');
   await curry.getByRole('checkbox',{name:'Include notes',exact:true}).uncheck();
   await builder.getByRole('button',{name:'Copy prompt',exact:true}).click();
   const copied=await page.evaluate(()=>navigator.clipboard.readText());expect(copied).toContain('"dishName": "Revised synthetic curry"');expect(copied).not.toContain('Synthetic optional nutrition context');
+  await expect(page.locator('#grid-scroll .copying')).toHaveCount(0);
   const before=await read(page,fixture.sheet),batch=before.book.foodCapture.builder;
   await page.reload();await page.getByRole('button',{name:'Log test',exact:true}).click();await page.locator('#meal-draft').click();await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();
   await expect(prompt).toHaveValue(/"dishName": "Revised synthetic curry"/);

@@ -121,6 +121,8 @@ Unchanged control properties and summary text are not rewritten; nutrition
 field mappings and table membership are reused only within each fresh day view.
 Full grid/chrome renders keep the visible panel and its workspace ancestors
 connected; the spreadsheet itself still refreshes against the current workbook.
+Card-owned DOM references are released on row/shape changes. Grid and tab
+bindings query their own containers; panel actions retain their own handlers.
 Restaurant controls resolve their configured table without rescanning day blocks.
 Table headers use native sticky bands bounded by their displayed table rows,
 including table-end push-off and naturally pinned columns; table and sheet
