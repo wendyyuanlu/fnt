@@ -968,6 +968,12 @@ the selected data; unchosen differences retain the left copy. Dependency
 validation, stale-edit checks and recovery backups must succeed first. Submission
 shows its current stage and completed-step progress; only this deliberate
 whole-workbook replacement asks you to wait.
+Cells containing only formatting, retained calculations or empty saved records
+are included when their row or column is added or removed. Structural choices
+cannot silently strand those cells outside the selected sheet.
+Older saved reviews keep all decisions: newly exposed metadata-only cells follow
+an explicitly selected parent deletion unless that cell has an explicit keep
+decision. Meaningful contents still require their own compatible choices.
 Both source workbooks and the complete pre-apply backup remain in Recovery;
 Undo restores the previous workbook. GitHub replacement requires the separate
 unchecked confirmation option and a fresh remote SHA check. Local-only submission

@@ -1,5 +1,5 @@
 import {expect,test,type Page} from '@playwright/test';
-import {clone,createDemo} from '../../src/model';
+import {blankSheet,clone,createDemo,key} from '../../src/model';
 import {encode64} from '../../src/storage';
 import {decompressArchive} from '../../src/archive';
 import type {Workbook} from '../../src/model';
@@ -19,6 +19,84 @@ async function open(page:Page){
   await expect(comparison.locator('#left-file')).toBeEnabled();
   return comparison;
 }
+test('submission handles removed rows and columns containing only formatting after restoring saved choices',async({page})=>{
+  let requests=0;await page.route('https://api.github.com/**',async route=>{requests++;await route.abort();});
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  const left=createDemo(),sheet=blankSheet('Synthetic formatted edges',4,4);left.sheets.push(sheet);
+  const row=sheet.rows[1].id,column=sheet.columns[1].id;
+  sheet.cells[key(row,sheet.columns[0].id)]={format:{bold:true}};
+  sheet.cells[key(sheet.rows[0].id,column)]={format:{italic:true}};
+  sheet.cells[key(row,column)]={};
+  const right=clone(left),donor=right.sheets.at(-1)!;
+  donor.rows=donor.rows.filter(item=>item.id!==row);donor.columns=donor.columns.filter(item=>item.id!==column);
+  donor.cells={};
+  const comparison=await open(page);
+  for(const [side,book]of [['left',left],['right',right]] as const){
+    await expect(comparison.locator(`#${side}-file`)).toBeEnabled();
+    await comparison.locator(`#${side}-file`).setInputFiles({name:`synthetic-${side}.json`,mimeType:'application/json',buffer:Buffer.from(JSON.stringify(book))});
+    await expect(comparison.locator(`#${side}-source`)).toHaveText(`synthetic-${side}.json`);
+  }
+  await comparison.locator('.bulk-disclosure>summary').click();
+  await comparison.locator('#choice-scope-trigger').click();
+  await comparison.getByRole('option',{name:'Every difference in both copies',exact:true}).click();
+  await comparison.locator('#bulk-buttons [data-pick="right"]').click();
+  await expect(comparison.locator('#selection-progress')).toContainText('5 of 5 chosen');
+  await page.reload();
+  await expect(comparison.locator('#selection-progress')).toContainText('5 of 5 chosen');
+  await comparison.locator('#submit-decision').click();
+  await comparison.locator('#submit-back').click();
+  await expect(comparison.locator('#selection-progress')).toContainText('5 of 5 chosen');
+  await comparison.locator('#submit-decision').click();await comparison.locator('#apply-selection').click();
+  await expect(page.locator('.comparison-view')).toHaveCount(0);
+  expect((await saved(page)).book.sheets.find(item=>item.id===sheet.id)).toEqual(donor);
+  await page.reload();await expect(page.locator('#save-state')).toContainText('Saved');
+  expect((await saved(page)).book.sheets.find(item=>item.id===sheet.id)).toEqual(donor);
+  expect(requests).toBe(0);
+});
+test('upgrading comparison retains 603 existing choices when a previously hidden formatted cell becomes a new difference',async({page})=>{
+  let legacy=true,legacyLoads=0;
+  await page.route('**/prototypes/comparison/comparison-model.ts',async route=>{
+    if(!legacy){await route.continue();return;}
+    const response=await route.fetch({headers:{...route.request().headers(),'if-none-match':'','if-modified-since':''}}),body=await response.text();
+    const fixed=/!present\d* \|\| (!equal\(meaningful\(ca\), meaningful\(cb\)\))/g;
+    expect([...body.matchAll(fixed)]).toHaveLength(1);legacyLoads++;
+    await route.fulfill({response,body:body.replace(fixed,'$1')});
+  });
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  const left=createDemo(),sheet=blankSheet('Synthetic upgrade choices',604,14);left.sheets.push(sheet);
+  const removed=sheet.rows[1].id;
+  for(const index of [8,10,12,13])sheet.cells[key(removed,sheet.columns[index].id)]=index===8?{}:{format:{bold:true}};
+  for(const row of sheet.rows.slice(2))sheet.cells[key(row.id,sheet.columns[0].id)]={value:'Before'};
+  const right=clone(left),donor=right.sheets.at(-1)!;
+  donor.rows=donor.rows.filter(item=>item.id!==removed);
+  for(const index of [8,10,12,13])delete donor.cells[key(removed,sheet.columns[index].id)];
+  for(const row of donor.rows.slice(1))donor.cells[key(row.id,donor.columns[0].id)]={value:'After'};
+  const comparison=await open(page);
+  for(const [side,book]of [['left',left],['right',right]] as const){
+    await expect(comparison.locator(`#${side}-file`)).toBeEnabled();
+    await comparison.locator(`#${side}-file`).setInputFiles({name:`upgrade-${side}.json`,mimeType:'application/json',buffer:Buffer.from(JSON.stringify(book))});
+    await expect(comparison.locator(`#${side}-source`)).toHaveText(`upgrade-${side}.json`);
+  }
+  await expect(comparison.locator('#selection-progress')).toContainText('0 of 603 chosen');
+  await comparison.locator('.bulk-disclosure>summary').click();
+  await comparison.locator('#choice-scope-trigger').click();
+  await comparison.getByRole('option',{name:'Every difference in both copies',exact:true}).click();
+  await comparison.locator('#bulk-buttons [data-pick="right"]').click();
+  await expect(comparison.locator('#selection-progress')).toContainText('603 of 603 chosen');
+  await expect.poll(()=>page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{const state=(await store.load())!;return (await store.comparisonReview(sessionStorage.getItem(`fnt-comparison:${state.book.id}`)!))?.view?.choices.length;}finally{store.close();}
+  })).toBe(603);
+  expect(legacyLoads).toBeGreaterThan(0);legacy=false;
+  await page.reload();
+  await expect(comparison.locator('#selection-progress')).toContainText('603 of 607 chosen');
+  await expect(comparison.locator('#left-source')).toHaveText('upgrade-left.json');
+  await expect(comparison.locator('#right-source')).toHaveText('upgrade-right.json');
+  await expect(comparison.locator('#undo-choice')).toBeEnabled();
+  await comparison.locator('#submit-decision').click();await comparison.locator('#apply-selection').click();
+  await expect(page.locator('.comparison-view')).toHaveCount(0);
+  expect((await saved(page)).book.sheets.find(item=>item.id===sheet.id)).toEqual(donor);
+});
 test('computer action restores local edits offline without replacing the right copy or saving workbook data',async({page,isMobile})=>{
   let requests=0;await page.route('https://api.github.com/**',async route=>{requests++;await route.abort();});
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');

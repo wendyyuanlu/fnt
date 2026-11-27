@@ -1,4 +1,4 @@
-import {compare,align,type Difference} from '../prototypes/comparison/comparison-model';
+import {compare,align,meaningful,type Difference} from '../prototypes/comparison/comparison-model';
 import {allSheets,allTables,clone,replaceTables,type Workbook,type Cell} from './model';
 import {type Ast} from './formula';
 import {validateBook} from './storage';
@@ -61,6 +61,12 @@ export async function mergeComparison(left:Workbook,right:Workbook,choices:reado
   if(!selected.size)throw Error('Choose at least one change before applying.');
   const result=clone(left),side=(difference:Difference)=>selected.get(difference.id)??'left',source=(difference:Difference)=>side(difference)==='right'?right:left;
   const chosen=(difference:Difference)=>side(difference)==='right'?difference.right:difference.left;
+  const deletions=new Set<string>(),deletionKey=(...parts:string[])=>JSON.stringify(parts);
+  for(const difference of differences)if(selected.get(difference.id)==='right'&&difference.right===undefined){
+    const target=difference.target;
+    if(target?.kind==='sheet'&&!target.property)deletions.add(deletionKey('sheet',target.id));
+    if(target?.kind==='axis'&&!target.property)deletions.add(deletionKey(target.axis,target.sheet,target.id));
+  }
   const sheet=(id:string)=>allSheets(result).find(sheet=>sheet.id===id);
   const requireTarget=<T extends object>(target:T|undefined,difference:Difference)=>{if(!target&&chosen(difference)!==undefined)throw Error(`${difference.label} needs its containing sheet, row, column or table. Choose the related structural changes and retry.`);return target;};
   for(const difference of differences){
@@ -98,12 +104,23 @@ export async function mergeComparison(left:Workbook,right:Workbook,choices:reado
       }
     }else if(target.kind==='cell'){
       const s=sheet(target.sheet),[row,column]=target.address.split(':'),origin=allSheets(source(difference)).find(sheet=>sheet.id===target.sheet)?.cells[target.address];
-      if(!s||!s.rows.some(item=>item.id===row)||!s.columns.some(item=>item.id===column)){
+      const hasRow=s?.rows.some(item=>item.id===row),hasColumn=s?.columns.some(item=>item.id===column);
+      if(!s||!hasRow||!hasColumn){
+        const deletedParent=!s?deletions.has(deletionKey('sheet',target.sheet)):
+          (hasRow||deletions.has(deletionKey('row',target.sheet,row)))&&(hasColumn||deletions.has(deletionKey('column',target.sheet,column)));
+        // Older reviews omitted these cells; an explicit parent deletion includes their metadata.
+        if(!selected.has(difference.id)&&target.part==='whole'&&meaningful(origin)===undefined&&deletedParent){
+          if(s)delete s.cells[target.address];continue;
+        }
         if(origin)throw Error(`${difference.label} needs its row and column. Choose their structural changes and retry.`);
         if(s)delete s.cells[target.address];continue;
       }
+      if(target.part==='whole'){
+        if(origin)s.cells[target.address]=clone(origin);else delete s.cells[target.address];
+        continue;
+      }
       const cell:Cell=clone(s.cells[target.address]??{});
-      const keys=target.part==='format'?['format']:target.part==='metadata'?['format','calculation','spillHint']:target.part==='whole'?[...content,'format','calculation','spillHint']:target.part==='date'?[...content,'calculation','spillHint']:content;
+      const keys=target.part==='format'?['format']:target.part==='metadata'?['format','calculation','spillHint']:target.part==='date'?[...content,'calculation','spillHint']:content;
       for(const name of keys)property(cell,name,origin?Reflect.get(origin,name):undefined);
       if(Object.values(cell).some(value=>value!==undefined))s.cells[target.address]=cell;else delete s.cells[target.address];
     }else if(target.kind==='group'||target.kind==='validation'){

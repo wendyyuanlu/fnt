@@ -1,7 +1,7 @@
 import {describe,expect,it} from 'vitest';
 import {compare} from '../prototypes/comparison/comparison-model';
 import {mergeComparison} from '../src/comparison-merge';
-import {clone,createDemo,key} from '../src/model';
+import {blankSheet,clone,createDemo,key} from '../src/model';
 
 describe('selective comparison replacement',()=>{
   it('applies chosen contents independently of formatting and retains unchosen contents',async()=>{
@@ -48,5 +48,56 @@ describe('selective comparison replacement',()=>{
     await expect(mergeComparison(left,right,[])).rejects.toThrow('at least one');
     await expect(mergeComparison(left,right,[{id:-1,side:'right'}])).rejects.toThrow('invalid');
     await expect(mergeComparison(left,right,[{id:difference.id,side:'right'},{id:difference.id,side:'left'}])).rejects.toThrow('invalid');
+  });
+  it.each(['row','column'] as const)('compares formatting-only and empty cells when their %s is removed',async axis=>{
+    const left=createDemo(),sheet=blankSheet('Formatting regression',4,4);
+    left.sheets.push(sheet);
+    const row=sheet.rows[1].id,column=sheet.columns[1].id;
+    const formatted=key(row,column),empty=axis==='row'?key(row,sheet.columns[2].id):key(sheet.rows[2].id,column);
+    const retained=axis==='row'?key(row,sheet.columns[3].id):key(sheet.rows[3].id,column);
+    sheet.cells[formatted]={format:{bold:true}};
+    sheet.cells[empty]={};
+    sheet.cells[retained]={calculation:{kind:'literal',value:42},spillHint:true};
+    const right=clone(left),donor=right.sheets.at(-1)!;
+    if(axis==='row')donor.rows=donor.rows.filter(item=>item.id!==row);
+    else donor.columns=donor.columns.filter(item=>item.id!==column);
+    delete donor.cells[formatted];delete donor.cells[empty];delete donor.cells[retained];
+    const differences=await compare(left,right);
+    for(const address of [formatted,empty,retained])expect(differences.find(d=>d.target?.kind==='cell'&&d.target.address===address&&d.target.part==='whole')).toBeDefined();
+    expect(await mergeComparison(left,right,differences.map(d=>({id:d.id,side:'left'})))).toEqual(left);
+    expect(await mergeComparison(left,right,differences.map(d=>({id:d.id,side:'right'})))).toEqual(right);
+    const reverse=await compare(right,left);
+    expect(await mergeComparison(right,left,reverse.map(d=>({id:d.id,side:'right'})))).toEqual(left);
+    expect(sheet.cells[formatted]).toEqual({format:{bold:true}});
+  });
+  it('inherits an explicit parent deletion for omitted metadata but protects explicit keep decisions and meaningful contents',async()=>{
+    const left=createDemo(),sheet=blankSheet('Formatting conflict',3,3);left.sheets.push(sheet);
+    const row=sheet.rows[1].id,address=key(row,sheet.columns[0].id);
+    sheet.cells[address]={format:{italic:true}};
+    const right=clone(left),donor=right.sheets.at(-1)!;
+    donor.rows=donor.rows.filter(item=>item.id!==row);delete donor.cells[address];
+    const beforeLeft=clone(left),beforeRight=clone(right),differences=await compare(left,right);
+    const removal=differences.find(d=>d.target?.kind==='axis'&&d.target.id===row)!;
+    const cell=differences.find(d=>d.target?.kind==='cell'&&d.target.address===address)!;
+    expect(await mergeComparison(left,right,[{id:removal.id,side:'right'}])).toEqual(right);
+    await expect(mergeComparison(left,right,[{id:removal.id,side:'right'},{id:cell.id,side:'left'}])).rejects.toThrow('row and column');
+    expect(left).toEqual(beforeLeft);expect(right).toEqual(beforeRight);
+    sheet.cells[address]={value:'Do not drop this value',format:{italic:true}};
+    const contentDifferences=await compare(left,right),contentRemoval=contentDifferences.find(d=>d.target?.kind==='axis'&&d.target.id===row)!;
+    await expect(mergeComparison(left,right,[{id:contentRemoval.id,side:'right'}])).rejects.toThrow('row and column');
+  });
+  it.each(['row','column','sheet'] as const)('replays a legacy %s deletion without requiring new metadata-only decisions',async kind=>{
+    const left=createDemo(),sheet=blankSheet('Legacy metadata removal',3,3);left.sheets.push(sheet);
+    const row=sheet.rows[1].id,column=sheet.columns[1].id,address=key(row,column);
+    sheet.cells[address]={calculation:{kind:'literal',value:42},spillHint:true};
+    const right=clone(left),donor=right.sheets.at(-1)!;
+    if(kind==='sheet')right.sheets.pop();
+    else{
+      if(kind==='row')donor.rows=donor.rows.filter(item=>item.id!==row);
+      else donor.columns=donor.columns.filter(item=>item.id!==column);
+      delete donor.cells[address];
+    }
+    const differences=await compare(left,right),legacy=differences.filter(d=>d.target?.kind!=='cell');
+    expect(await mergeComparison(left,right,legacy.map(d=>({id:d.id,side:'right'})))).toEqual(right);
   });
 });

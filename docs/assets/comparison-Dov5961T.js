@@ -1,4 +1,4 @@
-const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/main-DsgpAWZR.js","assets/icons-Dq1mTFCE.js","assets/main-Bc3DfHYS.css"])))=>i.map(i=>d[i]);
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/main-BIXoy-RI.js","assets/icons-Bk0V9K4O.js","assets/main-Bc3DfHYS.css"])))=>i.map(i=>d[i]);
 import{_ as t}from"./preload-helper-DO0sjJph.js";const s=`<!doctype html>\r
 <html lang="en">\r
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fnt - Visual comparison prototype</title><link rel="stylesheet" href="style.css"></head>\r
@@ -91,4 +91,4 @@ import{_ as t}from"./preload-helper-DO0sjJph.js";const s=`<!doctype html>\r
 </main>\r
 <script type="module" src="./main.ts"><\/script>\r
 </body></html>\r
-`,i=new DOMParser().parseFromString(s,"text/html").body;i.querySelectorAll("script").forEach(e=>e.remove());for(const e of i.attributes)document.body.setAttribute(e.name,e.value);document.body.dataset.production="true";document.body.replaceChildren(...i.childNodes);t(()=>import("./main-DsgpAWZR.js"),__vite__mapDeps([0,1,2])).then(()=>{var e,a;(a=(e=navigator.serviceWorker)==null?void 0:e.controller)==null||a.postMessage({type:"fnt-shell-loaded",file:import.meta.url})}).catch(e=>{const a=document.querySelector("#error");a.hidden=!1,a.textContent=`Comparison could not be opened. Your workbook is unchanged. ${String(e)}`,document.body.dataset.loading="false"});
+`,i=new DOMParser().parseFromString(s,"text/html").body;i.querySelectorAll("script").forEach(e=>e.remove());for(const e of i.attributes)document.body.setAttribute(e.name,e.value);document.body.dataset.production="true";document.body.replaceChildren(...i.childNodes);t(()=>import("./main-BIXoy-RI.js"),__vite__mapDeps([0,1,2])).then(()=>{var e,a;(a=(e=navigator.serviceWorker)==null?void 0:e.controller)==null||a.postMessage({type:"fnt-shell-loaded",file:import.meta.url})}).catch(e=>{const a=document.querySelector("#error");a.hidden=!1,a.textContent=`Comparison could not be opened. Your workbook is unchanged. ${String(e)}`,document.body.dataset.loading="false"});

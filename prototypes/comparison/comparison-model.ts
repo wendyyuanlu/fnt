@@ -74,7 +74,7 @@ function changedProperties(a:object|undefined,b:object|undefined,skip:string[]):
   const before:Record<string,unknown>=Object.fromEntries(Object.entries(a??{})),after:Record<string,unknown>=Object.fromEntries(Object.entries(b??{}));
   return [...new Set([...Object.keys(before),...Object.keys(after)])].filter(key=>!skip.includes(key)&&!equal(before[key],after[key])).map(key=>[key,before[key],after[key]]);
 }
-const meaningful=(cell:Cell|undefined):unknown=>cell?present({
+export const meaningful=(cell:Cell|undefined):unknown=>cell?present({
   value:cell.value===null?undefined:cell.value,formula:cell.formula,binding:cell.binding,note:cell.note,link:cell.link,
   dateLiteral:cell.dateLiteral,fractionInput:cell.fractionInput,fractionLiteral:cell.fractionLiteral,
   dayDateTable:cell.dayDateTable,
@@ -131,7 +131,7 @@ export async function compare(left:Workbook,right:Workbook,progress:(checked:num
         const [row,column]=address.split(':'),owner=tables.find(t=>t.table.sheet===sheetId&&t.rows.has(row)&&t.columns.has(column))?.table;
         const present=rowsA.has(row)&&rowsB.has(row)&&colsA.has(column)&&colsB.has(column);
         const dateAnchor=present&&dates.has(address)&&anchored(ca,cb);
-        if(!equal(meaningful(ca),meaningful(cb))){
+        if(!present||!equal(meaningful(ca),meaningful(cb))){
           let dateLabel=anchorLabel;
           if(dateAnchor){
             const av=scalar(engines[0].cell(sheetId,row,column)),bv=scalar(engines[1].cell(sheetId,row,column));
