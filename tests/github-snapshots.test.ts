@@ -1,7 +1,7 @@
 import {afterEach,describe,expect,it,vi} from 'vitest';
 import {createDemo} from '../src/model';
 import {decode64,encode64,type SyncConfig} from '../src/storage';
-import {uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,comparisonSnapshot,listComparisonCommits,readComparisonCommit} from '../src/github-snapshots';
+import {uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,deleteComparisonSnapshot,comparisonSnapshot,listComparisonCommits,readComparisonCommit} from '../src/github-snapshots';
 import {syncCodec} from '../src/sync-codec';
 import {githubFormDefaults} from '../src/github-client';
 
@@ -25,6 +25,12 @@ function server(){
       files.set(path,{sha,content:String(body.content)});writes.push({path,body});
       return Response.json({content:{sha}});
     }
+    if(init?.method==='DELETE'){
+      const body=JSON.parse(String(init.body)) as Record<string,unknown>,file=files.get(path);
+      if(file?.sha!==body.sha)return new Response(null,{status:409});
+      files.delete(path);writes.push({path,body});return Response.json({commit:{sha:'d'.repeat(40)}});
+    }
+    if(url.pathname.includes('/contents/'))return files.has(path)?Response.json({sha:files.get(path)!.sha}):new Response(null,{status:404});
     if(url.pathname.includes('/git/trees/'))return Response.json({tree:[...files].reverse().map(([path,file])=>({path,sha:file.sha,type:'blob'})),truncated:false});
     if(url.pathname.includes('/git/blobs/')){
       const file=[...files.values()].find(file=>file.sha===url.pathname.split('/').at(-1));
@@ -35,6 +41,27 @@ function server(){
   return {fetcher,files,writes};
 }
 describe('private comparison snapshots',()=>{
+  it('deletes only the listed snapshot current file with a fresh SHA check, leaving the workbook untouched',async()=>{
+    const {fetcher,files,writes}=server(),book=createDemo(),entry=await uploadComparisonSnapshot(config,token,book,'Phone',fetcher);
+    files.set(config.path,{sha:'a'.repeat(40),content:'Invented main file'});
+    await deleteComparisonSnapshot(config,token,entry,fetcher);
+    expect(files.has(entry.path)).toBe(false);expect(files.get(config.path)?.content).toBe('Invented main file');
+    expect(writes.at(-1)).toEqual({path:entry.path,body:{message:'Fnt: delete comparison snapshot',branch:config.branch,sha:entry.sha}});
+    await expect(deleteComparisonSnapshot(config,token,{...entry,path:config.path},fetcher)).rejects.toThrow('Invalid uploaded copy');
+  });
+  it('rejects changed, missing, and unacknowledged deletions without retrying a destructive request',async()=>{
+    for(const kind of ['changed','missing','unacknowledged']){
+      const {fetcher,files}=server(),entry=await uploadComparisonSnapshot(config,token,createDemo(),'Phone',fetcher);let deletes=0;
+      if(kind==='changed')files.get(entry.path)!.sha='c'.repeat(40);
+      if(kind==='missing')files.delete(entry.path);
+      const wrapped:typeof fetch=async(input,init)=>{
+        if(init?.method==='DELETE'){deletes++;return Response.json({});}
+        return fetcher(input,init);
+      };
+      await expect(deleteComparisonSnapshot(config,token,entry,wrapped)).rejects.toThrow(/Refresh|refresh/);
+      expect(deletes).toBe(kind==='unacknowledged'?1:0);
+    }
+  });
   it('creates independent copies with device labels, lists newest first and reads the selected immutable blob',async()=>{
     vi.useFakeTimers();vi.setSystemTime(new Date('2026-11-25T18:00:00Z'));
     const {fetcher,writes}=server(),book=createDemo(),before=JSON.stringify(book);
@@ -55,6 +82,11 @@ describe('private comparison snapshots',()=>{
     expect(JSON.stringify(book)).toBe(before);
   });
   describe('read-only comparison commits',()=>{
+    it.each([['Fnt: save 2 local changes',2],['Fnt: save 1 local change',1],['Fnt: save 0 local changes',0]] as const)('reads the recorded count from the current writer: %s',async(message,changes)=>{
+      const sha='e'.repeat(40),time='2026-11-26T22:00:00Z';
+      const fetcher:typeof fetch=vi.fn(async input=>String(input).includes('/commits')?Response.json([{sha,commit:{committer:{date:time},message}}]):Response.json({private:true,has_pages:false}));
+      expect((await listComparisonCommits(config,token,1,fetcher)).commits).toEqual([{sha,time,message,changes}]);
+    });
     const sha='a'.repeat(40),commit={sha,time:'2026-11-25T22:00:00Z',message:'Fnt save (7 pending changes)'};
     it('loads large historical JSON from its immutable blob rather than the branch or a download URL',async()=>{
       const blob='d'.repeat(40),book=createDemo(),requests:string[]=[],fetcher:typeof fetch=vi.fn(async(input,init)=>{

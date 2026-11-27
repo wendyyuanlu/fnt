@@ -70,6 +70,8 @@ for(const stale of [false,true])test(stale?'explicit GitHub submission rejects a
   const right=clone((await saved(page)).book);right.title='Chosen remote title';
   remote=encode64(JSON.stringify({format:'fnt-sync-v1',book:right,operations:[]}));sha='donor-sha';
   const comparison=await open(page);
+  await comparison.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();
+  await comparison.getByRole('option',{name:'Latest saved workbook',exact:true}).click();
   await expect(comparison.locator('#selection-progress')).toContainText('0 of 1 chosen');
   await comparison.locator('#keep-right button').click();await comparison.locator('#submit-decision').click();
   await expect(comparison.locator('#apply-sync')).not.toBeChecked();
@@ -87,4 +89,28 @@ for(const stale of [false,true])test(stale?'explicit GitHub submission rejects a
     await page.locator('[data-action="undo"]').click();
     await expect.poll(async()=>(await saved(page)).book.title).toBe(before.book.title);
   }
+});
+
+test('refresh restores comparison sources, choices, undo and display preferences only in that tab',async({page,context})=>{
+  let requests=0;await page.route('https://api.github.com/**',async route=>{requests++;await route.abort();});
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  const before=await saved(page),left=createDemo(),right=clone(left);right.title='Invented retained review';
+  const comparison=await open(page);
+  for(const [side,book]of [['left',left],['right',right]] as const)await comparison.locator(`#${side}-file`).setInputFiles({name:`invented-${side}.json`,mimeType:'application/json',buffer:Buffer.from(JSON.stringify(book))});
+  await expect(comparison.locator('#selection-progress')).toContainText('0 of 1 chosen');
+  await comparison.locator('#keep-right button').click();await comparison.locator('#first-cell').uncheck();
+  await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
+  await page.reload();
+  await expect(page.locator('#app')).toHaveJSProperty('inert',true);
+  await expect(comparison.locator('#left-source')).toHaveText('invented-left.json');
+  await expect(comparison.locator('#right-source')).toHaveText('invented-right.json');
+  await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
+  await expect(comparison.locator('#first-cell')).not.toBeChecked();
+  await comparison.locator('#undo-choice').click();await expect(comparison.locator('#selection-progress')).toContainText('0 of 1 chosen');
+  const other=await context.newPage();await other.goto('/');await expect(other.locator('#save-state')).toContainText('Saved');
+  await expect(other.locator('.comparison-view')).toHaveCount(0);await other.close();
+  expect((await saved(page)).book.title).toBe(before.book.title);expect(requests).toBe(0);
+  await comparison.getByRole('button',{name:'Back to workbook',exact:true}).click();
+  await page.reload();await expect(page.locator('#save-state')).toContainText('Saved');
+  await expect(page.locator('.comparison-view')).toHaveCount(0);
 });

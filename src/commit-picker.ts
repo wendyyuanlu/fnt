@@ -1,89 +1,81 @@
-import {dropdownArrowHtml,dropdownOptionsKey,renderDropdownTrigger} from './dropdown-ui';
-import type {ComparisonCommit,ComparisonCommitPage} from './github-snapshots';
+import {dropdownOptionsKey,dropdownSectionHeader,mountDropdownPanel,mountDropdownPopup,renderDropdownTrigger} from './dropdown-ui';
+import {snapshotDate,type ComparisonCommit,type ComparisonCommitPage,type ComparisonSnapshot} from './github-snapshots';
 import './commit-picker.css';
 
-export function mountCommitPicker(trigger:HTMLButtonElement,options:{
-  list?:((page:number)=>Promise<ComparisonCommitPage>);choose:(commit:ComparisonCommit)=>void;selected:()=>string|undefined;
-  latest?:{choose:()=>void;selected:()=>boolean};
-}):{close:()=>void}{
-  trigger.type='button';trigger.classList.add('dropdown-field');
-  renderDropdownTrigger(trigger,'Commits');trigger.setAttribute('role','combobox');
-  trigger.setAttribute('aria-haspopup','listbox');trigger.setAttribute('aria-expanded','false');
-  let closePopup:(()=>void)|undefined;
-  trigger.onclick=()=>{
-    if(closePopup){closePopup();return;}
-    const popup=document.createElement('div'),search=document.createElement('input'),list=document.createElement('div'),status=document.createElement('p'),more=document.createElement('button'),controller=new AbortController();
-    popup.className='cell-dropdown commit-popup';popup.setAttribute('aria-label',trigger.getAttribute('aria-label')!);
-    search.type='search';search.autocomplete='off';search.placeholder='Search commits…';search.setAttribute('aria-label','Search commits');
-    list.className='cell-dropdown-options commit-options';list.setAttribute('role','listbox');list.setAttribute('aria-label','Commits');list.id=trigger.id+'-options';
-    trigger.setAttribute('aria-controls',list.id);
-    status.className='muted';status.setAttribute('role','status');more.type='button';more.textContent='Load earlier commits';
-    popup.append(search,list,status,more);
-    let entries:ComparisonCommit[]=[],next:number|undefined=options.list?1:undefined,loading=false,failure:string|undefined;
-    const collapsed=new Set<string>(),timeFormat=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hour12:true,timeZoneName:'short'}),dayFormat=new Intl.DateTimeFormat(undefined,{year:'numeric',month:'long',day:'numeric'});
-    const close=()=>{controller.abort();popup.remove();trigger.setAttribute('aria-expanded','false');closePopup=undefined;};closePopup=close;
-    const position=()=>{
-      const rect=trigger.getBoundingClientRect(),viewport=visualViewport,left=viewport?.offsetLeft??0,top=viewport?.offsetTop??0,width=viewport?.width??innerWidth,height=viewport?.height??innerHeight;
-      popup.style.width=Math.min(480,width-20)+'px';popup.style.maxHeight=Math.max(0,Math.min(440,height-20))+'px';
-      popup.style.left=Math.max(left+10,Math.min(rect.left,left+width-popup.offsetWidth-10))+'px';
-      popup.style.top=Math.max(top+10,Math.min(rect.bottom+4,top+height-popup.offsetHeight-10))+'px';
-    };
+interface PickerEntry {id:string;time:string;search:string;cells:string[];title?:string}
+interface PickerOptions {
+  label:string;headers:string[];list?:((page:number)=>Promise<{entries:PickerEntry[];next?:number}>);
+  choose:(id:string)=>void;selected:()=>string|undefined;available?:()=>boolean;
+  latest?:{choose:()=>void;selected:()=>boolean};sync?:()=>void;manage?:()=>void;canChoose?:()=>boolean;
+}
+function mountComparisonPicker(trigger:HTMLButtonElement,options:PickerOptions):{close:()=>void}{
+  trigger.classList.add('dropdown-field');renderDropdownTrigger(trigger,options.label);
+  return mountDropdownPopup(trigger,trigger.getAttribute('aria-label')??options.label,(panel,position,close,popup)=>{
+    popup.classList.add('commit-popup');popup.dataset.columns=String(options.headers.length);
+    const {search,list}=mountDropdownPanel(panel,options.label,'Search '+options.label.toLowerCase());
+    list.classList.add('commit-options');list.setAttribute('aria-label',options.label);list.id=trigger.id+'-options';trigger.setAttribute('aria-controls',list.id);
+    const status=document.createElement('div'),footer=document.createElement('div'),more=document.createElement('button');
+    status.setAttribute('role','status');footer.className='dropdown-footer';more.type='button';more.textContent='Load earlier commits';footer.append(more);popup.append(status,footer);
+    const available=()=>options.available?.()??true,canChoose=()=>available()&&(options.canChoose?.()??true);
+    const action=(label:string,run:()=>void)=>{const button=document.createElement('button');button.type='button';button.textContent=label;button.onclick=()=>{close();run();};footer.append(button);return button;};
+    if(options.sync&&!available())action('Sync GitHub',options.sync);
+    if(options.manage){const manage=action('Manage',options.manage);manage.disabled=!available();}
+    let entries:PickerEntry[]=[],next:number|undefined=options.list&&available()?1:undefined,loading=false,failure:string|undefined;
+    const collapsed=new Set<string>(),dayFormat=new Intl.DateTimeFormat(undefined,{year:'numeric',month:'long',day:'numeric'});
     const draw=()=>{
-      const query=search.value.toLowerCase(),groups=new Map<string,ComparisonCommit[]>();
+      const query=search.value.toLowerCase(),groups=new Map<string,PickerEntry[]>();
       for(const entry of [...entries].sort((a,b)=>Date.parse(b.time)-Date.parse(a.time))){
-        const date=dayFormat.format(new Date(entry.time)),time=timeFormat.format(new Date(entry.time));
-        if(query&&!`${date} ${time} ${entry.message} ${entry.sha}`.toLowerCase().includes(query))continue;
-        const group=groups.get(date)??[];group.push(entry);groups.set(date,group);
+        const day=dayFormat.format(new Date(entry.time));if(query&&!`${day} ${entry.search}`.toLowerCase().includes(query))continue;
+        const group=groups.get(day)??[];group.push(entry);groups.set(day,group);
       }
-      const header=document.createElement('div');header.className='commit-columns commit-header';
-      for(const name of ['Time','Changes','Commit']){const cell=document.createElement('span');cell.textContent=name;header.append(cell);}
+      const header=document.createElement('div');header.className='find-sheet-header commit-columns commit-header';
+      for(const text of options.headers){const cell=document.createElement('span');cell.textContent=text;header.append(cell);}
       list.replaceChildren(header);
-      const showLatest=options.latest&&(!query||'latest saved workbook current branch'.includes(query));
-      if(showLatest){
-        const button=document.createElement('button');button.type='button';button.className='commit-columns commit-option';
-        button.setAttribute('role','option');button.setAttribute('aria-label','Latest saved workbook');button.setAttribute('aria-selected',String(options.latest!.selected()));
-        for(const text of ['Latest','Latest saved workbook','Current']){const cell=document.createElement('span');cell.textContent=text;button.append(cell);}
+      if(options.latest&&(!query||'latest saved workbook current branch'.includes(query))){
+        const button=document.createElement('button');button.type='button';button.className='commit-columns commit-option';button.setAttribute('role','option');button.setAttribute('aria-label','Latest saved workbook');
+        button.setAttribute('aria-selected',String(options.latest.selected()));button.disabled=!canChoose();
+        for(const text of ['Latest saved workbook','—','Current']){const cell=document.createElement('span');cell.textContent=text;button.append(cell);}
         button.title='Fetch the newest saved workbook now. Dated rows open a fixed saved version.';
         button.onclick=()=>{close();options.latest!.choose();};list.append(button);
       }
-      for(const [date,commits]of groups){
-        const group=document.createElement('details'),summary=document.createElement('summary'),label=document.createElement('span'),rows=document.createElement('div');
-        group.className='commit-day';group.open=!!query||!collapsed.has(date);
-        summary.innerHTML=`<span class="format-caret">${dropdownArrowHtml}</span>`;label.textContent=date;summary.append(label);
-        rows.setAttribute('role','group');rows.setAttribute('aria-label',date);
-        for(const entry of commits){
-          const button=document.createElement('button'),time=document.createElement('span'),changes=document.createElement('span'),sha=document.createElement('span');
-          button.type='button';button.className='commit-columns commit-option';button.setAttribute('role','option');button.setAttribute('aria-selected',String(options.selected()===entry.sha));button.dataset.commit=entry.sha;
-          time.textContent=timeFormat.format(new Date(entry.time));changes.textContent=entry.changes===undefined?entry.message:String(entry.changes);changes.title=entry.message;sha.textContent=entry.sha.slice(0,8);sha.title=entry.sha;
-          button.title=`${date} · ${time.textContent} · ${entry.message} · ${entry.sha}`;
-          button.append(time,changes,sha);button.onclick=()=>{close();options.choose(entry);};rows.append(button);
+      for(const [day,groupEntries]of groups){
+        const group=document.createElement('details'),rows=document.createElement('div');group.className='dropdown-section commit-day';group.open=!!query||!collapsed.has(day);
+        rows.setAttribute('role','group');rows.setAttribute('aria-label',day);
+        for(const entry of groupEntries){
+          const button=document.createElement('button');button.type='button';button.className='commit-columns commit-option';button.setAttribute('role','option');button.setAttribute('aria-selected',String(options.selected()===entry.id));
+          button.dataset[options.headers.length===3?'commit':'upload']=entry.id;button.disabled=!canChoose();button.title=entry.title??entry.search;
+          for(const [index,text]of entry.cells.entries()){const cell=document.createElement('span');cell.textContent=text;if(options.headers.length===2)cell.className=index?'snapshot-device':'snapshot-date';button.append(cell);}
+          button.onclick=()=>{close();options.choose(entry.id);};rows.append(button);
         }
-        group.append(summary,rows);group.ontoggle=()=>{if(!query){if(group.open)collapsed.delete(date);else collapsed.add(date);}};list.append(group);
+        if(options.headers.length===2){list.append(rows);continue;}
+        group.append(dropdownSectionHeader(day),rows);group.ontoggle=()=>{if(!query){if(group.open)collapsed.delete(day);else collapsed.add(day);}};list.append(group);
       }
-      status.textContent=loading?'Reading commit history…':failure??(query&&!groups.size&&!showLatest?'No matching commits.':entries.length?`${entries.length} commits loaded. Times use this device’s time zone. Changes shows the recorded save count, or the commit message.${options.latest?' Latest fetches the newest copy now; dated rows open a fixed saved version.':''}`:options.list?'No commits found.':'Historical commits require the current website version. Latest fetches the newest saved workbook now.');
-      more.textContent=failure?'Retry reading commits':'Load earlier commits';more.hidden=next===undefined;more.disabled=loading;position();
+      status.textContent=loading?'Reading '+options.label.toLowerCase()+'…':failure??(query&&!groups.size?'No matching options.':'');
+      status.hidden=!status.textContent;
+      more.textContent=failure?'Retry reading copies':'Load earlier commits';more.hidden=next===undefined;more.disabled=loading;
+      footer.hidden=[...footer.children].every(button=>(button as HTMLElement).hidden);position();
     };
     const load=async()=>{
-      if(loading||next===undefined)return;
-      loading=true;failure=undefined;draw();
-      try{
-        const page=await options.list!(next);
-        if(!popup.isConnected)return;
-        const known=new Set(entries.map(entry=>entry.sha));for(const entry of page.commits)if(!known.has(entry.sha)){known.add(entry.sha);entries.push(entry);}next=page.next;loading=false;draw();
-      }catch(error){if(popup.isConnected){loading=false;failure=`Commit history unavailable. ${error instanceof Error?error.message:String(error)}`;draw();}}
+      if(loading||next===undefined)return;loading=true;failure=undefined;draw();
+      try{const result=await options.list!(next);if(!popup.isConnected)return;const known=new Set(entries.map(entry=>entry.id));for(const entry of result.entries)if(!known.has(entry.id)){known.add(entry.id);entries.push(entry);}next=result.next;loading=false;draw();}
+      catch(error){if(popup.isConnected){loading=false;failure=`${options.label} unavailable. ${error instanceof Error?error.message:String(error)}`;draw();}}
     };
-    more.onclick=()=>void load();search.oninput=draw;
-    popup.onkeydown=event=>{
-      if(event.key==='Escape'){event.preventDefault();close();trigger.focus({preventScroll:true});}
-      else if(event.key==='Tab')close();
-      else dropdownOptionsKey(event,search,list);
-      event.stopPropagation();
-    };
-    document.body.append(popup);trigger.setAttribute('aria-expanded','true');draw();search.focus({preventScroll:true});void load();
-    document.addEventListener('pointerdown',event=>{if(event.target instanceof Node&&!popup.contains(event.target)&&!trigger.contains(event.target))close();},{capture:true,signal:controller.signal});
-    window.addEventListener('resize',position,{signal:controller.signal});window.visualViewport?.addEventListener('resize',position,{signal:controller.signal});
-    document.addEventListener('scroll',event=>{if(event.target instanceof Node&&!popup.contains(event.target))position();},{capture:true,signal:controller.signal});
-  };
-  trigger.onkeydown=event=>{if(['ArrowDown','ArrowUp'].includes(event.key)){event.preventDefault();event.stopPropagation();if(!closePopup)trigger.click();}};
-  return{close:()=>closePopup?.()};
+    more.onclick=()=>void load();search.oninput=draw;popup.onkeydown=event=>dropdownOptionsKey(event,search,list);
+    draw();search.focus({preventScroll:true});void load();
+  },380);
+}
+export function mountCommitPicker(trigger:HTMLButtonElement,options:{
+  list?:((page:number)=>Promise<ComparisonCommitPage>);choose:(commit:ComparisonCommit)=>void;selected:()=>string|undefined;
+  latest?:{choose:()=>void;selected:()=>boolean};available?:()=>boolean;sync?:()=>void;canChoose?:()=>boolean;
+}):{close:()=>void}{
+  const commits=new Map<string,ComparisonCommit>(),time=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true,timeZoneName:'short'});
+  return mountComparisonPicker(trigger,{...options,label:'Commits',headers:['Time','Changes','Commit'],choose:id=>options.choose(commits.get(id)!),
+    list:options.list?async page=>{const result=await options.list!(page);return{entries:result.commits.map(commit=>{commits.set(commit.sha,commit);return{id:commit.sha,time:commit.time,search:`${time.format(new Date(commit.time))} ${commit.message} ${commit.sha}`,cells:[time.format(new Date(commit.time)),commit.changes===undefined?'—':String(commit.changes),commit.sha.slice(0,8)]};}),next:result.next};}:undefined});
+}
+export function mountUploadPicker(trigger:HTMLButtonElement,options:{
+  list:()=>Promise<ComparisonSnapshot[]>;choose:(entry:ComparisonSnapshot)=>void;selected:()=>string|undefined;available:()=>boolean;sync?:()=>void;manage:()=>void;canChoose?:()=>boolean;
+}):{close:()=>void}{
+  const files=new Map<string,ComparisonSnapshot>();
+  return mountComparisonPicker(trigger,{...options,label:'Uploads',headers:['Date','Device'],choose:id=>options.choose(files.get(id)!),
+    list:async()=>({entries:(await options.list()).map(entry=>{files.set(entry.path,entry);return{id:entry.path,time:entry.time,search:`${snapshotDate(entry.time)} ${entry.device}`,cells:[snapshotDate(entry.time),entry.device]};})})});
 }

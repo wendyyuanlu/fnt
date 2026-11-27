@@ -149,6 +149,21 @@ test('+ Food and picker taps focus the keyboard target immediately, retain keybo
   await expect(page.locator('.cell-dropdown')).toHaveCount(0);await expect(panel.locator('[data-log-card]').last().getByRole('textbox',{name:'Food',exact:true})).toBeFocused();
 });
 
+test('touch Food labels and carets keep the DD search open through keyboard viewport changes',async({page,isMobile})=>{
+  test.skip(!isMobile,'Native touch activation and keyboard viewport changes.');
+  await setup(page);await page.locator('#meal-log').click();
+  const card=page.locator('[data-log-card]').last(),field=card.locator('.meal-log-field').filter({has:page.locator('input[data-log-field="food"]')});
+  const search=page.getByRole('searchbox',{name:'Search dropdown options',exact:true}),original=page.viewportSize()!;
+  for(const target of [field.locator(':scope>span').first(),card.getByRole('textbox',{name:'Food',exact:true}),card.getByRole('button',{name:'Choose Food',exact:true})]){
+    await target.tap();await expect(search).toBeFocused();
+    await page.setViewportSize({width:original.width,height:460});
+    await expect(search).toBeVisible();await expect(search).toBeFocused();
+    await search.fill('oat');await expect(page.locator('.cell-dropdown [role="option"]').first()).toBeVisible();
+    await search.press('Escape');await expect(page.locator('.cell-dropdown')).toHaveCount(0);
+    await page.setViewportSize(original);
+  }
+});
+
 test('empty inherited Grams stays blank without losing its formula; explicit zero and entered conversion quantities remain visible',async({page})=>{
   const fixture=await setup(page);
   await page.evaluate(async id=>{

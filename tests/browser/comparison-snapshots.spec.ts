@@ -1,7 +1,7 @@
 import {expect,test} from '@playwright/test';
 
-test('conflict snapshots upload separately and comparison lists dated device copies without replacing the workbook',async({page})=>{
-  let remote='',uploads=0;
+for(const failSecond of [false,true])test(`upload management confirms bulk deletion and preserves comparison data${failSecond?' through a partial failure':''}`,async({page})=>{
+  let remote='',uploads=0,deletions=0,deleteRequests=0,failed=false;
   const files=new Map<string,{sha:string;content:string}>();
   await page.route('https://api.github.com/**',async route=>{
     const request=route.request(),url=new URL(request.url());
@@ -11,6 +11,17 @@ test('conflict snapshots upload separately and comparison lists dated device cop
       const body=request.postDataJSON() as {content:string;sha?:string};expect(body.sha).toBeUndefined();
       const sha=(++uploads).toString(16).padStart(40,'0');files.set(path,{sha,content:body.content});
       await route.fulfill({json:{content:{sha}}});return;
+    }
+    if(request.method()==='DELETE'){
+      deleteRequests++;
+      const path=decodeURIComponent(url.pathname.split('/contents/')[1]),body=request.postDataJSON() as {sha:string};
+      expect(path).toContain('/fnt-snapshots/');expect(body.sha).toBe(files.get(path)!.sha);
+      if(failSecond&&!failed&&deletions===1){failed=true;await route.fulfill({status:503,json:{message:'Invented interrupted delete'}});return;}
+      files.delete(path);deletions++;await route.fulfill({json:{commit:{sha:'d'.repeat(40)}}});return;
+    }
+    if(url.pathname.includes('/contents/')){
+      const path=decodeURIComponent(url.pathname.split('/contents/')[1]);
+      if(files.has(path)){await route.fulfill({json:{sha:files.get(path)!.sha}});return;}
     }
     if(url.pathname.includes('/git/trees/')){await route.fulfill({json:{tree:[...files].map(([path,file])=>({path,sha:file.sha,type:'blob'})),truncated:false}});return;}
     if(url.pathname.includes('/git/blobs/')){
@@ -67,21 +78,53 @@ test('conflict snapshots upload separately and comparison lists dated device cop
   await recovery.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
   await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
   await comparison.locator('#left-github').click();
-  await expect(comparison.locator('#snapshot-status')).toContainText('2 uploaded copies, newest first');
-  await expect(comparison.locator('#uploaded-left option')).toHaveCount(3);
-  expect(await comparison.locator('#uploaded-left option').nth(1).getAttribute('data-device')).toBe('Desktop');
-  await comparison.locator('#uploaded-left-trigger').click();
-  const option=comparison.getByRole('option').filter({hasText:'[Phone]'});
-  await expect(option.locator('.snapshot-date')).toContainText('@');
+  await expect(comparison.locator('.commit-header')).toHaveText('DateDevice');
+  await expect(comparison.locator('.commit-popup summary')).toHaveCount(0);
+  await expect(comparison.locator('.commit-popup>p')).toHaveCount(0);
+  await expect(comparison.locator('[data-upload]')).toHaveCount(2);
+  await expect(comparison.getByRole('button',{name:'Sync GitHub',exact:true})).toHaveCount(0);
+  const option=comparison.getByRole('option').filter({hasText:'Phone'});
+  await expect(option.locator('.snapshot-device')).toHaveText('Phone');
+  await expect(option.locator('.snapshot-date')).toContainText(/\d{1,2}\/\d{1,2} @ \d{1,2}:\d{2}:\d{2}/);
   const date=(await option.locator('.snapshot-date').boundingBox())!,device=(await option.locator('.snapshot-device').boundingBox())!;
   expect(device.x).toBeGreaterThan(date.x);
   await option.click();
-  await expect(comparison.locator('#snapshot-status')).toContainText('Loaded');
-  await comparison.getByRole('button',{name:'Close uploaded copies',exact:true}).click();
   await expect(comparison.locator('#left-kind')).toHaveText('Phone upload');
   await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');
   await comparison.locator('#keep-left button').click();
   await expect(comparison.locator('#selection-progress')).toContainText('1 of');
-  await expect(comparison.locator('#snapshot-token')).toHaveValue('');
+  await comparison.locator('#left-github').click();await comparison.getByRole('button',{name:'Manage',exact:true}).click();
+  await expect(comparison.locator('#upload-manager-rows tr')).toHaveCount(2);
+  const trash=comparison.locator('#upload-manager-rows tr').first().getByRole('button');
+  await expect(trash).toHaveClass('icon-button');
+  const size=(await trash.boundingBox())!;expect(size.width).toBe(32);expect(size.height).toBe(32);
+  await expect(trash.locator('svg')).toHaveAttribute('viewBox','0 0 24 24');
+  await comparison.locator('#upload-manager-rows tr').filter({hasText:'Phone'}).getByRole('button').click();
+  await comparison.getByRole('button',{name:'Cancel',exact:true}).click();expect(deletions).toBe(0);
+  await comparison.getByRole('checkbox',{name:'Select all uploaded copies',exact:true}).check();
+  await comparison.getByRole('button',{name:'Delete selected (2)',exact:true}).click();
+  await comparison.getByRole('button',{name:'Cancel',exact:true}).click();expect(deletions).toBe(0);
+  const phoneSelection=comparison.locator('#upload-manager-rows tr').filter({hasText:'Phone'}).getByRole('checkbox');
+  await phoneSelection.uncheck();await expect(comparison.getByRole('button',{name:'Delete selected (1)',exact:true})).toBeVisible();
+  await expect(comparison.getByRole('checkbox',{name:'Select all uploaded copies',exact:true})).toHaveJSProperty('indeterminate',true);
+  await phoneSelection.check();await comparison.getByRole('button',{name:'Delete selected (2)',exact:true}).click();
+  await comparison.getByRole('button',{name:'Delete from GitHub',exact:true}).click();
+  if(failSecond){
+    await expect(comparison.locator('#upload-delete-error')).toContainText('Deleted 1 of 2');
+    await expect(comparison.getByRole('button',{name:'Delete from GitHub',exact:true})).toBeDisabled();
+    await comparison.getByRole('button',{name:'Cancel',exact:true}).click();
+    await expect(comparison.getByRole('button',{name:'Delete selected (1)',exact:true})).toBeDisabled();
+    expect(deleteRequests).toBe(2);expect(deletions).toBe(1);
+    await comparison.getByRole('button',{name:'Refresh uploads',exact:true}).click();
+    await expect(comparison.getByRole('button',{name:'Delete selected (1)',exact:true})).toBeEnabled();
+    await comparison.getByRole('button',{name:'Delete selected (1)',exact:true}).click();
+    await comparison.getByRole('button',{name:'Delete from GitHub',exact:true}).click();
+  }
+  await expect(comparison.locator('#upload-manager-rows tr')).toHaveCount(0);expect(deletions).toBe(2);
+  await expect(comparison.locator('#upload-delete-selected')).toBeHidden();
+  await expect(comparison.locator('#left-kind')).toHaveText('Phone upload');
+  await comparison.getByRole('button',{name:'Close upload manager',exact:true}).click();
+  await comparison.locator('#left-github').click();await expect(comparison.locator('[data-upload]')).toHaveCount(0);
+  await expect(comparison.locator('.dropdown-footer')).toBeVisible();
   expect(await local()).toEqual(before);expect(uploads).toBe(2);
 });

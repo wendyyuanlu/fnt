@@ -355,6 +355,33 @@ export class Store {
     const tx=this.db.transaction('state','readwrite'),done=complete(tx);
     tx.objectStore('state').put(name,'device:comparison-name');await done;
   }
+  async comparisonReview(id:string):Promise<import('./comparison-host').StoredComparisonReview|undefined>{
+    const store=this.db.transaction('state').objectStore('state');
+    const [saved,view]=await Promise.all([
+      request(store.get(`comparison:sources:${id}`)),
+      request(store.get(`comparison:view:${id}`)),
+    ]) as [import('./comparison-host').StoredComparisonReview|undefined,import('./comparison-host').ComparisonReviewView|undefined];
+    if(!saved)return;
+    if(!Number.isInteger(saved.baseRevision)||!saved.left||typeof saved.left.label!=='string'||typeof saved.left.kind!=='string')throw Error('Saved comparison sources are damaged. Your workbook was not changed.');
+    validateBook(saved.left.book);
+    if(saved.right){validateBook(saved.right.book);if(typeof saved.right.kind!=='string'||typeof saved.right.label!=='string'||saved.right.book.id!==saved.left.book.id)throw Error('Saved comparison sources have invalid identities or labels.');}
+    if(view){
+      const validChoices=(choices:unknown)=>Array.isArray(choices)&&choices.every((choice:unknown)=>choice&&typeof choice==='object'&&'key'in choice&&typeof choice.key==='string'&&'side'in choice&&(choice.side==='left'||choice.side==='right'));
+      if(!validChoices(view.choices)||!Array.isArray(view.history)||!view.history.every(validChoices)||!['all','value','structure'].includes(view.category)||!Number.isInteger(view.region)||typeof view.specific!=='string'||typeof view.context!=='string'||typeof view.firstCell!=='boolean'||typeof view.linked!=='boolean'||typeof view.choiceScope!=='string'||typeof view.keepScope!=='string'||!Array.isArray(view.latest)||!view.latest.every(side=>side==='left'||side==='right')||!view.uploads)throw Error('Saved comparison review is damaged. Your workbook was not changed.');
+    }
+    return{...saved,view};
+  }
+  async saveComparisonReview(id:string,review:import('./comparison-host').StoredComparisonReview,sources:boolean):Promise<void>{
+    const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
+    if(sources){const {view,...copies}=review;store.put(copies,`comparison:sources:${id}`);}
+    if(review.view)store.put(review.view,`comparison:view:${id}`);
+    else store.delete(`comparison:view:${id}`);
+    await done;
+  }
+  async clearComparisonReview(id:string):Promise<void>{
+    const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
+    store.delete(`comparison:sources:${id}`);store.delete(`comparison:view:${id}`);await done;
+  }
   async undoHistory(version:number,book:string):Promise<UndoHistory|undefined>{
     const saved=await request(this.db.transaction('state').objectStore('state').get('undo')) as {version:number;book:string;history:UndoHistory}|undefined;
     if(!saved||saved.version!==version||saved.book!==book)return;

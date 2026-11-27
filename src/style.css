@@ -302,8 +302,7 @@ dialog .picker-results{max-height:none}
 .grid td.group-located,.grid th.group-located{box-shadow:inset 0 0 0 1px #597b64}
 .grid .group-control.group-located{outline:2px solid #597b64;outline-offset:1px}
 @media(max-width:720px){.group-manager{--dialog-available-height:calc(100dvh - 56px);top:auto;bottom:44px;right:var(--dialog-edge)}.group-create-controls button{padding:5px;font-size:9px}.group-card-heading{flex-wrap:wrap}.group-type-guide{grid-template-columns:1fr 1fr;gap:8px}}
-.format-caret{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;flex-shrink:0}
-.format-caret svg,.summary-group-add .toolbar-icon{display:block;width:14px;height:14px;flex-shrink:0}
+.summary-group-add .toolbar-icon{display:block;width:14px;height:14px;flex-shrink:0}
 .toolbar,.master-toolbar{--toggle-background:#e8efdf;--toggle-border:#d6dfc9}
 .toolbar button[aria-pressed=true],.master-toolbar button[aria-pressed=true]{background:var(--toggle-background);border-color:var(--toggle-border)}
 .toolbar .summary-group-control[data-active=true]{background:var(--toggle-background);box-shadow:inset 0 0 0 1px var(--toggle-border)}
@@ -321,7 +320,6 @@ dialog .picker-results{max-height:none}
 .dropdown-source-check{visibility:hidden;flex-shrink:0}
 .dropdown-source-tabs [aria-selected=true] .dropdown-source-check{visibility:visible}
 .dropdown-add-source{flex-shrink:0;width:26px;min-height:30px;padding:3px;background:#fff;border:0;color:#765093}
-.dropdown-panel{display:flex;flex-direction:column;gap:7px;min-height:0;flex:1;overflow:hidden}
 .cell-date-picker .button-row{flex-wrap:nowrap;align-items:center}
 .cell-date-picker input{flex:1;width:0}
 .dropdown-manual-action{display:flex;align-items:center;gap:4px;flex-shrink:0;padding:6px 3px;min-height:36px;border:0;background:#fff;color:#738071;font-size:12px}
@@ -542,38 +540,9 @@ fieldset.find-scope,.find-results-scroll{border:1px solid var(--line);border-rad
 .find-match-text{font-weight:600}
 .find-results-table [data-membership-result]{cursor:pointer}
 .find-results-table [data-membership-result]:focus-visible{outline:2px solid var(--green);outline-offset:-2px}
-.find-sheet-header,.find-sheet-header>th,.find-table-header,.find-table-header>th{height:29px;padding:6px 9px;background:#fff;color:var(--green);font-size:12px;font-weight:400;border-bottom:1px solid #ccd8cf}
-.find-sheet-header,.find-sheet-header>th{font-weight:600}
 .find-results-table{width:100%}.find-results-table th{text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0}.find-results-table thead th{position:sticky;top:0;z-index:2}.find-results-table tbody tr[data-find-match]{cursor:pointer}.find-results-table tbody tr[aria-selected=true] td{background:#d1e2d7}.find-results-table tbody tr:focus-visible{outline:2px solid var(--green);outline-offset:-2px}.find-feedback{min-height:28px;margin:6px 0;font-size:11px;line-height:1.3!important;flex-shrink:0}.find-actions,.find-actions>span{flex-shrink:0}.app-update{display:flex;justify-content:center;align-items:center;gap:10px;padding:8px;background:#e4f0e8;color:var(--green);font-size:12px}
 @media(max-height:650px){.find-tabs{margin-bottom:6px}.find-feedback{min-height:20px;margin:4px 0}}
 @media(max-height:520px){.find-dialog{overflow-y:auto}.find-dialog .find-controls,.find-dialog .find-results-panel{flex-shrink:0}.find-dialog .find-results-panel{min-height:180px}}
-:root{--field-border:var(--line);--field-focus-border:#789583;--field-background:#fff;--field-focus-background:#edf1e8}
-.dd-mode{--field-border:var(--line);--field-focus-border:#9670b2;--field-focus-background:#f6f2f9}
-:is(#app,dialog,.cell-dropdown) :is(input:not([data-append-column],[type=checkbox],[type=radio],[type=range],[type=color],[type=file],[type=button],[type=submit],[type=reset],[type=hidden],[type=image]),textarea,select,.dropdown-field,.reference-group-picker),
-#cell-editor{
-  min-width:0;
-  padding:5px 8px;
-  border:1px solid var(--field-border);
-  border-radius:5px;
-  background:var(--field-background);
-  color:var(--field-color,#233c34);
-  font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  font-size:12px;
-  line-height:1.5;
-  outline:0;
-  outline-offset:0;
-  box-shadow:none;
-  &:is(:focus,:focus-visible,[aria-expanded=true]){
-    border-color:var(--field-focus-border);
-    background:var(--field-focus-background);
-    outline:0;
-    outline-offset:0;
-    box-shadow:none;
-  }
-  &:disabled{background:#f3f5f2;color:#788278;cursor:default}
-  &::placeholder{color:#788278;opacity:1}
-  &:is(input,textarea){cursor:text}
-}
 .toolbar,.dropdown-source-tabs [role=tablist],.find-results-scroll{scrollbar-width:var(--scrollbar-native-width)}
 .sheet-bar{
   --accent:#153e36;--active-stroke:#64834b;--soft:#e8efdf;--parent:#dce7dc;

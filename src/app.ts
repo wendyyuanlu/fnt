@@ -2,7 +2,7 @@ import './style.css';
 import {mountWorkbookComparison} from './sync-comparison';
 import {mergeComparison} from './comparison-merge';
 import type {ComparisonSource} from './comparison-host';
-import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,listComparisonCommits,readComparisonCommit,snapshotDate,type ComparisonSnapshot,type ComparisonCommit} from './github-snapshots';
+import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,deleteComparisonSnapshot,listComparisonCommits,readComparisonCommit,snapshotDate,type ComparisonSnapshot,type ComparisonCommit} from './github-snapshots';
 import {githubFormDefaults} from './github-client';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
@@ -18,7 +18,7 @@ import {captureSelection,headerSelectionTables,nearestHeaderTables,tableHeaderBo
 import { defaultHeaderFormula,groupBlockToTop,positionalBlock } from './meal-block';
 import { applyTableColumnFormula,columnCalculations,quantityDiagnostic,restoreCalculation,tableColumnFormulas } from './calculation';
 import { groupReference,mountGroupPicker,newReference,referenceSettings,type ReferenceHost } from './reference-ui';
-import { dropdownArrowHtml,dropdownManualActionHtml,dropdownOptionsKey,mountDropdownOptions,mountSelectDropdown,mountSourcePicker,sourcePickerControlsHtml,sourcePickerBodyHtml,type SourcePage } from './dropdown-ui';
+import { dropdownArrowHtml,dropdownManualActionHtml,dropdownOptionsKey,mountDropdownOptions,mountSelectDropdown,mountSourcePicker,sourcePickerControlsHtml,sourcePickerBodyHtml,findSheetHeaderHtml,type SourcePage } from './dropdown-ui';
 import { duplicateReference,moveReferenceGroup,referenceCaption,referenceChoices,referenceFormula,referenceGroups,referenceLabel,referenceNavigation,referenceUsages,removeReferenceValue,renameReferenceGroup,reorderReferenceSelection,setReferencePresentation,validationChoiceGroups,validationChoices,validationReference,type DropdownChoice,type ReferenceNavigation } from './references';
 import { appendReferenceOption,conversionEditImpact,deleteReferenceColumns,referenceView,writeGridCell } from './reference-grid';
 import { hexToHsv,hsvToHex,normalizeHex } from './colors';
@@ -1048,7 +1048,12 @@ function openComparison(conflict?:SyncConflict):void{
   if(busy){flash('Wait for the current save or sync to finish before comparing.');return;}
   if(!commitDraft())return;
   conflict??=preservedSyncConflict;
-  const captured={...state,book:clone(book),pending:clone(state.pending)},config=state.sync,credential=token,capturedGeneration=generation;
+  const captured={...state,book:clone(book),pending:clone(state.pending)},capturedGeneration=generation;
+  const reviewKey=`fnt-comparison:${book.id}`;
+  let reviewId:string=uid(),reviewRevision=captured.book.revision;
+  try{reviewId=sessionStorage.getItem(reviewKey)||reviewId;sessionStorage.setItem(reviewKey,reviewId);}catch(error){flash(`Could not remember the open comparison for refresh: ${String(error)}`);}
+  let reviewWrites=Promise.resolve(),savedReview:import('./comparison-host').StoredComparisonReview|undefined,reviewClosed=false;
+  let config=state.sync,credential=token;
   let applied=false,remoteHead=conflict&&config?{path:config.path,sha:conflict.sha}:undefined;
   const source=(copy:Workbook,kind:string,label:string,revision?:string):ComparisonSource=>({
     book:clone(copy),kind,label,revision,freshness:`Comparison copy captured: ${new Date().toLocaleString()}.`,
@@ -1065,24 +1070,59 @@ function openComparison(conflict?:SyncConflict):void{
   const dispose=mountWorkbookComparison(view,{
     local:source(captured.book,'This device','Current local workbook'),
     remote:conflict?source(conflict.remote,'GitHub','Preserved sync-conflict copy',conflict.sha):undefined,
-    readRemote:config&&credential?async()=>{
+    review:{
+      load:async()=>{
+        savedReview=await store.comparisonReview(reviewId);
+        if(savedReview){
+          reviewRevision=savedReview.baseRevision;
+          const target=savedReview.sync;
+          if(target&&JSON.stringify(target.config)===JSON.stringify(config))remoteHead={path:target.path,sha:target.sha};
+        }
+        return savedReview;
+      },
+      save:review=>{
+        if(reviewClosed)return Promise.resolve();
+        const target=config&&remoteHead?{config:clone(config),...remoteHead}:undefined;
+        const snapshot={...review,baseRevision:reviewRevision,sync:target};
+        const write=reviewWrites.then(async()=>{
+          const sources=!savedReview||savedReview.left.book!==snapshot.left.book||savedReview.right?.book!==snapshot.right?.book||JSON.stringify(savedReview.sync)!==JSON.stringify(target);
+          await store.saveComparisonReview(reviewId,snapshot,sources);savedReview=snapshot;
+        });
+        reviewWrites=write.catch(error=>flash(`Comparison review could not be saved: ${String(error)}`));
+        return write;
+      },
+    },
+    connection:{connected:()=>!!config&&!!credential,connect:()=>new Promise<boolean>(resolve=>openSync({readOnly:true,complete:connected=>{
+      const changed=JSON.stringify(config)!==JSON.stringify(state.sync)||credential!==token;
+      if(changed){privateSyncConflict=false;preservedSyncConflict=undefined;}
+      if(connected||changed){config=state.sync;credential=token;files=[];commits.clear();remoteHead=undefined;}
+      if(!connected){resolve(false);return;}
+      void updateSyncMetadata({paused:true,review:true}).then(()=>resolve(true),error=>{flash(error);resolve(false);});
+    }}))},
+    readRemote:async()=>{
       await pause;
-      const received=await syncGitHub(captured,credential,fetch,[],{readOnly:true});
+      const destination=config;if(!destination||!credential)throw Error('Connect Private GitHub sync to read the latest saved copy.');
+      const received=await syncGitHub({...captured,sync:destination},credential,fetch,[],{readOnly:true});
       if(!received.remote)throw Error('The saved GitHub workbook was not returned. Neither copy was changed.');
-      remoteHead={path:received.readPath??config.path,sha:received.sha};
-      const loaded=source(received.remote,'GitHub',received.readPath??config.path,received.sha);
-      if(received.readPath&&received.readPath!==config.path)loaded.freshness+=` Saved sync destination remains ${config.path}. Reconnect in Recovery to update it; this comparison did not change the connection.`;
+      remoteHead={path:received.readPath??destination.path,sha:received.sha};
+      const loaded=source(received.remote,'GitHub',received.readPath??destination.path,received.sha);
+      if(received.readPath&&received.readPath!==destination.path)loaded.freshness+=` Saved sync destination remains ${destination.path}. Reconnect in Recovery to update it; this comparison did not change the connection.`;
       return loaded;
-    }:undefined,
-    uploads:config&&credential?{
+    },
+    uploads:{
       list:async workbook=>{files=await listComparisonSnapshots(config,credential,workbook);return files;},
       read:async entry=>{
         const listed=files.find(file=>file.path===entry.path&&file.sha===entry.sha);
         if(!listed)throw Error('This uploaded copy is not in the current snapshot list. Refresh the list first.');
         return source(await readComparisonSnapshot(config,credential,listed),`${listed.device} upload`,snapshotDate(listed.time),listed.sha);
       },
-    }:undefined,
-    commits:config&&credential?{
+      delete:async entry=>{
+        const listed=files.find(file=>file.path===entry.path&&file.sha===entry.sha);
+        if(!listed)throw Error('Refresh uploads before deleting this copy.');
+        await deleteComparisonSnapshot(config,credential,listed);files=files.filter(file=>file.path!==listed.path);
+      },
+    },
+    commits:{
       list:async page=>{
         const result=await listComparisonCommits(config,credential,page);for(const commit of result.commits)commits.set(commit.sha,commit);
         return result;
@@ -1092,12 +1132,13 @@ function openComparison(conflict?:SyncConflict):void{
         const selected=await readComparisonCommit(config,credential,listed),loaded=source(selected.book,'GitHub commit',`${selected.path} · ${listed.sha.slice(0,8)}`,listed.sha);
         loaded.freshness=`Committed: ${new Date(listed.time).toLocaleString(undefined,{timeZoneName:'short'})}.`;return loaded;
       },
-    }:undefined,
-    syncDestination:config&&credential?()=>remoteHead?`${config.owner}/${config.repo} · ${remoteHead.path}${remoteHead.path!==config.path?' (also updates your saved sync path)':''}`:undefined:undefined,
+    },
+    syncDestination:()=>config&&credential&&remoteHead?`${config.owner}/${config.repo} · ${remoteHead.path}${remoteHead.path!==config.path?' (also updates your saved sync path)':''}`:undefined,
     apply:async request=>{
       await pause;await privateSyncFlight;
       if(applied||busy)throw Error('This comparison has already been applied or another operation is running.');
       if(capturedGeneration!==generation||JSON.stringify(book)!==JSON.stringify(captured.book))throw Error('The local workbook changed after comparison opened. Close and compare again; your newer edits were not replaced.');
+      if(reviewRevision!==captured.book.revision)throw Error('The local workbook changed since this comparison was saved. Your choices were retained, but close and compare again before applying them.');
       request.progress?.('Checking selected changes and formula dependencies...',0,6);
       const merged=await mergeComparison(request.left,request.right,request.choices);
       if(request.sync&&(!config||!credential||!remoteHead))throw Error('Read the current GitHub copy before applying and syncing.');
@@ -1144,6 +1185,9 @@ function openComparison(conflict?:SyncConflict):void{
       request.progress?.('Selected workbook saved.',6,6);
     },
     close:()=>{
+      reviewClosed=true;
+      try{sessionStorage.removeItem(reviewKey);}catch(error){flash(`Could not clear the open-comparison preference: ${String(error)}`);}
+      void reviewWrites.then(()=>store.clearComparisonReview(reviewId)).catch(error=>flash(`Could not clear the saved comparison review: ${String(error)}`));
       dispose();view.remove();root.inert=wasInert;comparisonActive=false;document.body.classList.remove('comparison-open');
       root.querySelector<HTMLButtonElement>('[data-action="file"]')?.focus();
       if(!applied)schedulePrivateSync();
@@ -3879,7 +3923,7 @@ function openFind():void {
       });
       let previous='';
       const results=[...previews.values()].map(({sheet:s,table,start,items})=>{
-        const sheetHeading=previous===s.id?'':`<div class="find-sheet-header">${esc(s.name)}</div>`;previous=s.id;
+        const sheetHeading=previous===s.id?'':findSheetHeaderHtml(s.name);previous=s.id;
         const columns=s.columns.slice(start,start+8),headers=table?columns.map(column=>`<th scope="col">${esc(table.columns.find(field=>field.column===column.id)?.name??'')}</th>`).join(''):`<th scope="colgroup" colspan="${columns.length}">Row preview (up to 8 cells)</th>`;
         const matchedColumns=new Set(items.map(({match})=>match.column)),widths=columns.map(column=>matchedColumns.has(column.id)?160:110),width=50+widths.reduce((sum,width)=>sum+width,0);
         const rows=items.map(({match:m,index})=>{
@@ -4008,7 +4052,7 @@ function openFind():void {
       preview.querySelector('colgroup')!.innerHTML=`<col style="width:34px"><col style="width:60px"><col span="${count}" style="width:110px">`;
       preview.querySelector<HTMLTableCellElement>('thead th:last-child')!.colSpan=count;
       preview.querySelector('tbody')!.innerHTML=entries.map(({gap,index,s,table,position,cells})=>{
-        const header=previous===s.id?'':`<tr class="find-sheet-header"><th colspan="${count+2}">${esc(s.name)}</th></tr>`;
+        const header=previous===s.id?'':findSheetHeaderHtml(s.name,count+2);
         const subheader=previous===s.id&&previousTable===table.id?'':`<tr class="find-table-header"><th colspan="${count+2}">Table: ${esc(table.name)}</th></tr>`;previous=s.id;previousTable=table.id;
         const contents=Array.from({length:count},(_,i)=>{const cell=cells[i];return cell?`<td data-membership-context="${cell.address}" aria-label="${cell.address}" title="${esc(cell.value)}">${esc(cell.value)}</td>`:'<td></td>';}).join('');
         return`${header}${subheader}<tr data-membership-result="${index}" tabindex="0" aria-label="${esc(table.name)} ${position}"><td><input type="checkbox" aria-label="${esc(table.name)} ${position}" ${selectedGaps.has(gapId(gap))?'checked':''}></td><th scope="row">${position}</th>${contents}</tr>`;
@@ -4294,20 +4338,39 @@ async function openHistory():Promise<void> {
     });
   }catch(e){flash(e);}
 }
-function openSync():void {
+function openSync(options?:{readOnly:boolean;complete:(connected:boolean)=>void}):void {
   const cfg=githubFormDefaults(state.sync),pathNote=state.sync&&cfg.path!==state.sync.path?`<p class="muted" id="sync-path-note">Saved destination: ${esc(state.sync.path)}. The renamed default is ${esc(cfg.path)}. Connecting updates this device's destination; it does not rename or delete files on GitHub.</p>`:'';
   dialog('Optional private GitHub sync',`<p>Opt-in only. This uploads workbook data to the private repository you choose. Never use your website source or a public repository. Existing remote files are not overwritten on conflict.</p><form id="sync-form"><label>Personal repository owner<input id="sync-owner" value="${esc(cfg?.owner)}" required autocomplete="off"></label><label>Private data repository<input id="sync-repo" value="${esc(cfg?.repo)}" required></label><label>Existing branch<input id="sync-branch" value="${esc(cfg?.branch??'main')}" required></label><label>JSON path<input id="sync-path" value="${esc(cfg.path)}" required></label>${pathNote}<label>Fine-grained token: Contents read/write, only this data repository<input id="sync-token" type="password" autocomplete="off" required></label><label class="inline"><input id="sync-remember" type="checkbox" ${rememberPrivateSync?'checked':''}>Remember on this trusted device</label><p class="muted">Unchecked: token stays in this tab's memory; sign in again after reloading. Checked: token is stored in this browser's IndexedDB, separately from workbook data, never in backups or Git. Anyone with access to this browser or malicious app code could read it. Use only a fine-grained token restricted to this data repository. Disconnect forgets it on this device.</p><p class="muted">Saved edits batch after a 15-second pause. Clean authenticated tabs check no more often than every 60 seconds; startup/resume/reconnection may also check. Ordinary sync does not block editing or refresh the grid. Conflicts pause uploads and require submitted comparison decisions. Save syncs immediately unless review is unresolved. GitHub must already contain the branch. Large files may exceed the Contents API limit.</p><button class="primary">Connect & sync now</button><button id="disconnect" type="button">Disconnect</button></form>`,d=>{
-    const compare=document.createElement('button');compare.type='button';compare.id='sync-compare';compare.textContent='Compare copies';compare.onclick=()=>openComparison();d.querySelector('form')!.after(compare);
+    let connected=false,connecting=false;
+    const actions=document.createElement('div');actions.className='button-row';
+    const connect=d.querySelector<HTMLButtonElement>('.primary')!;
+    connect.before(actions);actions.append(connect,d.querySelector<HTMLButtonElement>('#disconnect')!);
+    const readStatus=document.createElement('p');readStatus.setAttribute('role','status');
+    if(options?.readOnly){
+      d.querySelector('p')!.textContent='Connect to read comparison copies. This does not upload, replace the workbook, or resume automatic sync.';
+      d.querySelector<HTMLButtonElement>('.primary')!.textContent='Connect & read copies';
+      d.querySelector('form')!.append(readStatus);
+      d.addEventListener('close',()=>options.complete(connected));
+    }
+    if(!options?.readOnly){const compare=document.createElement('button');compare.type='button';compare.id='sync-compare';compare.textContent='Compare copies';compare.onclick=()=>openComparison();actions.append(compare);}
     d.querySelector('form')!.onsubmit=async e=>{
-      e.preventDefault();await flush();if(savedGeneration!==generation)return;
+      e.preventDefault();if(connecting)return;await flush();if(savedGeneration!==generation)return;
       const read=(id:string)=>d.querySelector<HTMLInputElement>(id)!.value.trim();
       const next={owner:read('#sync-owner'),repo:read('#sync-repo'),branch:read('#sync-branch'),path:read('#sync-path')};
       try{
-        state=await store.metadata(state.version,s=>({...s,sync:next,remoteSha:JSON.stringify(next)===JSON.stringify(s.sync)?s.remoteSha:undefined}));
         const remember=d.querySelector<HTMLInputElement>('#sync-remember')!.checked,nextToken=read('#sync-token');
+        if(options?.readOnly){
+          connecting=true;d.querySelector<HTMLButtonElement>('.primary')!.disabled=true;readStatus.textContent='Verifying private GitHub access...';
+          await listComparisonSnapshots(next,nextToken,book.id);
+          if(!d.open)return;
+        }
+        state=await store.metadata(state.version,s=>({...s,sync:next,remoteSha:JSON.stringify(next)===JSON.stringify(s.sync)?s.remoteSha:undefined,...(options?.readOnly?{syncPaused:true}:{})}));
         await store.rememberSyncToken(remember?next:undefined,remember?nextToken:undefined);
-        token=nextToken;rememberPrivateSync=remember;privateSyncConflict=false;d.close();await manualSave();
-      }catch(e){flash(e);}
+        token=nextToken;rememberPrivateSync=remember;
+        if(options?.readOnly){connected=true;d.close();renderStatus();return;}
+        privateSyncConflict=false;d.close();await manualSave();
+      }catch(e){if(options?.readOnly)readStatus.textContent=e instanceof Error?e.message:String(e);else flash(e);}
+      finally{connecting=false;d.querySelector<HTMLButtonElement>('.primary')!.disabled=false;}
     };
     d.querySelector<HTMLButtonElement>('#disconnect')!.onclick=async()=>{
       try{await flush();await store.rememberSyncToken();state=await store.metadata(state.version,s=>({...s,sync:undefined,remoteSha:undefined}));token='';rememberPrivateSync=false;clearTimeout(privateSyncTimer);status='Disconnected - local only';renderStatus();d.close();}catch(e){flash(e);}
@@ -4512,6 +4575,8 @@ async function start():Promise<void> {
     const defaults=book.sheets.filter(s=>!s.pagination&&paginationDefault(book,s));
     if(defaults.length){for(const s of defaults)s.pagination=paginationDefault(book,s);changed('Initialize Master date pages',false,false,capturePatch(book,defaults.map(s=>['sheets',book.sheets.indexOf(s),'pagination'])));}
     renderRestoredView(view);
+    await navigationSaving;
+    try{if(sessionStorage.getItem(`fnt-comparison:${book.id}`))openComparison();}catch(error){flash(`Could not restore the open comparison: ${String(error)}`);}
     if('serviceWorker'in navigator&&import.meta.env.PROD){
       navigator.serviceWorker.addEventListener('message',e=>{
         if(e.data?.type!=='fnt-update-ready'||!Array.isArray(e.data.files))return;

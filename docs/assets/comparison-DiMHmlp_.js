@@ -1,5 +1,5 @@
-const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/main-DNGZPlly.js","assets/icons-CwaRegI4.js","assets/main-VNJFKOHP.css"])))=>i.map(i=>d[i]);
-import{_ as s}from"./preload-helper-DO0sjJph.js";const t=`<!doctype html>\r
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/main--Thvglrr.js","assets/icons-BAmXWnfY.js","assets/main-Bc3DfHYS.css"])))=>i.map(i=>d[i]);
+import{_ as t}from"./preload-helper-DO0sjJph.js";const s=`<!doctype html>\r
 <html lang="en">\r
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fnt - Visual comparison prototype</title><link rel="stylesheet" href="style.css"></head>\r
 <body class="compact-controls" data-control-style="after" data-dropdown-style="dd" data-filter-design="tabs">\r
@@ -15,16 +15,18 @@ import{_ as s}from"./preload-helper-DO0sjJph.js";const t=`<!doctype html>\r
     <p class="notice" aria-label="Left source details"><span id="left-detail-kind">Left</span><span id="left-source-freshness"></span></p>\r
     <p class="notice" aria-label="Right source details"><span id="right-detail-kind">Right</span><span id="right-source-freshness"></span><span id="right-source-fetched" hidden></span><span id="right-source-commit" hidden></span></p>\r
   </details>\r
-  <dialog id="snapshot-picker" class="dialog-surface" aria-label="Uploaded comparison copies">\r
-    <div class="dialog-heading"><h2 id="snapshot-title">Left copy · GitHub</h2><button id="snapshot-close" type="button" aria-label="Close uploaded copies" aria-keyshortcuts="Escape">Close</button></div>\r
-    <p id="snapshot-target-note">Changes only the left comparison source. Attach opens a JSON file from this device; it does not upload it.</p>\r
-    <p id="snapshot-auth-note">Read-only access to your existing private data repository. The token stays only in this tab's memory; nothing is uploaded, restored, or synced. This prototype cannot reuse another website's stored sign-in.</p>\r
-    <form id="snapshot-connect"><div class="snapshot-config">\r
-      <label>Owner<input id="snapshot-owner" required></label><label>Private repository<input id="snapshot-repo" required></label>\r
-      <label>Branch<input id="snapshot-branch" required></label><label>Sync JSON path<input id="snapshot-path" required></label>\r
-    </div><label>Existing restricted GitHub token<input id="snapshot-token" type="password" autocomplete="off" required></label><button id="snapshot-list">Read / refresh uploaded copies</button></form>\r
-    <div class="snapshot-config snapshot-targets"><label class="snapshot-target" data-side="left">Left copy<select id="uploaded-left" disabled><option value="">Choose uploaded copy</option></select></label><label class="snapshot-target" data-side="right" hidden>Right copy<select id="uploaded-right" disabled><option value="">Choose uploaded copy</option></select></label></div>\r
-    <p id="snapshot-status" role="status">Connect above to list uploaded snapshots. Local backup selection still works without signing in.</p>\r
+  <dialog id="upload-manager" class="dialog-surface" aria-label="Manage uploaded copies">\r
+    <div class="dialog-heading"><h1>Manage uploads</h1><button id="upload-manager-close" class="icon-button" type="button" aria-label="Close upload manager">Close</button></div>\r
+    <p>Delete removes the uploaded file from the current GitHub branch, not your workbook or loaded comparison. Older commits may retain it; deletion does not necessarily reclaim repository storage.</p>\r
+    <div class="upload-manager-list"><table aria-label="Uploaded copies"><thead><tr class="find-sheet-header"><th><input id="upload-select-all" type="checkbox" aria-label="Select all uploaded copies"></th><th>Date</th><th>Device</th><th></th></tr></thead><tbody id="upload-manager-rows"></tbody></table></div>\r
+    <p id="upload-manager-status" role="status"></p>\r
+    <div class="button-row"><button id="upload-manager-refresh" type="button">Refresh uploads</button><button id="upload-delete-selected" type="button" hidden>Delete selected (0)</button></div>\r
+  </dialog>\r
+  <dialog id="upload-delete-confirmation" class="dialog-surface" aria-label="Delete uploaded copy">\r
+    <div class="dialog-heading"><h1>Delete uploaded copy?</h1></div>\r
+    <div id="upload-delete-copy"></div><p>The selected uploaded files will be removed from GitHub. Your workbook and loaded comparison copies stay unchanged.</p>\r
+    <p id="upload-delete-error" role="alert" hidden></p>\r
+    <div class="button-row"><button id="upload-delete-cancel" type="button">Cancel</button><button id="upload-delete" type="button">Delete from GitHub</button></div>\r
   </dialog>\r
   <dialog id="choice-review" class="dialog-surface" aria-label="Review selection draft">\r
     <div class="dialog-heading"><div><p class="eyebrow">SELECTION DRAFT</p><h2>Review your choices</h2></div><button id="review-close" aria-label="Close selection review">Close</button></div>\r
@@ -89,4 +91,4 @@ import{_ as s}from"./preload-helper-DO0sjJph.js";const t=`<!doctype html>\r
 </main>\r
 <script type="module" src="./main.ts"><\/script>\r
 </body></html>\r
-`,a=new DOMParser().parseFromString(t,"text/html").body;a.querySelectorAll("script").forEach(e=>e.remove());for(const e of a.attributes)document.body.setAttribute(e.name,e.value);document.body.dataset.production="true";document.body.replaceChildren(...a.childNodes);s(()=>import("./main-DNGZPlly.js"),__vite__mapDeps([0,1,2])).then(()=>{var e,i;(i=(e=navigator.serviceWorker)==null?void 0:e.controller)==null||i.postMessage({type:"fnt-shell-loaded",file:import.meta.url})}).catch(e=>{const i=document.querySelector("#error");i.hidden=!1,i.textContent=`Comparison could not be opened. Your workbook is unchanged. ${String(e)}`,document.body.dataset.loading="false"});
+`,i=new DOMParser().parseFromString(s,"text/html").body;i.querySelectorAll("script").forEach(e=>e.remove());for(const e of i.attributes)document.body.setAttribute(e.name,e.value);document.body.dataset.production="true";document.body.replaceChildren(...i.childNodes);t(()=>import("./main--Thvglrr.js"),__vite__mapDeps([0,1,2])).then(()=>{var e,a;(a=(e=navigator.serviceWorker)==null?void 0:e.controller)==null||a.postMessage({type:"fnt-shell-loaded",file:import.meta.url})}).catch(e=>{const a=document.querySelector("#error");a.hidden=!1,a.textContent=`Comparison could not be opened. Your workbook is unchanged. ${String(e)}`,document.body.dataset.loading="false"});

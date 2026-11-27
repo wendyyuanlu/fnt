@@ -54,6 +54,9 @@ test('comparison reads the renamed default after an old saved path is removed, r
   await page.getByRole('button',{name:'Recovery',exact:true}).click();
   await page.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
   const comparison=page.frameLocator('iframe.comparison-frame');
+  await expect(comparison.locator('#left-source')).toHaveText('Current local workbook');
+  await comparison.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();
+  await comparison.getByRole('option',{name:'Latest saved workbook',exact:true}).click();
   await expect(comparison.locator('#right-source')).toHaveText('fnt-data.json');
   await expect(comparison.locator('#right-grid')).toContainText('777');
   await expect(comparison.locator('#error')).toBeHidden();
@@ -190,7 +193,7 @@ test('visual backup comparison supports choices and changed areas without restor
   await page.getByRole('button',{name:'Compare copies',exact:true}).click();
   const comparison=page.frameLocator('iframe.comparison-frame');
   await expect(comparison.getByRole('heading',{name:'Compare versions',exact:true})).toBeVisible();
-  await expect(comparison.getByRole('combobox',{name:'Commits for right comparison',exact:true})).toBeDisabled();
+  await expect(comparison.getByRole('combobox',{name:'Commits for right comparison',exact:true})).toBeEnabled();
   await expect(comparison.locator('#totals')).toContainText('Choose a right copy');
   await comparison.locator('#right-file').setInputFiles({name:'invented.fnt.json',mimeType:'application/json',buffer:Buffer.from(fixture.contents)});
   await expect(comparison.locator('body')).toHaveAttribute('data-loading','false');

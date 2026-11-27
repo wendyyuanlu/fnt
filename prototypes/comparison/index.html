@@ -14,16 +14,18 @@
     <p class="notice" aria-label="Left source details"><span id="left-detail-kind">Left</span><span id="left-source-freshness"></span></p>
     <p class="notice" aria-label="Right source details"><span id="right-detail-kind">Right</span><span id="right-source-freshness"></span><span id="right-source-fetched" hidden></span><span id="right-source-commit" hidden></span></p>
   </details>
-  <dialog id="snapshot-picker" class="dialog-surface" aria-label="Uploaded comparison copies">
-    <div class="dialog-heading"><h2 id="snapshot-title">Left copy · GitHub</h2><button id="snapshot-close" type="button" aria-label="Close uploaded copies" aria-keyshortcuts="Escape">Close</button></div>
-    <p id="snapshot-target-note">Changes only the left comparison source. Attach opens a JSON file from this device; it does not upload it.</p>
-    <p id="snapshot-auth-note">Read-only access to your existing private data repository. The token stays only in this tab's memory; nothing is uploaded, restored, or synced. This prototype cannot reuse another website's stored sign-in.</p>
-    <form id="snapshot-connect"><div class="snapshot-config">
-      <label>Owner<input id="snapshot-owner" required></label><label>Private repository<input id="snapshot-repo" required></label>
-      <label>Branch<input id="snapshot-branch" required></label><label>Sync JSON path<input id="snapshot-path" required></label>
-    </div><label>Existing restricted GitHub token<input id="snapshot-token" type="password" autocomplete="off" required></label><button id="snapshot-list">Read / refresh uploaded copies</button></form>
-    <div class="snapshot-config snapshot-targets"><label class="snapshot-target" data-side="left">Left copy<select id="uploaded-left" disabled><option value="">Choose uploaded copy</option></select></label><label class="snapshot-target" data-side="right" hidden>Right copy<select id="uploaded-right" disabled><option value="">Choose uploaded copy</option></select></label></div>
-    <p id="snapshot-status" role="status">Connect above to list uploaded snapshots. Local backup selection still works without signing in.</p>
+  <dialog id="upload-manager" class="dialog-surface" aria-label="Manage uploaded copies">
+    <div class="dialog-heading"><h1>Manage uploads</h1><button id="upload-manager-close" class="icon-button" type="button" aria-label="Close upload manager">Close</button></div>
+    <p>Delete removes the uploaded file from the current GitHub branch, not your workbook or loaded comparison. Older commits may retain it; deletion does not necessarily reclaim repository storage.</p>
+    <div class="upload-manager-list"><table aria-label="Uploaded copies"><thead><tr class="find-sheet-header"><th><input id="upload-select-all" type="checkbox" aria-label="Select all uploaded copies"></th><th>Date</th><th>Device</th><th></th></tr></thead><tbody id="upload-manager-rows"></tbody></table></div>
+    <p id="upload-manager-status" role="status"></p>
+    <div class="button-row"><button id="upload-manager-refresh" type="button">Refresh uploads</button><button id="upload-delete-selected" type="button" hidden>Delete selected (0)</button></div>
+  </dialog>
+  <dialog id="upload-delete-confirmation" class="dialog-surface" aria-label="Delete uploaded copy">
+    <div class="dialog-heading"><h1>Delete uploaded copy?</h1></div>
+    <div id="upload-delete-copy"></div><p>The selected uploaded files will be removed from GitHub. Your workbook and loaded comparison copies stay unchanged.</p>
+    <p id="upload-delete-error" role="alert" hidden></p>
+    <div class="button-row"><button id="upload-delete-cancel" type="button">Cancel</button><button id="upload-delete" type="button">Delete from GitHub</button></div>
   </dialog>
   <dialog id="choice-review" class="dialog-surface" aria-label="Review selection draft">
     <div class="dialog-heading"><div><p class="eyebrow">SELECTION DRAFT</p><h2>Review your choices</h2></div><button id="review-close" aria-label="Close selection review">Close</button></div>

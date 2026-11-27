@@ -15,7 +15,9 @@ test('published Recovery confirms real replacement, preserves review navigation 
   const comparison=page.frameLocator('iframe.comparison-frame');
   await expect(page.locator('#app')).toHaveJSProperty('inert',true);
   await expect(comparison.locator('#totals')).toContainText('Choose a right copy');
+  await expect(comparison.locator('#left-file')).toBeEnabled();
   await comparison.locator('#left-file').setInputFiles({name:'invented-left.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(left))});
+  await expect(comparison.locator('#right-file')).toBeEnabled();
   await comparison.locator('#right-file').setInputFiles({name:'invented-right.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(right))});
   await expect(comparison.locator('#right-grid')).toContainText('Invented deployed comparison');
   await expect(comparison.locator('#first-cell')).toBeChecked();
@@ -23,6 +25,14 @@ test('published Recovery confirms real replacement, preserves review navigation 
   await comparison.locator('#keep-right button').click();
   await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
   await comparison.locator('#first-cell').uncheck();
+  await context.setOffline(true);
+  try{
+    await page.reload();
+    await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
+    await expect(comparison.locator('#left-source')).toHaveText('invented-left.json');
+    await expect(comparison.locator('#right-source')).toHaveText('invented-right.json');
+    await expect(comparison.locator('#first-cell')).not.toBeChecked();
+  }finally{await context.setOffline(false);}
   await expect(comparison.locator('.grid-scroll .row-identity')).toHaveCount(0);
   await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
   await comparison.locator('#first-cell').check();

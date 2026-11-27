@@ -10,16 +10,22 @@ test('commit picker uses local time, sticky three-column headers, collapsible da
     const path='/src/commit-picker.ts',{mountCommitPicker}=await import(/* @vite-ignore */path) as typeof import('../../src/commit-picker'),trigger=document.createElement('button');
     document.body.classList.add('compact-controls');document.body.dataset.dropdownStyle='dd';
     trigger.id='test-commits';trigger.setAttribute('aria-label','Test commits');document.body.append(trigger);
-    const entries=Array.from({length:50},(_,i)=>({sha:i.toString(16).padStart(40,'0'),time:i<25?'2026-11-25T22:00:00Z':'2026-11-26T10:00:00Z',message:`Fnt save (${i} pending changes)`,changes:i}));
+    const entries=Array.from({length:50},(_,i)=>({sha:i.toString(16).padStart(40,'0'),time:i<25?'2026-11-25T22:00:37Z':'2026-11-26T10:00:00Z',message:`Fnt save (${i} pending changes)`,changes:i}));
     mountCommitPicker(trigger,{selected:()=>entries[0].sha,list:async page=>page===1?{commits:entries,next:2}:{commits:[{sha:'f'.repeat(40),time:'2026-11-24T22:00:00Z',message:'Older invented commit'}]},choose:entry=>document.body.dataset.chosenCommit=entry.sha});
   });
 
   await page.getByRole('combobox',{name:'Test commits',exact:true}).click();
   const popup=page.locator('.commit-popup'),list=popup.getByRole('listbox',{name:'Commits',exact:true});
   await expect(popup.getByRole('searchbox',{name:'Search commits',exact:true})).toBeFocused();
+  await expect(popup.locator(':scope>p')).toHaveCount(0);
+  expect((await popup.boundingBox())!.width).toBe(Math.min(380,(await page.viewportSize())!.width-12));
   await expect(popup.locator('.commit-header')).toHaveText('TimeChangesCommit');await expect(popup.locator('.commit-header')).toHaveCSS('position','sticky');
   await expect(popup.locator('.commit-option').first()).toHaveCSS('display','grid');await expect(popup.locator('.commit-option')).toHaveCount(50);
-  await expect(popup.locator('.commit-day')).toHaveCount(2);await expect(popup.locator('.commit-option').filter({hasText:'2:00 PM PST'})).toHaveCount(25);
+  const sharedFont=await popup.locator('.commit-option').first().evaluate(button=>getComputedStyle(button).fontFamily);
+  for(const cell of await popup.locator('.commit-option').first().locator('span').all())await expect(cell).toHaveCSS('font-family',sharedFont);
+  await expect(popup.locator('[data-commit="'+'0'.repeat(40)+'"]>span').nth(1)).toHaveText('0');
+  await expect(popup.locator('summary').first()).toHaveClass(/find-sheet-header/);
+  await expect(popup.locator('.commit-day')).toHaveCount(2);await expect(popup.locator('.commit-option').filter({hasText:'2:00:37 PM PST'})).toHaveCount(25);
   await list.evaluate(element=>element.scrollTop=250);
   const top=(await list.boundingBox())!.y;expect((await popup.locator('.commit-header').boundingBox())!.y).toBeCloseTo(top,0);
   const day=popup.locator('.commit-day').filter({has:page.locator('summary').filter({hasText:'November 25, 2026'})});
@@ -31,7 +37,7 @@ test('commit picker uses local time, sticky three-column headers, collapsible da
 });
 
 test('historical comparison sources stay read-only until submission and use the current remote head when syncing',async({page})=>{
-  const a='a'.repeat(40),b='b'.repeat(40),c='c'.repeat(40);let content='',currentSha='current-blob',historyReads=0,writes=0,allowUpload=false,uploaded='';
+  const a='a'.repeat(40),b='b'.repeat(40),c='c'.repeat(40);let content='',currentSha='current-blob',historyReads=0,remoteReads=0,writes=0,allowUpload=false,uploaded='';
   await page.route('https://api.github.com/**',async route=>{
     const url=new URL(route.request().url());
     if(route.request().method()==='PUT'){
@@ -43,6 +49,7 @@ test('historical comparison sources stay read-only until submission and use the 
       await route.fulfill({json:[a,b,c].map((sha,i)=>({sha,commit:{committer:{date:`2026-11-${25-i}T22:00:00Z`},message:`Fnt save (${i+1} pending changes)`}}))});return;
     }
     if(url.pathname.includes('/contents/')){
+      remoteReads++;
       const envelope=JSON.parse(content),ref=url.searchParams.get('ref');
       if(ref===c)envelope.book=createDemo();else if(ref===a||ref===b){
         envelope.book.title=ref===a?'Invented first commit':'Invented second commit';
@@ -65,7 +72,12 @@ test('historical comparison sources stay read-only until submission and use the 
   content=JSON.stringify({format:'fnt-sync-v1',book:original,operations:[]});
   await page.reload();await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
   const frame=page.frameLocator('.comparison-view iframe');
+  await expect(frame.locator('#left-source')).toHaveText('Current local workbook');
+  expect(remoteReads).toBe(0);await expect(frame.locator('#right-commits')).toBeEnabled();await expect(frame.locator('#right-github')).toBeEnabled();
+  await frame.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();
+  await frame.getByRole('option',{name:'Latest saved workbook',exact:true}).click();
   await expect(frame.locator('#right-source')).toHaveText('book.json');
+  historyReads=0;
   await expect(frame.getByRole('combobox',{name:'Commits for left comparison',exact:true})).toBeEnabled();
   const beforeSelection=await page.evaluate(async()=>{const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();try{return(await store.load())!.book;}finally{store.close();}});
   await expect(frame.getByRole('button',{name:'Read GitHub',exact:true})).toHaveCount(0);
@@ -125,9 +137,9 @@ test.describe('device-local commit dates',()=>{
     const popup=page.locator('.commit-popup'),search=popup.getByRole('searchbox');
     await expect(popup.getByRole('status')).toContainText('Invented unavailable history');
     await search.fill('missing');await expect(popup.getByRole('status')).toContainText('Invented unavailable history');
-    await popup.getByRole('button',{name:'Retry reading commits',exact:true}).click();await expect(popup.getByRole('status')).toHaveText('No matching commits.');
+    await popup.getByRole('button',{name:'Retry reading copies',exact:true}).click();await expect(popup.getByRole('status')).toHaveText('No matching options.');
     await search.fill('');await expect(popup.locator('summary')).toHaveText('November 26, 2026');
-    await expect(popup.locator('.commit-option')).toContainText('3:30 AM GMT+5:30');
+    await expect(popup.locator('.commit-option')).toContainText('3:30:00 AM GMT+5:30');
     await search.press('Escape');await expect(popup).toHaveCount(0);await expect(page.locator('#retry-commits')).toBeFocused();
   });
 });
@@ -172,11 +184,70 @@ test('older open workbooks do not fail automatically on newer Meal log metadata 
   expect(await page.evaluate(()=>document.body.dataset.remoteReads)).toBe('1');await expect(frame.locator('#right-file')).toBeEnabled();
 });
 
-test('disconnected browsers explain disabled GitHub controls and keep local comparison available',async({page})=>{
+test('disconnected browsers keep source dropdowns accessible and offer sign-in',async({page})=>{
   await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  const fieldStyle=(input:Element)=>{const style=getComputedStyle(input);return{padding:style.padding,border:style.border,borderRadius:style.borderRadius,font:style.font,color:style.color,background:style.backgroundColor,outline:style.outline,cursor:style.cursor};};
+  await page.keyboard.press('Control+f');await expect(page.locator('#find-text')).toBeFocused();
+  const sharedField=await page.locator('#find-text').evaluate(fieldStyle);
+  await page.getByRole('button',{name:'Close dialog',exact:true}).click();
   await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
   const frame=page.frameLocator('iframe.comparison-frame');
   await expect(frame.locator('#source-auth-note')).toContainText('connected in this browser');
-  await expect(frame.getByRole('combobox',{name:'Commits for right comparison',exact:true})).toBeDisabled();
-  await expect(frame.locator('#right-github')).toBeDisabled();await expect(frame.locator('#right-file')).toBeEnabled();
+  const noticeColors=await frame.locator('#source-auth-note').evaluate(notice=>({text:getComputedStyle(notice).color,link:getComputedStyle(notice.querySelector('a')!).color}));
+  expect(noticeColors.link).toBe(noticeColors.text);
+  await expect(frame.locator('#source-auth-note a')).toHaveCSS('text-decoration-line','underline');
+  const syncStyles=await frame.getByRole('button',{name:'Sync',exact:true}).evaluate(button=>{
+    const properties=['fontFamily','fontSize','fontWeight','lineHeight','padding','color','backgroundColor','borderColor','borderWidth','borderRadius','height'] as const;
+    const styles=(element:Element)=>{const style=getComputedStyle(element);return Object.fromEntries(properties.map(property=>[property,style[property]]));};
+    return{sync:styles(button),shared:styles(document.getElementById('right-github')!),width:button.getBoundingClientRect().width};
+  });
+  expect(syncStyles.sync).toEqual(syncStyles.shared);expect(syncStyles.width).toBeGreaterThan(32);
+  await frame.getByRole('button',{name:'Sync',exact:true}).click();
+  const sync=page.getByRole('dialog',{name:'Optional private GitHub sync',exact:true});
+  await expect(sync.getByRole('button',{name:'Connect & read copies',exact:true})).toBeVisible();
+  const footer=sync.locator('#sync-form>.button-row');
+  await expect(footer.getByRole('button')).toHaveText(['Connect & read copies','Disconnect']);
+  await expect(footer).toHaveCSS('gap','8px');
+  await sync.getByRole('button',{name:'Close dialog',exact:true}).click();
+  await frame.locator('#source-auth-note a').click();await expect(sync).toBeVisible();
+  await sync.getByRole('button',{name:'Close dialog',exact:true}).click();
+  const positions=await frame.locator('.top>div button').evaluateAll(buttons=>buttons.map(button=>({text:button.textContent,label:button.getAttribute('aria-label'),x:button.getBoundingClientRect().x})));
+  expect(positions.map(button=>button.label)).toEqual(['Sync','Back to workbook']);expect(positions[0].x).toBeLessThan(positions[1].x);
+  await expect(frame.getByRole('combobox',{name:'Commits for right comparison',exact:true})).toBeEnabled();
+  await expect(frame.locator('#right-github')).toBeEnabled();await expect(frame.locator('#right-file')).toBeEnabled();
+  await frame.locator('#right-github').click();await expect(frame.getByRole('searchbox',{name:'Search uploads',exact:true})).toBeFocused();
+  expect(await frame.getByRole('searchbox',{name:'Search uploads',exact:true}).evaluate(fieldStyle)).toEqual(sharedField);
+  await expect(frame.getByRole('button',{name:'Sync GitHub',exact:true})).toBeVisible();
+  await frame.getByRole('combobox',{name:'Commits for right comparison',exact:true}).click();
+  expect(await frame.getByRole('searchbox',{name:'Search commits',exact:true}).evaluate(fieldStyle)).toEqual(sharedField);
+});
+
+test('comparison sign-in uses the existing sync dialog read-only and disconnect clears comparison access',async({page})=>{
+  let writes=0,reads=0;
+  await page.route('https://api.github.com/**',async route=>{
+    if(['PUT','DELETE'].includes(route.request().method()))writes++;
+    else reads++;
+    const url=new URL(route.request().url());
+    await route.fulfill({json:url.pathname.includes('/git/trees/')?{tree:[],truncated:false}:{private:true,has_pages:false}});
+  });
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Compare versions for merge conflict',exact:true}).click();
+  const frame=page.frameLocator('iframe.comparison-frame');await expect(frame.locator('#totals')).toContainText('Choose a right copy');
+  await frame.locator('#right-github').click();await frame.getByRole('button',{name:'Sync GitHub',exact:true}).click();
+  const sync=page.getByRole('dialog',{name:'Optional private GitHub sync',exact:true});
+  for(const [field,value]of [['owner','example'],['repo','private-data'],['branch','main'],['path','book.json'],['token','invented-read-token']])await sync.locator('#sync-'+field).fill(value);
+  await sync.getByRole('button',{name:'Connect & read copies',exact:true}).click();
+  await expect(sync).toBeHidden();await expect(frame.locator('.commit-popup')).toBeVisible();
+  await expect(frame.getByRole('button',{name:'Sync GitHub',exact:true})).toHaveCount(0);expect(writes).toBe(0);
+  await expect(frame.locator('#totals')).toContainText('Choose a right copy');
+  const state=await page.evaluate(async()=>{const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();try{const state=(await store.load())!;return{paused:state.syncPaused,sha:state.remoteSha};}finally{store.close();}});
+  expect(state).toEqual({paused:true,sha:undefined});
+  await frame.getByRole('searchbox',{name:'Search uploads',exact:true}).press('Escape');
+  await frame.getByRole('button',{name:'Sync',exact:true}).click();
+  await sync.getByRole('button',{name:'Disconnect',exact:true}).click();
+  await expect(sync).toBeHidden();await expect(frame.locator('#source-auth-note a')).toBeVisible();
+  const disconnectedReads=reads;
+  await frame.locator('#right-github').click();
+  await expect(frame.getByRole('button',{name:'Sync GitHub',exact:true})).toBeVisible();
+  expect(reads).toBe(disconnectedReads);expect(writes).toBe(0);
 });

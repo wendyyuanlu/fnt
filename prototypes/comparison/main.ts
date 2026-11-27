@@ -6,13 +6,11 @@ import {displayExcelDate,parseDateInput} from '../../src/dates';
 import {displayFraction} from '../../src/quantity';
 import {dateFormatContext} from '../../src/display-values';
 import {hypotheticalProjection} from '../../src/grouping';
-import {comparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,listComparisonCommits,readComparisonCommit,snapshotDate,type ComparisonSnapshot} from '../../src/github-snapshots';
-import {mountCommitPicker} from '../../src/commit-picker';
+import {comparisonSnapshot,snapshotDate,type ComparisonSnapshot} from '../../src/github-snapshots';
+import {mountCommitPicker,mountUploadPicker} from '../../src/commit-picker';
 import {mountSelectDropdown} from '../../src/dropdown-ui';
 import {navigationIcon,toolbarIcon} from '../../src/icons';
-import {githubFormDefaults} from '../../src/github-client';
-import type {SyncConfig} from '../../src/storage';
-import type {ComparisonFrame,ComparisonSource} from '../../src/comparison-host';
+import type {ComparisonFrame,ComparisonSource,ComparisonReviewView} from '../../src/comparison-host';
 import {compare,scopes,chunks,axisChoices,hasAxisCellPeers,anchorLabel,anchorMismatchLabel,anchorErrorLabel,isDateAnchorLabel,type Scope,type Difference,type Category,type Chunk,type ChoiceAxis} from './comparison-model';
 
 const el=<T extends HTMLElement=HTMLElement>(id:string)=>document.getElementById(id) as T;
@@ -28,6 +26,52 @@ const sharedDropdowns=new Map<string,ReturnType<typeof mountSelectDropdown>>();
 type Pick='left'|'right';
 const choices=new Map<number,Pick>(),choiceHistory:Map<number,Pick>[]=[];
 let lastChoiceMessage='';
+let reviewReady=false;
+const sourceCopies:Partial<Record<Pick,ComparisonSource>>={};
+const differenceKey=(difference:Difference)=>JSON.stringify([difference.sheet,difference.table,difference.label,difference.rows,difference.columns,difference.target]);
+let reviewDifferences=new Map<number,string>();
+function saveReview(){
+  if(!host?.review||!reviewReady||sourcesBusy||!sourceCopies.left)return;
+  const savedChoices=(entries:Map<number,Pick>)=>[...entries].map(([id,side])=>{
+    const key=reviewDifferences.get(id);
+    if(!key)throw Error('A comparison choice no longer matches its source.');
+    return{key,side};
+  });
+  const chosen=selected===undefined?undefined:reviewDifferences.get(selected);
+  const view:ComparisonReviewView={
+    choices:savedChoices(choices),history:choiceHistory.map(savedChoices),scope:scope?.id,category,specific,region,
+    selected:chosen,focus:chosen&&focus&&focus.difference===selected?{key:chosen,row:focus.row,column:focus.column}:undefined,
+    context:el<HTMLSelectElement>('context').value,firstCell:el<HTMLInputElement>('first-cell').checked,linked:el<HTMLInputElement>('linked').checked,
+    choiceScope:el<HTMLSelectElement>('choice-scope').value,keepScope:el<HTMLSelectElement>('keep-scope').value,latest:[...latestSelections],uploads:{...uploadSelections},
+  };
+  void host.review.save({left:sourceCopies.left,right:sourceCopies.right,view}).catch(error=>showError(Error(`Comparison review could not be saved for refresh: ${String(error)}`)));
+}
+function restoreReview(view:ComparisonReviewView){
+  const ids=new Map([...reviewDifferences].map(([id,key])=>[key,id]));
+  if(ids.size!==reviewDifferences.size)throw Error('Saved choices cannot be restored to ambiguous differences. The saved review and workbook were not changed.');
+  const restoredChoices=(entries:ComparisonReviewView['choices'])=>new Map(entries.map(({key,side})=>{
+    const id=ids.get(key);if(id===undefined)throw Error('A saved choice no longer matches this website version. The saved review and workbook were not changed.');
+    return[id,side] as const;
+  }));
+  choices.clear();for(const [id,side]of restoredChoices(view.choices))choices.set(id,side);
+  choiceHistory.splice(0,choiceHistory.length,...view.history.map(restoredChoices));
+  category=view.category;specific=view.specific;
+  for(const [id,value]of [['context',view.context],['choice-scope',view.choiceScope]]){
+    const select=el<HTMLSelectElement>(id);
+    if(![...select.options].some(option=>option.value===value))throw Error('A saved comparison control is unavailable in this website version.');
+    select.value=value;
+  }
+  el<HTMLInputElement>('first-cell').checked=view.firstCell;el<HTMLInputElement>('linked').checked=view.linked;
+  latestSelections.clear();view.latest.forEach(side=>latestSelections.add(side));Object.assign(uploadSelections,view.uploads);
+  scope=areas.find(area=>area.id===view.scope)??scope;
+  if(scope){drawNavigation();drawScope();region=Math.min(view.region,Math.max(0,regions.length-1));}
+  selected=view.selected?ids.get(view.selected):undefined;
+  focus=view.focus&&selected!==undefined?{difference:selected,row:view.focus.row,column:view.focus.column}:undefined;
+  if(scope)drawRegion();
+  const keep=el<HTMLSelectElement>('keep-scope');
+  if([...keep.options].some(option=>option.value===view.keepScope&&!option.disabled))keep.value=view.keepScope;
+  updateChoices();
+}
 function sourceName(side:Pick):string{
   const name=el(side+'-kind').textContent,other=el((side==='left'?'right':'left')+'-kind').textContent;
   return name&&name!==other?name:side==='left'?'left copy':'right copy';
@@ -147,6 +191,7 @@ function updateChoices(){
     const badge=button.querySelector('.count');if(badge)badge.textContent=count?`${count}/${area.differences.length}`:String(area.differences.length);
   });
   for(const control of sharedDropdowns.values())control.refresh();
+  saveReview();
 }
 function jumpToDifference(difference:Difference){
   scope=areas.find(a=>a.differences.includes(difference))!;category='all';specific='';selected=difference.id;region=0;
@@ -490,6 +535,7 @@ async function loadComparison(candidateLeft=left,candidateRight=right,onCommit:(
     if(generation!==request)return false;
     const nextAreas=scopes(candidateLeft,candidateRight,values);
     left=candidateLeft;right=candidateRight;differences=values;areas=nextAreas;engines=nextEngines;onCommit();
+    reviewDifferences=new Map(differences.map(d=>[d.id,differenceKey(d)]));
     el<HTMLButtonElement>('review-choices').disabled=false;
     choices.clear();choiceHistory.length=0;lastChoiceMessage='';selected=undefined;focus=undefined;updateChoices();
     scope=areas.find(s=>s.id===scope?.id)??areas.find(s=>s.leftTable&&s.differences.some(d=>d.category==='value'))??areas[0];
@@ -535,8 +581,11 @@ function sourceTime(time:string,timeZone?:string):string{
   return date.toLocaleString('en-US',{timeZone,timeZoneName:'short'}).replace(', ',' @ ');
 }
 function setSource(side:'left'|'right',label:string,kind:string,commit?:string){
+  const copy=side==='left'?left:right;
+  if(copy)sourceCopies[side]={book:copy,label,kind,revision:commit};
   delete commitSelections[side];
   latestSelections.delete(side);
+  delete uploadSelections[side];
   el(`${side}-source`).textContent=label;
   document.querySelector<HTMLElement>(`.${side}-pane > header b`)!.textContent=kind;
   el(`${side}-grid`).setAttribute('aria-label',kind+' spreadsheet preview');
@@ -551,6 +600,7 @@ function setSource(side:'left'|'right',label:string,kind:string,commit?:string){
 }
 function setHostSource(side:'left'|'right',source:ComparisonSource){
   setSource(side,source.label,source.kind);
+  sourceCopies[side]=source;
   if(source.kind==='GitHub commit')commitSelections[side]=source.revision;
   if(source.freshness)el(`${side}-source-freshness`).textContent=source.freshness;
   if(side==='right'){
@@ -582,27 +632,27 @@ for(const side of ['left','right'] as const)el<HTMLInputElement>(`${side}-file`)
   }catch(error){showError(error);}
   finally{setSourcesBusy(false);}
 };
-const picker=el<HTMLDialogElement>('snapshot-picker');
-const syncDefaults=githubFormDefaults();
-for(const field of ['owner','repo','branch','path'] as const)el<HTMLInputElement>('snapshot-'+field).value=syncDefaults[field];
-let snapshotSide:'left'|'right'='left';
-for(const side of ['left','right'] as const)el(side+'-github').onclick=()=>{
-  if(sourcesBusy)return;
-  snapshotSide=side;
-  const title=`${side==='left'?'Left':'Right'} copy · GitHub`;
-  el('snapshot-title').textContent=title;picker.setAttribute('aria-label',title);
-  el('snapshot-target-note').textContent=`Changes only the ${side} comparison source. Attach opens a JSON file from this device; it does not upload it.`;
-  for(const item of snapshotControls){
-    item.select.closest<HTMLElement>('.snapshot-target')!.hidden=item.side!==side;
-    item.select.disabled=item.side!==side||!uploadedFiles.length;item.control.refresh();
-  }
-  el('snapshot-status').textContent=uploadedFiles.length?`${uploadedFiles.length} uploaded copies, newest first. Choose one for the ${side} side.`:'Connect above to read uploaded snapshots from GitHub. Nothing is uploaded.';
-  picker.showModal();
-  if(host?.uploads)el<HTMLFormElement>('snapshot-connect').requestSubmit();
-};
-el('snapshot-close').onclick=()=>picker.close();
-let snapshotConfig:SyncConfig|undefined,snapshotToken='',uploadedFiles:ComparisonSnapshot[]=[];
-async function selectComparisonSource(side:'left'|'right',read:()=>Promise<ComparisonSource>,reading:string,latest=false):Promise<void>{
+const uploadSelections:Partial<Record<'left'|'right',string>>={};
+function connectionNotice(message:string){
+  const note=el('source-auth-note'),link=document.createElement('a');
+  link.href='#private-github-sync';link.textContent=message;
+  link.onclick=event=>{event.preventDefault();void connectCopies();};note.replaceChildren(link);note.hidden=false;
+}
+async function connectCopies():Promise<boolean>{
+  if(!host?.connection){showError(Error('Go back to the workbook, save locally, and use Update website to connect Private GitHub sync here.'));return false;}
+  try{
+    const connected=await host.connection.connect();
+    if(host.connection.connected())el('source-auth-note').hidden=true;
+    else connectionNotice('Private GitHub sync is not connected in this browser. Local JSON copies still work offline.');
+    saveReview();return connected;
+  }catch(error){showError(error);return false;}
+}
+const connected=()=>host?.connection?.connected()??!!(host?.commits||host?.readRemote||host?.uploads);
+async function listUploads():Promise<ComparisonSnapshot[]>{
+  if(!host?.uploads||!connected())throw Error('Connect Private GitHub sync to read uploaded copies.');
+  return host.uploads.list(left.id);
+}
+async function selectComparisonSource(side:'left'|'right',read:()=>Promise<ComparisonSource>,reading:string,latest=false,onCommitted?:()=>void):Promise<void>{
   if(sourcesBusy)return;
   setSourcesBusy(true);
   const totals=el('totals'),previousTotals=totals.textContent;totals.textContent=reading;
@@ -610,84 +660,123 @@ async function selectComparisonSource(side:'left'|'right',read:()=>Promise<Compa
     const source=await read(),other=side==='left'?right:left;
     if(other&&source.book.id!==other.id)throw Error('This copy belongs to a different workbook. Neither comparison source was replaced.');
     el('error').hidden=true;
-    const commit=()=>{setHostSource(side,source);if(latest)latestSelections.add(side);};
+    const commit=()=>{setHostSource(side,source);if(latest)latestSelections.add(side);onCommitted?.();};
     if(side==='left'&&!right){left=source.book;commit();waitForCopy();return;}
     await loadComparison(side==='left'?source.book:left,side==='right'?source.book:right,commit);
   }catch(error){showError(error);}
   finally{if(totals.textContent===reading)totals.textContent=previousTotals;setSourcesBusy(false);}
 }
-for(const side of ['left','right'] as const)mountCommitPicker(el<HTMLButtonElement>(side+'-commits'),{
+for(const side of ['left','right'] as const){
+  const trigger=el<HTMLButtonElement>(side+'-commits');
+  mountCommitPicker(trigger,{
   selected:()=>commitSelections[side],
-  list:host&&!host.commits?undefined:page=>host?.commits?host.commits.list(page):listComparisonCommits(snapshotConfig,snapshotToken,page),
+  available:connected,canChoose:()=>!sourcesBusy,sync:()=>void connectCopies().then(ok=>{if(ok)trigger.click();}),
+  list:host?.commits?page=>host.commits!.list(page):undefined,
   latest:host?.readRemote?{selected:()=>latestSelections.has(side),choose:()=>void selectComparisonSource(side,host.readRemote!,'Reading latest saved workbook...',true)}:undefined,
   choose:entry=>{
     if(sourcesBusy||commitSelections[side]===entry.sha)return;
     void selectComparisonSource(side,async()=>{
-      const loaded=host?.commits?await host.commits.read(entry):await readComparisonCommit(snapshotConfig,snapshotToken,entry);
-      return 'kind'in loaded?loaded:{book:loaded.book,kind:'GitHub commit',label:`${loaded.path} · ${entry.sha.slice(0,8)}`,revision:entry.sha,freshness:`Committed: ${sourceTime(entry.time)}.`};
+      if(!host?.commits)throw Error('Update website to read commit history.');
+      return host.commits.read(entry);
     },`Reading commit ${entry.sha.slice(0,8)}...`);
   },
-});
-const snapshotControls=(['left','right'] as const).map(side=>{
-  const select=el<HTMLSelectElement>(`uploaded-${side}`);
-  const control=mountSelectDropdown(select,{renderOption:(button,option)=>{
-    if(!option.value)return;
-    const date=document.createElement('span'),device=document.createElement('span');
-    date.textContent=option.dataset.date!;device.textContent=`[${option.dataset.device}]`;date.className='snapshot-date';device.className='snapshot-device';button.classList.add('snapshot-option');button.replaceChildren(date,device);
-  }});
-  select.onchange=async()=>{
-    if(sourcesBusy||side!==snapshotSide)return;
-    const entry=uploadedFiles.find(file=>file.path===select.value);if(!entry)return;
-    setSourcesBusy(true);
-    try{
-      const source=host?.uploads?await host.uploads.read(entry):undefined;
-      const copy=source?.book??await readComparisonSnapshot(snapshotConfig,snapshotToken,entry);
-      const other=side==='left'?right:left;
-      if(other&&copy.id!==other.id)throw Error('Uploaded copy belongs to another workbook. Neither source was replaced.');
-      el('error').hidden=true;
-      const commit=()=>source?setHostSource(side,source):setSource(side,sourceTime(entry.time),`${entry.device} upload`);
-      if(side==='left'&&!right){left=copy;commit();waitForCopy();el('snapshot-status').textContent='Left source loaded. Choose a right copy to begin.';return;}
-      const loaded=await loadComparison(side==='left'?copy:left,side==='right'?copy:right,commit);
-      if(!loaded){el('snapshot-status').textContent='Source selection did not complete. Check the comparison error; no workbook was saved or uploaded.';return;}
-      el('snapshot-status').textContent=`Loaded ${snapshotDate(entry.time)} [${entry.device}] on the ${side}. No workbook was saved or uploaded.`;
-    }catch(error){el('snapshot-status').textContent=`Previous comparison retained. ${error instanceof Error?error.message:String(error)}`;}
-    finally{setSourcesBusy(false);}
-  };
-  return {side,select,control};
-});
+  });
+  const uploads=el<HTMLButtonElement>(side+'-github');
+  mountUploadPicker(uploads,{available:connected,canChoose:()=>!sourcesBusy,list:listUploads,selected:()=>uploadSelections[side],
+    sync:()=>void connectCopies().then(ok=>{if(ok)uploads.click();}),manage:()=>void openUploadManager(),
+    choose:entry=>void selectComparisonSource(side,async()=>{
+      if(!host?.uploads)throw Error('Connect Private GitHub sync to read uploaded copies.');
+      const source=await host.uploads.read(entry);return source;
+    },'Reading uploaded copy...',false,()=>uploadSelections[side]=entry.path),
+  });
+}
 function setSourcesBusy(busy:boolean){
   sourcesBusy=busy;
   const unavailable=busy||!left||(!host&&!right);
   for(const side of ['left','right']){
-    el<HTMLButtonElement>(side+'-github').disabled=unavailable||!!host&&!host.uploads;
+    el<HTMLButtonElement>(side+'-github').disabled=false;
     el<HTMLInputElement>(side+'-file').disabled=unavailable;
-    el<HTMLButtonElement>(side+'-commits').disabled=unavailable||(host?!host.commits&&!host.readRemote:!snapshotConfig||!snapshotToken);
-  }
-  el<HTMLButtonElement>('snapshot-list').disabled=unavailable||!!host&&!host.uploads;
-  document.querySelectorAll<HTMLInputElement>('#snapshot-connect input').forEach(input=>input.disabled=unavailable);
-  for(const {side,select,control}of snapshotControls){
-    select.disabled=unavailable||side!==snapshotSide||!uploadedFiles.length;control.refresh();
+    el<HTMLButtonElement>(side+'-commits').disabled=false;
   }
   for(const id of ['submit-decision','review-submit'])el<HTMLButtonElement>(id).disabled=busy||!host?.apply||!choices.size;
+  if(!busy)saveReview();
 }
-el<HTMLFormElement>('snapshot-connect').onsubmit=async event=>{
-  event.preventDefault();
-  if(sourcesBusy)return;
-  const read=(name:string)=>el<HTMLInputElement>('snapshot-'+name).value.trim();
-  const config={owner:read('owner'),repo:read('repo'),branch:read('branch'),path:read('path')},token=read('token');
-  setSourcesBusy(true);el('snapshot-status').textContent='Reading private uploaded copies...';
-  try{
-    const files=host?.uploads?await host.uploads.list(left.id):await listComparisonSnapshots(config,token,left.id);
-    snapshotConfig=config;snapshotToken=token;uploadedFiles=files;
-    for(const {side,select,control}of snapshotControls){
-      select.replaceChildren(new Option('Choose uploaded copy',''));
-      for(const file of files){const option=new Option(`${snapshotDate(file.time)} [${file.device}]`,file.path);option.dataset.date=snapshotDate(file.time);option.dataset.device=file.device;select.append(option);}
-      control.refresh();
-    }
-    el('snapshot-status').textContent=`${files.length} uploaded copies, newest first. Dates use this device's time zone.`;
-  }catch(error){el('snapshot-status').textContent=`Uploaded copies could not be listed. Previous comparison retained. ${error instanceof Error?error.message:String(error)}`;}
-  finally{setSourcesBusy(false);}
+const manager=el<HTMLDialogElement>('upload-manager'),deleteDialog=el<HTMLDialogElement>('upload-delete-confirmation');
+el('upload-manager-close').innerHTML=toolbarIcon('close');
+el('upload-manager-close').onclick=()=>manager.close();el('upload-delete-cancel').onclick=()=>deleteDialog.close();
+el('upload-manager-refresh').onclick=()=>void openUploadManager();
+let managing=false,uploadsStale=false;
+let managedUploads:ComparisonSnapshot[]=[];
+const selectedUploads=new Set<string>();
+function updateUploadSelection(){
+  const all=el<HTMLInputElement>('upload-select-all'),count=selectedUploads.size;
+  all.checked=!!managedUploads.length&&count===managedUploads.length;all.indeterminate=count>0&&count<managedUploads.length;
+  all.disabled=managing||uploadsStale||!managedUploads.length;
+  for(const row of el('upload-manager-rows').querySelectorAll<HTMLTableRowElement>('tr')){
+    const input=row.querySelector<HTMLInputElement>('input')!,button=row.querySelector<HTMLButtonElement>('button')!;
+    input.checked=selectedUploads.has(row.dataset.upload!);input.disabled=managing||uploadsStale;
+    button.disabled=managing||uploadsStale||!host?.uploads?.delete;
+  }
+  const remove=el<HTMLButtonElement>('upload-delete-selected');
+  remove.textContent=`Delete selected (${count})`;remove.hidden=!count;remove.disabled=managing||uploadsStale||!host?.uploads?.delete;
+}
+el('upload-select-all').onchange=()=>{
+  selectedUploads.clear();if(el<HTMLInputElement>('upload-select-all').checked)managedUploads.forEach(entry=>selectedUploads.add(entry.path));
+  updateUploadSelection();
 };
+el('upload-delete-selected').onclick=()=>confirmUploadDeletion(managedUploads.filter(entry=>selectedUploads.has(entry.path)));
+function confirmUploadDeletion(entries:ComparisonSnapshot[]){
+  if(managing||uploadsStale||!entries.length||!host?.uploads?.delete)return;
+  const description=el('upload-delete-copy');description.replaceChildren();
+  const list=document.createElement('ul');
+  for(const entry of entries){const item=document.createElement('li');item.textContent=`${snapshotDate(entry.time)} · ${entry.device}`;list.append(item);}
+  description.append(list);
+  deleteDialog.querySelector('h1')!.textContent=entries.length===1?'Delete uploaded copy?':`Delete ${entries.length} uploaded copies?`;
+  el('upload-delete-error').hidden=true;deleteDialog.showModal();
+  const confirm=el<HTMLButtonElement>('upload-delete');confirm.disabled=false;
+  confirm.onclick=async()=>{
+    confirm.disabled=true;managing=true;updateUploadSelection();
+    for(const id of ['upload-delete-cancel','upload-manager-close','upload-manager-refresh'])el<HTMLButtonElement>(id).disabled=true;
+    let deleted=0;
+    try{
+      for(const entry of entries){
+        await host!.uploads!.delete!(entry);deleted++;selectedUploads.delete(entry.path);
+        managedUploads=managedUploads.filter(file=>file.path!==entry.path);
+        [...el('upload-manager-rows').querySelectorAll<HTMLTableRowElement>('tr')].find(row=>row.dataset.upload===entry.path)?.remove();
+        el('upload-manager-status').textContent=`Deleted ${deleted} of ${entries.length} uploaded copies.`;
+      }
+      deleteDialog.close();el('upload-manager-status').textContent=`Deleted ${deleted} uploaded ${deleted===1?'copy':'copies'} from GitHub. Loaded comparison copies and workbook data are unchanged.`;
+    }catch(error){
+      uploadsStale=true;el('upload-delete-error').hidden=false;
+      el('upload-delete-error').textContent=`Deleted ${deleted} of ${entries.length} copies. Remaining deletions stopped. Refresh uploads before retrying. ${error instanceof Error?error.message:String(error)}`;
+      el('upload-manager-status').textContent=`Deleted ${deleted} of ${entries.length} copies. Refresh uploads to verify the remaining files before retrying.`;
+    }finally{
+      managing=false;updateUploadSelection();
+      for(const id of ['upload-delete-cancel','upload-manager-close','upload-manager-refresh'])el<HTMLButtonElement>(id).disabled=false;
+    }
+  };
+}
+manager.oncancel=deleteDialog.oncancel=event=>{if(managing)event.preventDefault();};
+async function openUploadManager():Promise<void>{
+  if(managing)return;if(!manager.open)manager.showModal();
+  managing=true;updateUploadSelection();el('upload-manager-status').textContent='Reading uploaded copies...';el<HTMLButtonElement>('upload-manager-refresh').disabled=true;
+  try{
+    const files=await listUploads(),body=el('upload-manager-rows');managedUploads=files;uploadsStale=false;
+    for(const path of selectedUploads)if(!files.some(entry=>entry.path===path))selectedUploads.delete(path);
+    body.replaceChildren();
+    for(const entry of files){
+      const row=document.createElement('tr'),selection=document.createElement('td'),checkbox=document.createElement('input'),date=document.createElement('td'),device=document.createElement('td'),action=document.createElement('td'),button=document.createElement('button');
+      row.dataset.upload=entry.path;date.textContent=snapshotDate(entry.time);device.textContent=entry.device;
+      checkbox.type='checkbox';checkbox.setAttribute('aria-label',`Select uploaded copy from ${entry.device} at ${date.textContent}`);
+      checkbox.onchange=()=>{if(checkbox.checked)selectedUploads.add(entry.path);else selectedUploads.delete(entry.path);updateUploadSelection();};
+      button.type='button';button.className='icon-button';button.innerHTML=toolbarIcon('trash');button.setAttribute('aria-label',`Delete uploaded copy from ${entry.device} at ${date.textContent}`);
+      button.onclick=()=>confirmUploadDeletion([entry]);
+      selection.append(checkbox);action.append(button);row.append(selection,date,device,action);body.append(row);
+    }
+    el('upload-manager-status').textContent=`${files.length} uploaded copies.`;
+  }catch(error){uploadsStale=true;el('upload-manager-status').textContent=error instanceof Error?error.message:String(error);}
+  finally{managing=false;updateUploadSelection();el<HTMLButtonElement>('upload-manager-refresh').disabled=false;}
+}
 document.querySelectorAll<HTMLButtonElement>('[data-category]').forEach(button=>button.onclick=()=>{
   category=button.dataset.category as Category|'all';region=0;selected=undefined;
   document.querySelectorAll('[data-category]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));if(scope)drawScope();
@@ -732,7 +821,7 @@ el('apply-selection').onclick=async()=>{
   try{
     await host.apply({left:structuredClone(left),right:structuredClone(right),choices:[...choices].map(([id,side])=>({id,side})),sync:!el('apply-sync-label').hidden&&el<HTMLInputElement>('apply-sync').checked,
       progress:(message,completed,total)=>{notice.textContent=`${completed} / ${total} steps — ${message}`;progress.max=total;progress.value=completed;}});
-    host.close();
+    reviewReady=false;host.close();
   }catch(error){
     el('apply-error').hidden=false;el('apply-error').textContent=error instanceof Error?error.message:String(error);
   }finally{
@@ -765,11 +854,15 @@ async function start(){
   try{
     if(document.body.dataset.production==='true'&&!host)throw Error('Open Compare versions from Recovery in your workbook. No private sources are loaded by this standalone page.');
     if(host){
-      left=host.local.book;setHostSource('left',host.local);
+      const saved=await host.review?.load();
+      left=(saved?.left??host.local).book;setHostSource('left',saved?.left??host.local);
       setSource('right','Attach a local JSON copy or read the saved GitHub version.','Compared copy');
       waitForCopy();
-      const source=host.remote??(host.commits&&host.readRemote?await host.readRemote():undefined);
-      if(source){right=source.book;setHostSource('right',source);if(!host.remote)latestSelections.add('right');await loadComparison();}
+      const source=saved?saved.right:host.remote??(!host.connection&&host.commits&&host.readRemote?await host.readRemote():undefined);
+      if(!saved)await host.review?.save({left:sourceCopies.left!,right:source});
+      if(source){right=source.book;setHostSource('right',source);if(!host.remote)latestSelections.add('right');if(!await loadComparison())return;}
+      if(saved?.view)restoreReview(saved.view);
+      reviewReady=true;
       return;
     }
     const responses=await Promise.all(['left.json','right.json','source-meta.json'].map(async path=>{const response=await fetch(path,{cache:'no-store'});if(!response.ok)throw Error(`${path} returned ${response.status}`);return response.text();}));
@@ -789,14 +882,11 @@ async function start(){
 if(host){
   const back=document.createElement('button');back.type='button';back.className='icon-button';
   back.setAttribute('aria-label','Back to workbook');back.title='Back to workbook';back.innerHTML=toolbarIcon('previous');
-  back.onclick=host.close;document.querySelector('.top')!.append(back);
+  back.onclick=host.close;
+  const sync=document.createElement('button'),actions=document.createElement('div');sync.type='button';sync.className='compact-button';sync.textContent='Sync';sync.setAttribute('aria-label','Sync');sync.title='Private GitHub sync';
+  sync.onclick=()=>void connectCopies();actions.append(sync,back);document.querySelector('.top')!.append(actions);
   window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!document.querySelector('dialog[open]')){event.preventDefault();host.close();}});
-  el('snapshot-auth-note').textContent=host.uploads?'Uses this website\'s existing private GitHub sign-in. Reads only; nothing is uploaded, restored, or synced.':'Configure Private GitHub sync from Recovery first. Local JSON comparisons work offline.';
-  el('snapshot-connect').querySelector<HTMLElement>('.snapshot-config')!.hidden=true;
-  el('snapshot-token').closest<HTMLElement>('label')!.hidden=true;
-  el('snapshot-connect').querySelectorAll<HTMLInputElement>('input').forEach(input=>input.required=false);
-  const note=el('source-auth-note');
-  if(!host.readRemote&&!host.commits&&!host.uploads){note.hidden=false;note.textContent='GitHub controls require Private GitHub sync to be connected in this browser. Local JSON copies still work offline.';}
-  else if(host.readRemote&&!host.commits){note.hidden=false;note.textContent='This open workbook uses an older website version. Save locally and use Update website to enable commit history and read newer Meal log fields. No GitHub copy was loaded automatically.';}
+  if(!connected())connectionNotice('Private GitHub sync is not connected in this browser. Open Commits or Uploads to sign in; local JSON copies still work offline.');
+  else if(host.readRemote&&!host.commits)connectionNotice('This open workbook uses an older website version. Save locally and use Update website to enable commit history and read newer Meal log fields. No GitHub copy was loaded automatically.');
 }
 void start();

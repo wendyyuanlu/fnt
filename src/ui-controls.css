@@ -31,3 +31,40 @@ select[hidden]{display:none!important}dialog::backdrop{background:#16382d60;back
 .dropdown-field.dropdown-fit-options>span{grid-column:1;grid-row:1}
 .dropdown-field.dropdown-fit-options>svg{grid-column:2;grid-row:1}
 .dropdown-option-size{visibility:hidden;pointer-events:none;white-space:nowrap}
+.dropdown-panel{display:flex;flex-direction:column;gap:7px;min-height:0;flex:1;overflow:hidden}
+.format-caret{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;flex-shrink:0}
+.format-caret svg{display:block;width:14px;height:14px;flex-shrink:0}
+:root .find-sheet-header,:root .find-sheet-header>th,:root .find-table-header,:root .find-table-header>th{height:29px;padding:6px 9px;background:#fff;color:var(--green);font-size:12px;font-weight:400;border-bottom:1px solid #ccd8cf}
+:root .find-sheet-header,:root .find-sheet-header>th{font-weight:600}
+.dropdown-section-header{display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none}
+.dropdown-section-header::-webkit-details-marker{display:none}
+.dropdown-section:not([open])>.dropdown-section-header .format-caret{transform:rotate(-90deg)}
+.dropdown-footer{display:flex;flex-wrap:wrap;gap:7px;flex-shrink:0}
+.dropdown-footer[hidden]{display:none}
+:root{--field-border:var(--line);--field-focus-border:#789583;--field-background:#fff;--field-focus-background:#edf1e8}
+.dd-mode{--field-border:var(--line);--field-focus-border:#9670b2;--field-focus-background:#f6f2f9}
+:is(#app,dialog,.cell-dropdown) :is(input:not([data-append-column],[type=checkbox],[type=radio],[type=range],[type=color],[type=file],[type=button],[type=submit],[type=reset],[type=hidden],[type=image]),textarea,select,.dropdown-field,.reference-group-picker),
+#cell-editor{
+  min-width:0;
+  padding:5px 8px;
+  border:1px solid var(--field-border);
+  border-radius:5px;
+  background:var(--field-background);
+  color:var(--field-color,#233c34);
+  font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-size:12px;
+  line-height:1.5;
+  outline:0;
+  outline-offset:0;
+  box-shadow:none;
+  &:is(:focus,:focus-visible,[aria-expanded=true]){
+    border-color:var(--field-focus-border);
+    background:var(--field-focus-background);
+    outline:0;
+    outline-offset:0;
+    box-shadow:none;
+  }
+  &:disabled{background:#f3f5f2;color:#788278;cursor:default}
+  &::placeholder{color:#788278;opacity:1}
+  &:is(input,textarea){cursor:text}
+}

@@ -146,7 +146,7 @@ export function mountMealLog(host:MealLogHost){
     if(touch()&&target.closest('[data-log-add],[data-log-insert],[data-log-dropdown]'))event.preventDefault();
     if(target.closest('button'))return;
     const input=target.closest('.meal-log-field')?.querySelector<HTMLInputElement>('input[data-log-field="food"]');
-    if(input&&!input.disabled&&input.dataset.logManual!=='true'){event.preventDefault();openPicker(input.dataset.logRow!,'food',input.closest<HTMLElement>('.meal-log-input')!);}
+    if(input&&!input.disabled&&input.dataset.logManual!=='true')event.preventDefault();
   });
   element.addEventListener('keydown',event=>{
     if(event.isComposing)return;
@@ -157,9 +157,16 @@ export function mountMealLog(host:MealLogHost){
   });
   footer.addEventListener('pointerdown',event=>{if(touch()&&focusMode)event.preventDefault();});
   element.addEventListener('click',event=>{
-    const target=event.target instanceof Element?event.target.closest<HTMLButtonElement>('button'):null;if(!target)return;
+    const source=event.target instanceof Element?event.target:null,target=source?.closest<HTMLButtonElement>('button');
+    if(!target){
+      const input=source?.closest('.meal-log-field')?.querySelector<HTMLInputElement>('input[data-log-field="food"]');
+      if(input&&!input.disabled&&input.dataset.logManual!=='true'){
+        event.preventDefault();openPicker(input.dataset.logRow!,'food',input.closest<HTMLElement>('.meal-log-input')!);
+      }
+      return;
+    }
     const row=target.closest<HTMLElement>('[data-log-card]')?.dataset.logCard;
-    if(target.dataset.logDropdown&&row){openPicker(row,target.dataset.logDropdown as MealField,target.closest<HTMLElement>('.meal-log-input')!);return;}
+    if(target.dataset.logDropdown&&row){event.preventDefault();openPicker(row,target.dataset.logDropdown as MealField,target.closest<HTMLElement>('.meal-log-input')!);return;}
     if(target.hasAttribute('data-log-insert')&&row){host.add(row);return;}
     if(target.hasAttribute('data-log-add')){host.add();return;}
     if(target.hasAttribute('data-log-today')){host.today();return;}

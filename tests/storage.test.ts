@@ -6,6 +6,22 @@ import { parseArchive,stringifyArchive } from '../src/archive';
 import {getHypotheticalStyle} from '../src/hypothetical';
 
 describe('recoverable local storage',()=>{
+  it('stores comparison reviews separately from workbook data and isolates each tab review',async()=>{
+    const name=uid(),store=await Store.open(name),book=createDemo(),right=structuredClone(book);right.title='Invented comparison only';
+    const sources={left:{book,kind:'This device',label:'Local'},right:{book:right,kind:'Local JSON',label:'Invented'},baseRevision:book.revision};
+    try{
+      const state=await store.save(book,0,'Initial');
+      await store.saveComparisonReview('one',sources,true);
+      await store.saveComparisonReview('two',{...sources,right:undefined},true);
+      const view={choices:[{key:'invented-difference',side:'right' as const}],history:[[]],category:'all' as const,specific:'',region:0,context:'1',firstCell:false,linked:true,choiceScope:'filtered',keepScope:'difference',latest:[],uploads:{}};
+      await store.saveComparisonReview('one',{...sources,view},false);
+      const reopened=await Store.open(name);
+      try{expect(await reopened.comparisonReview('one')).toEqual({...sources,view});}finally{reopened.close();}
+      expect(await store.load()).toEqual(state);
+      await store.clearComparisonReview('one');expect(await store.comparisonReview('one')).toBeUndefined();
+      expect(await store.comparisonReview('two')).toEqual({...sources,right:undefined,view:undefined});
+    }finally{store.close();}
+  });
   it('reopens the exact conflicting remote copy by destination without reading unrelated history, and clears obsolete pointers before a new conflict',async()=>{
     const store=await Store.open(uid()),config={owner:'example',repo:'private',branch:'main',path:'book.json'};
     try{

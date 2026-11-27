@@ -191,7 +191,8 @@ remain viewable only in history.
   Food opens the shared picker from anywhere in the field unless manual input
   is selected; + Food opens it automatically for the new row. Picker search
   focuses immediately on touch as well as desktop, retaining the keyboard-aware
-  footer; remembered manual mode focuses Food directly instead. Sheet tabs stay
+  footer; remembered manual mode focuses Food directly instead. Food label, field
+  and caret taps keep DD search focused through keyboard viewport changes. Sheet tabs stay
   hidden while the keyboard is open, including overlay-keyboard layouts.
   Large option sets scroll continuously without a pager.
   **Weight**, above the foods, maps to the selected day-summary row's `Weight`.
@@ -964,8 +965,12 @@ Closing without submitting or successfully changing sources clears the choices.
 Load a native full Fnt backup on either side; this does not restore,
 save or upload it. **Commits → Latest saved workbook** reads the newest saved
 GitHub copy onto either side, never syncing or uploading, including when local
-edits are pending. It requires private sync connected in this browser; otherwise
-the controls explain their availability and local JSON comparisons still work.
+edits are pending. Source dropdowns open immediately, without waiting for an
+automatic opening read. Preserved conflict copies still preload. Disconnected
+browsers offer **Sync GitHub** inside the dropdown; it opens the existing private
+sync dialog in a read-only connection mode. Connecting there verifies private
+access and reads copies without uploading the workbook or resuming automatic sync.
+Local JSON comparisons still work offline.
 Older open website versions do not automatically fetch newer-schema data:
 save locally and use **Update website** before loading that copy.
 The conflict dialog also offers **Compare versions or a
@@ -986,12 +991,33 @@ refuses to recreate a removed file; reconnect explicitly to change its destinati
 
 Comparison sources each have **Commits**: a read-only private GitHub history
 picker with sticky Time/Changes/Commit columns and collapsible device-local date
-sections. Times include the device's time zone. Changes shows a recorded pending
-save count when available, otherwise the commit message. Earlier history loads
-on request; reopening fetches fresh history. **Latest saved workbook** fetches the
+sections. Times include the device's time zone. Changes shows only a recorded
+pending-save record count, or a dash if no count was recorded; messages are not substituted
+for counts. The count is not a cell diff or an exact UI-action count: autosave can batch rapid
+edits into one record, and navigation records can also be included. Picker times
+include seconds; uploaded-copy dates retain the `M/D @ time` format.
+Earlier history loads on request; reopening fetches fresh history. **Latest saved workbook** fetches the
 branch's newest copy when chosen, whereas dated rows retain their fixed commit
 versions even if another device saves meanwhile. The content-fitting Commits
 trigger shares the region navigator's dropdown rendering and styling.
+Commits and Uploads reuse the DD popup, options panel, search field and keyboard
+navigation. Their date subheaders reuse Find's `find-sheet-header` presentation,
+with the shared dropdown chevron and its padding/alignment. Do not introduce
+independent picker search fields, subheader styling or chevrons.
+Picker fields use the workbook's shared field rules, including focus styling.
+Both pickers have a 380px preferred width, bounded by the viewport, without
+normal count/helper paragraphs. Loading and failures remain explicit.
+Dialog action footers reuse the shared `.button-row` spacing and button styles;
+never place adjacent unwrapped actions or add independent footer styles.
+The top-level Sync text button and underlined connection notice open the same
+read-only private-sync dialog.
+Refreshing a tab reopens its comparison and restores locally saved sources,
+choices, choice Undo, filters and display preferences. Reviews are stored only in
+IndexedDB, separately from workbook data and sync, and are isolated per tab.
+Back to workbook or a successful submission clears that tab's review. Reloading
+never submits choices, reconnects, or fetches a replacement source automatically;
+if workbook content changed while a review was closed by refresh, applying its
+older choices is blocked until a new comparison is opened.
 Selecting a commit loads only that comparison side; it never restores,
 uploads, or syncs until a decision is explicitly submitted. Recognized historical
 JSON filenames remain readable across the default private-data filename rename;
@@ -1006,8 +1032,19 @@ resolves conflicts. It uses the existing private, non-Pages data repository and
 restricted token. A device name is saved separately in this browser; uploaded
 snapshots contain the workbook and its date/device metadata, not credentials
 or original Excel attachments. Keep independent full backups for recovery.
-Comparison's **Uploads** controls offer uploaded copies for either side, sorted newest first, with
-the local upload date/time on the left and `[Device name]` on the right.
+Comparison's **Uploads** dropdowns offer uploaded copies for either side, sorted
+newest first, with sticky **Date** and **Device** column headers and plain device
+names. A fixed **Manage** footer opens the shared dialog listing these copies.
+Upload date subheaders are hidden; the flat list retains the Date/Device header.
+The manager has per-row checkboxes, header Select all, square shared trash-icon
+controls and a **Delete selected (#)** footer action. Bulk deletion runs only after
+confirmation, proceeds one file at a time, and stops on a failure with an explicit
+partial-result report. Refresh is required before retrying uncertain deletions.
+Deleting requires confirmation, verifies the current file SHA, and removes only
+that snapshot file from the configured private GitHub branch. It does not change
+the synced workbook, local data, or already loaded comparison copies. Git history
+can retain deleted files; this does not necessarily reclaim repository storage.
+Failed or uncertain deletions require refreshing the list before retrying.
 Listing and selecting copies only read GitHub. Snapshot dates do not establish
 which divergent workbook is authoritative, and revisions are not global clocks.
 

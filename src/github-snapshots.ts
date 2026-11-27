@@ -20,7 +20,7 @@ export async function listComparisonCommits(config:SyncConfig|undefined,token:st
       if(!row||typeof row!=='object')throw Error('A commit has invalid revision or date metadata.');
       const time=row.commit?.committer?.date,message=row.commit?.message;
       if(!revision(row.sha)||typeof time!=='string'||!Number.isFinite(Date.parse(time))||typeof message!=='string')throw Error('A commit has invalid revision or date metadata.');
-      const count=/^Fnt save \((\d+) pending changes?\)/i.exec(message),changes=count?Number(count[1]):undefined;
+      const count=/^(?:Fnt: save (\d+) local changes?|Fnt save \((\d+) pending changes?\))(?:\s|$)/i.exec(message),changes=count?Number(count[1]??count[2]):undefined;
       if(changes!==undefined&&!Number.isSafeInteger(changes))throw Error('A commit has invalid saved-change metadata.');
       return{sha:row.sha,time,message:message.split('\n')[0],...(changes!==undefined?{changes}:{})};
     });
@@ -62,7 +62,7 @@ function folder(config:SyncConfig,book:string):string{
 }
 export function snapshotDate(time:string):string{
   const date=new Date(time);
-  return `${date.getMonth()+1}/${date.getDate()} @ ${date.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}`;
+  return `${date.getMonth()+1}/${date.getDate()} @ ${date.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit',second:'2-digit'})}`;
 }
 function fileEntry(path:string,sha:string,workbook:string,prefix:string):ComparisonSnapshot|undefined{
   if(!path.startsWith(prefix))return;
@@ -123,5 +123,20 @@ export async function readComparisonSnapshot(config:SyncConfig|undefined,token:s
     const contents=decode64(blob.content),file=JSON.parse(contents) as SnapshotFile,book=comparisonSnapshot(contents);
     if(file.time!==entry.time||file.device!==entry.device||book.id!==entry.workbook)throw Error('Uploaded snapshot metadata does not match the selected copy.');
     return book;
+  });
+}
+export async function deleteComparisonSnapshot(config:SyncConfig|undefined,token:string,entry:ComparisonSnapshot,fetcher:typeof fetch=fetch):Promise<void>{
+  await withPrivateGitHub(config,token,fetcher,async client=>{
+    const expected=fileEntry(entry.path,entry.sha,entry.workbook,folder(client.config,entry.workbook));
+    if(entry.path===client.config.path||!expected||!revision(entry.sha)||expected.time!==entry.time||expected.device!==entry.device)throw Error('Invalid uploaded copy. Nothing deleted.');
+    const current=await client.request(client.contentURL(entry.path),{headers:client.headers,cache:'no-store',redirect:'error'});
+    if(!current.ok)throw Error(`Cannot verify uploaded copy (${current.status}). Refresh the list before retrying.`);
+    const file=await current.json() as {sha?:unknown};
+    if(file.sha!==entry.sha)throw Error('This uploaded copy changed. Refresh the list; nothing deleted.');
+    const response=await client.request(client.contentURL(entry.path),{method:'DELETE',headers:{...client.headers,'Content-Type':'application/json'},redirect:'error',
+      body:JSON.stringify({message:'Fnt: delete comparison snapshot',branch:client.config.branch,sha:entry.sha})});
+    if(!response.ok)throw Error(`Uploaded copy deletion could not be confirmed (${response.status}). Refresh the list before retrying.`);
+    const result=await response.json() as {commit?:{sha?:unknown}};
+    if(!revision(result.commit?.sha))throw Error('GitHub did not confirm deletion. Refresh the list before retrying.');
   });
 }
