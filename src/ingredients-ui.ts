@@ -46,6 +46,26 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
   }
   let filter='all',page=0,shape='',frame=0;
   let layout=new RowViewport([]),ordered:string[]=[],savedScroll=0,refreshing=false,active:{key:string;field:string}|undefined;
+  type ScrollAnchor={key:string;selector?:string;offset:number};
+  let savedAnchor:ScrollAnchor|undefined;
+  const scrollAnchor=():ScrollAnchor|undefined=>{
+    const box=list.getBoundingClientRect(),focused=document.activeElement;
+    const control=focused instanceof HTMLElement&&list.contains(focused)?focused:undefined;
+    const focusedCard=control?.closest<HTMLElement>('[data-ingredient-key]');
+    const visible=(card:HTMLElement)=>{const rect=card.getBoundingClientRect();return rect.bottom>box.top&&rect.top<box.bottom;};
+    const card=focusedCard&&visible(focusedCard)?focusedCard:[...list.querySelectorAll<HTMLElement>('[data-ingredient-key]')].find(visible);
+    if(!card)return;
+    const selector=card===focusedCard&&control instanceof HTMLInputElement?`[data-field="${control.dataset.field}"]`:card===focusedCard&&control?.hasAttribute('data-ingredient-type')?'[data-ingredient-type]':undefined;
+    const target=selector?control!:card;
+    return{key:card.dataset.ingredientKey!,selector,offset:target.getBoundingClientRect().top-box.top};
+  };
+  const restoreAnchor=(anchor:ScrollAnchor|undefined):boolean=>{
+    if(!anchor)return false;
+    const target=list.querySelector<HTMLElement>(`[data-ingredient-key="${anchor.key}"]${anchor.selector?' '+anchor.selector:''}`);
+    if(!target)return false;
+    list.scrollTop+=target.getBoundingClientRect().top-list.getBoundingClientRect().top-anchor.offset;
+    return true;
+  };
   const heights=new Map<string,number>();
   const resize=new ResizeObserver(entries=>{
     let changed=false;
@@ -69,6 +89,7 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
   };
   const draw=()=>{
     const book=host.book(),query=search.value.trim().toLocaleLowerCase();
+    const visualAnchor=host.table?scrollAnchor():undefined;
     const matches=records().filter(item=>(filter!=='missing'||item.missing.length)&&(!query||item.values.food?.toLocaleLowerCase().includes(query)));
     const focused=document.activeElement;
     const focusedControl=host.table&&(focused instanceof HTMLInputElement||focused instanceof HTMLButtonElement&&focused.hasAttribute('data-ingredient-type'))?focused:undefined;
@@ -141,6 +162,7 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
       control?.focus({preventScroll:true});
       if(control instanceof HTMLInputElement&&focus.selection)control.setSelectionRange(focus.selection.start,focus.selection.end,focus.selection.direction??undefined);
     }
+    if(host.table)restoreAnchor(visualAnchor);
   };
   const refresh=()=>{if(refreshing)return;refreshing=true;try{draw();}finally{refreshing=false;}};
   const reveal=(row:string,focus=false,end=false)=>{
@@ -212,6 +234,6 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
     }catch(error){host.error(error);}
   },{signal:controller.signal});
   return{element,refresh,last,commit,navigate:(direction:-1|1)=>{refresh();const row=records()[Math.max(0,Math.min(ordered.length-1,layout.at(list.scrollTop)+direction))]?.row;if(row)reveal(row);},
-    rememberScroll:()=>{savedScroll=list.scrollTop;},restoreScroll:()=>{list.scrollTop=savedScroll;},restoreFocus:()=>{if(active)list.querySelector<HTMLInputElement|HTMLTextAreaElement>(`[data-ingredient-key="${active.key}"] [data-field="${active.field}"]`)?.focus({preventScroll:true});},
+    rememberScroll:()=>{savedScroll=list.scrollTop;savedAnchor=scrollAnchor();},restoreScroll:()=>{if(!restoreAnchor(savedAnchor))list.scrollTop=savedScroll;},restoreFocus:()=>{if(active)list.querySelector<HTMLInputElement|HTMLTextAreaElement>(`[data-ingredient-key="${active.key}"] [data-field="${active.field}"]`)?.focus({preventScroll:true});},
     dispose:()=>{cancelAnimationFrame(frame);resize.disconnect();for(const panel of photoPanels)panel.dispose();controller.abort();projection=[];byKey.clear();projectionBook=undefined;projectionEngine=undefined;}};
 }

@@ -110,11 +110,13 @@ test('TABLE commits the active field on manual Save and Escape without losing fo
   }
   await expect(input).toHaveValue('Saved active source');
   await input.evaluate((element:HTMLInputElement)=>element.setSelectionRange(4,9));
+  const top=await input.evaluate(element=>element.getBoundingClientRect().top);
   await page.keyboard.press('Control+s');
   await expect(page.locator('#save-state')).toHaveText('Saved locally + recovery checkpoint');
   expect((await local(page)).sheets[0].cells[key(row,f.columns[0].column)].value).toBe('Saved active source');
   await expect(input).toBeFocused();
   expect(await input.evaluate((element:HTMLInputElement)=>[element.selectionStart,element.selectionEnd])).toEqual([4,9]);
+  expect(Math.abs(await input.evaluate(element=>element.getBoundingClientRect().top)-top)).toBeLessThanOrEqual(1);
   await input.fill('Closed active source');await input.press('Escape');
   await expect(f.panel).toHaveCount(0);
   await expect.poll(async()=>(await local(page)).sheets[0].cells[key(row,f.columns[0].column)]?.value).toBe('Closed active source');
