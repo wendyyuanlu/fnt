@@ -7,9 +7,10 @@ import './photo-ui.css';
 
 export type PhotoTarget={kind:'draft';id:string}|{kind:'ingredient';identity:IngredientIdentity};
 export interface PhotoScope {book:string;date:number;target?:PhotoTarget}
+export type PhotoAcquisition={source:'upload'}|{source:'camera';saveToGallery:boolean};
 export interface PhotoUIHost{
   book:()=>Workbook;date:()=>number;
-  add:(files:File[],scope:PhotoScope)=>Promise<void>;
+  add:(files:File[],scope:PhotoScope,acquisition:PhotoAcquisition)=>Promise<void>;
   attach:(ids:string[],scope:PhotoScope,move:boolean)=>Promise<void>;
   remove:(ids:string[])=>void;
   preview:(photo:FoodPhoto)=>Promise<Blob>;
@@ -25,10 +26,20 @@ export function createPhotoUI(host:PhotoUIHost){
   const metadata=(id:string)=>host.book().foodCapture?.photos.find(photo=>photo.id===id);
   const report=(action:Promise<unknown>)=>{void action.catch(host.error);};
   const capture=(scope:PhotoScope,camera:boolean)=>{
-    const input=document.createElement('input');input.type='file';input.accept='image/jpeg,image/png,image/webp,image/gif';
-    if(camera)input.setAttribute('capture','environment');else input.multiple=true;
-    input.onchange=()=>{const files=Array.from(input.files??[]);if(files.length)report(host.add(files,scope));};
-    input.click();
+    const pick=(acquisition:PhotoAcquisition)=>{
+      const input=document.createElement('input');input.type='file';input.accept='image/jpeg,image/png,image/webp,image/gif';
+      if(acquisition.source==='camera')input.setAttribute('capture','environment');else input.multiple=true;
+      input.onchange=()=>{const files=Array.from(input.files??[]);if(files.length)report(host.add(files,scope,acquisition));};
+      input.click();
+    };
+    if(!camera){pick({source:'upload'});return;}
+    host.dialog('Take photo','<label class="inline"><input type="checkbox" data-save-gallery aria-describedby="photo-gallery-help"> Save to gallery</label><p class="muted" id="photo-gallery-help">Leave this off if your camera already saves photos to avoid a duplicate. Browsers cannot detect that. If checked, a device download is requested after saving in FNT; this cannot guarantee a copy in the Photos app.</p><div class="button-row"><button type="button" class="primary" data-take-photo>Take photo</button></div>',dialog=>{
+      dialog.classList.add('popover');dialog.querySelector('.dialog-title')!.outerHTML='<h2 class="dialog-title">Take photo</h2>';
+      dialog.querySelector<HTMLButtonElement>('[data-take-photo]')!.onclick=()=>{
+        const saveToGallery=dialog.querySelector<HTMLInputElement>('[data-save-gallery]')!.checked;
+        dialog.close();pick({source:'camera',saveToGallery});
+      };
+    });
   };
   const view=(photo:FoodPhoto)=>{
     host.dialog(photo.name,'<p class="muted" data-photo-status>Loading original…</p><div class="photo-original"></div><div class="button-row" data-photo-actions></div>',dialog=>{

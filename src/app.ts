@@ -196,12 +196,16 @@ function mealView():MealLogView{
   mealDay=block.header;
   const value=(row:string,field:MealField)=>mealFieldText(s,row,field,context.fields);
   const rounded=(row:string,field:MealField)=>{
-    const column=context.fields.get(field);if(!column)return'0';
+    const column=context.fields.get(field);if(!column)return'';
     const result=scalar(engine.cell(s.id,row,column.column));if(isFault(result))return result.error;
-    if(result===null||result==='')return'0';
-    const number=Number(result);return Number.isFinite(number)?String(Math.ceil(number)):String(result);
+    if(result===null||typeof result==='string'&&!result.trim())return'';
+    const number=typeof result==='number'||typeof result==='string'?numberValue(String(result)):undefined;
+    return number===undefined?String(result):String(Math.ceil(number));
   };
-  const totals=(row:string)=>`${rounded(row,'calories')} cal · ${rounded(row,'protein')}P`;
+  const totals=(row:string)=>{
+    const calories=rounded(row,'calories'),protein=rounded(row,'protein');
+    return[calories!==''?`${calories} cal`:'',protein!==''?`${protein}P`:''].filter(Boolean).join(' · ');
+  };
   const numeric=numericKeyboardFields(book);
   const label=masterLogging(book,s).label,weightCell=getCell(s,block.header,label.column),weight=scalar(engine.cell(s.id,block.header,label.column)),config=mealLogConfig(book,s),needsNutrition=createMealNutritionReader(book,s,engine);
   return{header:block.header,date:block.date===undefined?'Undated':displayExcelDate(block.date)??'Undated',totals:totals(block.header),undo:!!undo.length,redo:!!redo.length,busy,
@@ -382,7 +386,7 @@ const photoUI=createPhotoUI({
     void work.catch(()=>{if(photoPreviewCache.get(key)===work)photoPreviewCache.delete(key);});
     return work;
   },
-  add:async(files,scope)=>{
+  add:async(files,scope,acquisition)=>{
     if(files.length>8)throw Error('Choose at most eight photos at a time.');
     checkPhotoScope(scope);
     const prepared:{photo:PhotoBlob;name:string;thumbnail:Blob}[]=[];
@@ -402,16 +406,18 @@ const photoUI=createPhotoUI({
     for(const {photo,thumbnail}of prepared){pendingPhotoBlobs.set(photo.id,photo);photoPreviewCache.set(photo.id+':'+photo.digest,Promise.resolve(thumbnail));}
     mealPanel?.refresh();
     busy=true;renderStatus();
+    const deviceCopy=acquisition.source==='camera'&&acquisition.saveToGallery;
+    const photoStatus='Saved locally - photos added.'+(deviceCopy?' Device download requested; your browser controls saving, not necessarily to the Photos app.':'');
     try{
       await saveCaptureDurably('Add food photos');
-      for(const {photo,name}of prepared){
+      if(deviceCopy)for(const {photo,name}of prepared){
         const url=URL.createObjectURL(photo.blob),link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);
       }
-      status='Saved locally - photos added. Device downloads requested; your browser controls saving.';
+      status=photoStatus;
     }finally{busy=false;renderStatus();mealPanel?.refresh();}
     const capturedBook=book.id,capturedGeneration=generation;
     void privatePhotos.uploadAdded(prepared.map(({photo})=>photo.id)).then(message=>{
-      if(book.id===capturedBook&&generation===capturedGeneration&&savedGeneration>=capturedGeneration&&!busy){status='Saved locally - photos added. Device downloads requested; '+message;renderStatus();}
+      if(book.id===capturedBook&&generation===capturedGeneration&&savedGeneration>=capturedGeneration&&!busy){status=photoStatus+' '+message;renderStatus();}
     }).catch(flash);
   },
   attach:async(ids,scope,move)=>{
@@ -5170,7 +5176,9 @@ async function start():Promise<void> {
   const publishedStarter=import.meta.env.PROD||import.meta.env.VITE_FNT_SYNTHETIC_STARTER!=='true';
   let stage='opening local storage';
   try{
-    store=await Store.open();stage='loading the saved workbook';const loaded=await store.load();
+    store=await Store.open(undefined,()=>{
+      root.innerHTML='<main class="startup"><h1>Waiting for another Fnt tab</h1><p role="status">Keep this page open. First save any edits in other Fnt tabs or installed app windows in this browser profile, then close those other tabs or windows so photo storage can finish upgrading.</p><p>This page will continue automatically. Your existing workbook has not been replaced. Do not clear browser or site data.</p></main>';
+    });stage='loading the saved workbook';const loaded=await store.load();
     if(loaded){
       state=loaded;book=clone(state.book);
       if(!book.catalogMigrations?.includes(dropdownCatalog.id)||!book.catalogMigrations.includes(dropdownFormatMigration)||!book.catalogMigrations.includes(dropdownGroupMigration)){

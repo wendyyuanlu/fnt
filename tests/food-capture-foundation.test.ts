@@ -42,6 +42,22 @@ function loggedFoods(book:Workbook){
 }
 
 describe.each([1,2,3])('food-capture foundation, repetition %i',()=>{
+  it('keeps unknown Draft and Logged nutrition blank and tagged while retaining genuine zero values',()=>{
+    const book=fixture(1);loggedFoods(book);
+    const first=addDraftFood(book,45000);first.values={food:'Unknown synthetic dish',calories:'0',protein:'unknown'};
+    const complete=addDraftFood(book,45000);complete.values={food:'Known zero synthetic dish',calories:'0',protein:'0',fat:'0',carbs:'0',sugar:'0',sodium:'0'};
+    const before=structuredClone(book),items=nutritionCandidates(book,[45000]);
+    const partial=items.find(item=>item.source.row===first.id)!;
+    expect(partial.values).toEqual(first.values);
+    expect(partial.missing).toEqual(['protein','fat','carbs','sugar','sodium']);
+    expect(partial.selected).toBe(true);
+    const known=items.find(item=>item.source.row===complete.id)!;
+    expect(known.missing).toEqual([]);expect(known.values.calories).toBe('0');
+    const logged=items.find(item=>item.kind==='logged')!;
+    expect(logged.values.calories).toBe('123');
+    expect(logged.missing).toEqual(['protein','fat','carbs','sugar','sodium']);
+    expect(book).toEqual(before);
+  });
   it('shares stable restaurant identities between Logged and Draft without changing consumption cells',()=>{
     const book=fixture(1);loggedFoods(book);
     const data=captureData(book),food=addDraftFood(book,45000);food.values.food='Draft dish';

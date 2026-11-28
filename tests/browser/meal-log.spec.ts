@@ -427,6 +427,7 @@ test('real browser photo decoding bounds previews and rejects malformed imports 
   for(const [width,height,message]of [[8192,8192,'32 megapixels'],[10,10,'Photo preview failed']] as const){
     const bytes=Buffer.alloc(32);bytes.set([137,80,78,71,13,10,26,10]);bytes.write('IHDR',12);bytes.writeUInt32BE(width,16);bytes.writeUInt32BE(height,20);
     const choice=page.waitForEvent('filechooser');await draft.getByRole('button',{name:'Add photo',exact:true}).click();
+    await page.getByRole('dialog',{name:'Take photo',exact:true}).getByRole('button',{name:'Take photo',exact:true}).click();
     await(await choice).setFiles({name:'Synthetic invalid.png',mimeType:'image/png',buffer:bytes});
     await expect(page.getByRole('alert')).toContainText(message);await page.getByRole('button',{name:'Dismiss error',exact:true}).click();
     const after=await read(page,fixture.sheet);expect(after.book.foodCapture).toEqual(before.book.foodCapture);
@@ -434,6 +435,7 @@ test('real browser photo decoding bounds previews and rejects malformed imports 
 });
 
 test('photo capture, organization and removal preserve original bytes, food links and recovery',async({page})=>{
+  const downloads:string[]=[];page.on('download',download=>downloads.push(download.suggestedFilename()));
   const fixture=await setup(page);await page.locator('#meal-draft').click();
   const draft=page.getByRole('region',{name:'Draft foods'});await draft.locator('[data-draft-add]').click();
   const card=draft.locator('[data-draft-card]').first();
@@ -450,9 +452,15 @@ test('photo capture, organization and removal preserve original bytes, food link
     await expect(draft.getByRole('button',{name:'Open photo '+name,exact:true}).locator('img')).toBeVisible();
     return read(page,fixture.sheet);
   };
-  const general=await add(draft.getByRole('button',{name:'Add photo',exact:true}),'Synthetic general.png');
+  await draft.getByRole('button',{name:'Add photo',exact:true}).click();
+  const camera=page.getByRole('dialog',{name:'Take photo',exact:true});
+  await expect(camera).toHaveClass(/dialog-surface.*popover/);await expect(camera.locator('h2')).toHaveText('Take photo');
+  await expect(camera.getByRole('checkbox',{name:'Save to gallery',exact:true})).not.toBeChecked();
+  const general=await add(camera.getByRole('button',{name:'Take photo',exact:true}),'Synthetic general.png');
   expect(general.book.foodCapture.foods[0].photos).toEqual([]);expect(general.book.foodCapture.photos).toHaveLength(1);
-  const linked=await add(card.getByRole('button',{name:'Take photo',exact:true}),'Synthetic linked.png');
+  expect(downloads).toEqual([]);
+  const linked=await add(card.getByRole('button',{name:'Upload photo',exact:true}),'Synthetic linked.png');
+  expect(downloads).toEqual([]);
   expect(linked.book.foodCapture.foods[0].photos).toHaveLength(1);expect(linked.book.foodCapture.photos).toHaveLength(2);
   expect(linked.sheet).toEqual(general.sheet);
   await draft.getByRole('checkbox',{name:'Select photo Synthetic general.png',exact:true}).check();
@@ -479,9 +487,46 @@ test('photo capture, organization and removal preserve original bytes, food link
   await draft.getByRole('button',{name:'Undo',exact:true}).click();
   const restored=await read(page,fixture.sheet);expect(restored.book.foodCapture.photos).toHaveLength(2);expect(restored.book.foodCapture.foods[0].photos).toHaveLength(2);
   await expect(draft.locator('.photo-thumbnails img')).toHaveCount(2);
+  expect(downloads).toEqual([]);
+});
+
+test('only an explicit camera gallery choice requests a device copy after saving',async({page})=>{
+  const fixture=await setup(page);await page.locator('#meal-draft').click();
+  const draft=page.getByRole('region',{name:'Draft foods'}),downloads:string[]=[];
+  page.on('download',download=>downloads.push(download.suggestedFilename()));
+  await draft.getByRole('button',{name:'Add photo',exact:true}).click();
+  let camera=page.getByRole('dialog',{name:'Take photo',exact:true});
+  await camera.getByRole('checkbox',{name:'Save to gallery',exact:true}).check();
+  await camera.getByRole('button',{name:'Close dialog',exact:true}).click();
+  expect(downloads).toEqual([]);
+  await draft.getByRole('button',{name:'Add photo',exact:true}).click();
+  camera=page.getByRole('dialog',{name:'Take photo',exact:true});
+  await expect(camera.getByRole('checkbox',{name:'Save to gallery',exact:true})).not.toBeChecked();
+  await camera.getByRole('checkbox',{name:'Save to gallery',exact:true}).check();
+  const chooser=page.waitForEvent('filechooser');await camera.getByRole('button',{name:'Take photo',exact:true}).click();
+  const input=await chooser;expect(await input.element().getAttribute('capture')).toBe('environment');
+  const image=Buffer.from(await page.evaluate(()=>{const canvas=document.createElement('canvas');canvas.width=80;canvas.height=60;return canvas.toDataURL('image/png').split(',')[1];}),'base64');
+  const downloading=page.waitForEvent('download');
+  await input.setFiles({name:'Synthetic camera copy.png',mimeType:'image/png',buffer:image});
+  expect((await downloading).suggestedFilename()).toBe('Synthetic camera copy.png');
+  const saved=await read(page,fixture.sheet);expect(saved.book.foodCapture.photos).toHaveLength(1);
+  expect(downloads).toEqual(['Synthetic camera copy.png']);
+  const original=await page.evaluate(async()=>{
+    const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
+    try{const state=(await store.load())!;return(await store.backup(state)).photos![0].data;}finally{store.close();}
+  });expect(Buffer.from(original,'base64')).toEqual(image);
+  await draft.getByRole('button',{name:'Open photo Synthetic camera copy.png',exact:true}).click();
+  const viewer=page.getByRole('dialog',{name:'Synthetic camera copy.png',exact:true}),explicit=page.waitForEvent('download');
+  await viewer.getByRole('link',{name:'Save to device',exact:true}).click();await explicit;
+  await viewer.getByRole('button',{name:'Close dialog',exact:true}).click();
+  await draft.getByRole('button',{name:'Undo',exact:true}).click();expect((await read(page,fixture.sheet)).book.foodCapture.photos).toEqual([]);
+  await draft.getByRole('button',{name:'Redo',exact:true}).click();expect((await read(page,fixture.sheet)).book.foodCapture.photos).toHaveLength(1);
+  await page.reload();await expect(page.locator('#save-state')).toContainText(/^Saved/);
+  expect(downloads).toEqual(['Synthetic camera copy.png','Synthetic camera copy.png']);
 });
 
 test('a failed photo save keeps originals in emergency backup and retries one atomic attachment',async({page})=>{
+  const downloads:string[]=[];page.on('download',download=>downloads.push(download.suggestedFilename()));
   const fixture=await setup(page);await page.locator('#meal-draft').click();
   const draft=page.getByRole('region',{name:'Draft foods'});await draft.locator('[data-draft-add]').click();await read(page,fixture.sheet);
   const image=Buffer.from(await page.evaluate(()=>{
@@ -492,7 +537,9 @@ test('a failed photo save keeps originals in emergency backup and retries one at
     IDBObjectStore.prototype.put=function(...args:Parameters<IDBObjectStore['put']>){if(this.name==='state')throw new DOMException('Synthetic photo quota failure','QuotaExceededError');return original.apply(this,args);};
     document.addEventListener('restore-photo-save',()=>{IDBObjectStore.prototype.put=original;},{once:true});
   });
-  const choice=page.waitForEvent('filechooser');await draft.getByRole('button',{name:'Take photo',exact:true}).click();
+  await draft.getByRole('button',{name:'Take photo',exact:true}).click();
+  const camera=page.getByRole('dialog',{name:'Take photo',exact:true});await camera.getByRole('checkbox',{name:'Save to gallery',exact:true}).check();
+  const choice=page.waitForEvent('filechooser');await camera.getByRole('button',{name:'Take photo',exact:true}).click();
   await(await choice).setFiles({name:'Synthetic pending.png',mimeType:'image/png',buffer:image});
   await expect(page.locator('#save-state')).toContainText('NOT SAVED');
   await expect(draft.getByRole('button',{name:'Open photo Synthetic pending.png',exact:true}).locator('img')).toBeVisible();
@@ -501,6 +548,7 @@ test('a failed photo save keeps originals in emergency backup and retries one at
     try{const state=(await store.load())!;return{photos:state.book.foodCapture?.photos??[],backup:await store.backup(state)};}finally{store.close();}
   });
   expect(before.photos).toEqual([]);expect(before.backup.photos??[]).toEqual([]);
+  expect(downloads).toEqual([]);
   await page.getByRole('button',{name:'Dismiss error',exact:true}).click();
   await page.getByRole('button',{name:'Recovery',exact:true}).click();
   const downloading=page.waitForEvent('download');await page.getByRole('button',{name:'Download independent full backup',exact:true}).click();
@@ -514,6 +562,7 @@ test('a failed photo save keeps originals in emergency backup and retries one at
   if(await page.getByRole('button',{name:'Dismiss error',exact:true}).isVisible())await page.getByRole('button',{name:'Dismiss error',exact:true}).click();
   await page.getByRole('button',{name:/^Save(?: workbook)?$/,exact:true}).click();
   const saved=await read(page,fixture.sheet);expect(saved.book.foodCapture.photos).toHaveLength(1);expect(saved.book.foodCapture.foods[0].photos).toHaveLength(1);
+  expect(downloads).toHaveLength(1);expect(downloads[0]).toMatch(/\.fnt\.json$/);
   await page.reload();await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.getByRole('button',{name:'Log test',exact:true}).click();await page.locator('#meal-draft').click();
   await expect(draft.getByRole('button',{name:'Open photo Synthetic pending.png',exact:true}).locator('img')).toBeVisible();
   expect((await read(page,fixture.sheet)).book.foodCapture.photos).toHaveLength(1);
@@ -526,6 +575,7 @@ test('FNT photos reuse stable gallery originals in Ingredients and Draft without
     const canvas=document.createElement('canvas');canvas.width=80;canvas.height=60;return canvas.toDataURL('image/png').split(',')[1];
   }),'base64');
   const choice=page.waitForEvent('filechooser');await draft.getByRole('button',{name:'Add photo',exact:true}).click();
+  await page.getByRole('dialog',{name:'Take photo',exact:true}).getByRole('button',{name:'Take photo',exact:true}).click();
   await(await choice).setFiles({name:'Synthetic reusable.png',mimeType:'image/png',buffer:image});
   await expect(draft.getByRole('button',{name:'Open photo Synthetic reusable.png',exact:true}).locator('img')).toBeVisible();
   const initial=await read(page,fixture.sheet),photo=initial.book.foodCapture.photos[0];
@@ -587,6 +637,7 @@ test('private gallery verifies opt-in, uploads separately and restores missing o
     const canvas=document.createElement('canvas');canvas.width=80;canvas.height=60;return canvas.toDataURL('image/png').split(',')[1];
   }),'base64');
   const choice=page.waitForEvent('filechooser');await draft.getByRole('button',{name:'Add photo',exact:true}).click();
+  await page.getByRole('dialog',{name:'Take photo',exact:true}).getByRole('button',{name:'Take photo',exact:true}).click();
   await(await choice).setFiles({name:'Synthetic private.png',mimeType:'image/png',buffer:image});
   await expect(draft.getByRole('button',{name:'Open photo Synthetic private.png',exact:true}).locator('img')).toBeVisible();
   expect(server.writes).toEqual([]);await openPrivateGallery(page);let gallery=await connectPrivateGallery(page);

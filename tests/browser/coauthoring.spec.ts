@@ -120,6 +120,7 @@ async function local(page:Page):Promise<LocalState>{
       IDBObjectStore.prototype.put=function(...args:Parameters<IDBObjectStore['put']>){if(this.name==='state')throw new DOMException('Synthetic incoming photo quota failure','QuotaExceededError');return original.apply(this,args);};
     });
     const chooser=page.waitForEvent('filechooser');await draft.getByRole('button',{name:'Add photo',exact:true}).click();
+    await page.getByRole('dialog',{name:'Take photo',exact:true}).getByRole('button',{name:'Take photo',exact:true}).click();
     await(await chooser).setFiles({name:'Synthetic incoming pending.png',mimeType:'image/png',buffer:image});
     await expect(page.locator('#save-state')).toContainText('NOT SAVED');
     await expect(draft.getByRole('button',{name:'Open photo Synthetic incoming pending.png',exact:true}).locator('img')).toBeVisible();

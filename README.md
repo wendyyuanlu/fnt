@@ -1054,8 +1054,10 @@ Input/formula/binding changes stay atomic; independent formatting can merge.
 Incoming changes wait for the current editor or dialog to close. Toolbar layout,
 navigation activity and outline collapse preferences remain device-local.
 Unchanged remote revisions with a saved shared base do not download/decompress
-the workbook blob or create another full local checkpoint. Older profiles first
-establish a confirmed base; divergent copies without one still require comparison.
+the workbook blob or create another full local checkpoint. Older profiles without
+a local base record first try to recover their exact last-synced Git blob using
+the saved revision SHA. Missing or different-workbook historical copies still
+require deliberate comparison; the app never invents a shared ancestor.
 Response headers time out after 30 seconds; a
 90-second overall deadline also covers stalled response bodies and aborts transfers
 rather than leaving a transfer hanging. Navigation-only visit journals do not

@@ -260,7 +260,7 @@ function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook
 }
 export class Store {
   constructor(private db: IDBDatabase) {db.onversionchange=()=>db.close();}
-  static async open(name = 'fnt-workbook-v1'): Promise<Store> {
+  static async open(name = 'fnt-workbook-v1',onBlocked?:()=>void): Promise<Store> {
     const r = indexedDB.open(name,2);
     r.onupgradeneeded = () => {
       if(!r.result.objectStoreNames.contains('state'))r.result.createObjectStore('state');
@@ -269,10 +269,9 @@ export class Store {
       if(!r.result.objectStoreNames.contains('photos'))r.result.createObjectStore('photos',{keyPath:'id'});
     };
     const db=await new Promise<IDBDatabase>((resolve,reject)=>{
-      let blocked=false;
-      r.onblocked=()=>{blocked=true;reject(Error('Close other Fnt tabs before upgrading photo storage, then reopen this page. Existing data has not been replaced.'));};
+      r.onblocked=()=>onBlocked?.();
       r.onerror=()=>reject(r.error??Error('Cannot open local workbook storage.'));
-      r.onsuccess=()=>{if(blocked)r.result.close();else resolve(r.result);};
+      r.onsuccess=()=>resolve(r.result);
     });
     return new Store(db);
   }
@@ -783,6 +782,16 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
         const equivalent=await runSyncCodec({kind:'equal',local:captured,remote},{snapshots:true}) as boolean;
         if(!hasPendingContent(state))return{sha,...(!equivalent?{remote:withDevicePreferences(remote,captured)}:{}),confirmed:remote,originals:attachments,acknowledged:pendingIds};
         if(equivalent)return{sha,confirmed:remote,originals:attachments,acknowledged:pendingIds};
+      }
+      if(!ancestor&&state.remoteSha&&/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(state.remoteSha)&&captured.id===remote.id){
+        const previous=await request(`${root}/git/blobs/${encodeURIComponent(state.remoteSha)}`,{headers,cache:'no-store',redirect:'error'});
+        if(previous.ok){
+          const blob=await previous.json() as {sha?:string;encoding?:string;content?:string};
+          if(blob.sha!==state.remoteSha||blob.encoding!=='base64'||typeof blob.content!=='string')throw Error('GitHub did not return the saved sync revision. Local edits retained; nothing overwritten.');
+          const baseline=await runSyncCodec({kind:'unpack',value:blob.content}) as {format?:string;book?:Workbook};
+          if(baseline.format!=='fnt-sync-v1'||!baseline.book)throw Error('The saved sync revision is not an Fnt sync file. Local edits retained.');
+          if(baseline.book.id===captured.id)ancestor=baseline.book;
+        }else if(![404,410,422].includes(previous.status))throw Error(`Cannot read saved sync revision (${previous.status}). Local edits retained.`);
       }
       if(!ancestor)throw new SyncConflict(remote,sha,remoteOriginals);
       const merged=await mergeForSync(ancestor,captured,remote);

@@ -6,6 +6,37 @@ import { parseArchive,stringifyArchive } from '../src/archive';
 import {getHypotheticalStyle} from '../src/hypothetical';
 
 describe('recoverable local storage',()=>{
+  it('continues the same blocked photo-storage upgrade after a legacy tab closes without replacing saved data',async()=>{
+    const name=uid(),book=createDemo(),state:LocalState={book,version:7,pending:[{id:uid(),label:'Unsynced synthetic edit',time:'2026-01-01'}],updated:'2026-01-01'};
+    const checkpoint={id:uid(),label:'Retained recovery copy',time:'2025-12-31',book:structuredClone(book)};
+    const original={id:uid(),name:'Synthetic original.xlsx',data:'c3ludGhldGlj'};
+    const legacyRequest=indexedDB.open(name,1);
+    legacyRequest.onupgradeneeded=()=>{
+      legacyRequest.result.createObjectStore('state');
+      legacyRequest.result.createObjectStore('history',{keyPath:'id'});
+      legacyRequest.result.createObjectStore('originals',{keyPath:'id'});
+    };
+    const legacy=await new Promise<IDBDatabase>((resolve,reject)=>{legacyRequest.onsuccess=()=>resolve(legacyRequest.result);legacyRequest.onerror=()=>reject(legacyRequest.error);});
+    let store:Store|undefined;
+    try{
+      const tx=legacy.transaction(['state','history','originals'],'readwrite');
+      tx.objectStore('state').put(state,'current');tx.objectStore('history').put(checkpoint);tx.objectStore('originals').put(original);
+      await new Promise<void>((resolve,reject)=>{tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error);});
+      let blocked:()=>void=()=>{},settled=false;
+      const blockedNotice=new Promise<void>(resolve=>{blocked=resolve;});
+      const opening=Store.open(name,blocked);
+      void opening.then(()=>{settled=true;},()=>{settled=true;});
+      await blockedNotice;
+      expect(settled).toBe(false);
+      legacy.close();
+      store=await opening;
+      expect(await store.load()).toEqual(state);
+      expect(await store.history()).toEqual([checkpoint]);
+      expect(await store.originals()).toEqual([original]);
+      const reopened=await Store.open(name);
+      try{expect(await reopened.load()).toEqual(state);}finally{reopened.close();}
+    }finally{legacy.close();store?.close();}
+  });
   it('stores comparison reviews separately from workbook data and isolates each tab review',async()=>{
     const name=uid(),store=await Store.open(name),book=createDemo(),right=structuredClone(book);right.title='Invented comparison only';
     const sources={left:{book,kind:'This device',label:'Local'},right:{book:right,kind:'Local JSON',label:'Invented'},baseRevision:book.revision};

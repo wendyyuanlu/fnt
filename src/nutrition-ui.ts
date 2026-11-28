@@ -1,4 +1,4 @@
-import {availableFoodDays,captureData,missingNutritionReference,nutritionReference,refreshNutritionPrompt,saveNameVersion,type NutritionItem} from './food-capture';
+import {availableFoodDays,captureData,missingNutrition,missingNutritionReference,nutritionReference,refreshNutritionPrompt,saveNameVersion,type NutritionItem} from './food-capture';
 import {excelDateText} from './dates';
 import type {Engine} from './formula';
 import type {Workbook} from './model';
@@ -93,7 +93,8 @@ export function mountNutritionPanel(host:NutritionPanelHost){
     for(const card of list.querySelectorAll<HTMLElement>('[data-nutrition-item]')){
       const item=byId.get(card.dataset.nutritionItem!)!;
       card.querySelector<HTMLElement>('[data-name]')!.textContent=item.name;
-      card.querySelector<HTMLElement>('[data-source]')!.textContent=[item.id,item.kind==='ingredient'?'Ingredient reference':item.kind==='draft'?'Draft':'Logged',item.restaurant,item.date===undefined?'':excelDateText(item.date),item.missing.length?'Needs nutrition':''].filter(Boolean).join(' · ');
+      const missing=missingNutrition(item.values);
+      card.querySelector<HTMLElement>('[data-source]')!.textContent=[item.id,item.kind==='ingredient'?'Ingredient reference':item.kind==='draft'?'Draft':'Logged',item.restaurant,item.date===undefined?'':excelDateText(item.date),missing.length?'Needs nutrition':''].filter(Boolean).join(' · ');
       card.querySelector<HTMLElement>('[data-original]')!.textContent='Original description: '+item.originalName;
       for(const input of card.querySelectorAll<HTMLInputElement>('[data-field]')){
         const field=input.dataset.field as 'selected'|'includeNotes'|'name'|'restaurant'|'basis';

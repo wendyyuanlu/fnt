@@ -380,7 +380,8 @@ function collectNutritionCandidates(context:FoodCaptureContext,days:number[],exi
     const descriptions=food.mode==='multi'?food.parts.filter(part=>part.text.trim()):[{id:food.id,text:food.values.food}];
     for(const part of descriptions){
       const key=`draft:${food.id}:${part.id}`;if(existing.has(key))continue;
-      add({key,kind:'draft',name:part.text,originalName:part.text,selected:true,includeNotes:false,values:food.mode==='multi'?{food:part.text,...(food.values.notes!==undefined?{notes:food.values.notes}:{})}:{...food.values},restaurant:restaurantName(book,food,restaurants),date:food.date,source:{row:food.id,part:part.id},photos:[...food.photos],basis:'',missing:[],...(food.loggingTarget?{loggingTarget:{...food.loggingTarget}}:{})});
+      const values=food.mode==='multi'?{food:part.text,...(food.values.notes!==undefined?{notes:food.values.notes}:{})}:{...food.values};
+      add({key,kind:'draft',name:part.text,originalName:part.text,selected:true,includeNotes:false,values,restaurant:restaurantName(book,food,restaurants),date:food.date,source:{row:food.id,part:part.id},photos:[...food.photos],basis:'',missing:missingNutrition(values),...(food.loggingTarget?{loggingTarget:{...food.loggingTarget}}:{})});
     }
   }
   for(const sheet of book.sheets){
@@ -395,7 +396,7 @@ function collectNutritionCandidates(context:FoodCaptureContext,days:number[],exi
         const values:FoodValues={};
         for(const [field,column]of log.fields){const value=scalar(engine.cell(sheet.id,row,column.column));values[field]=isFault(value)?value.error:String(value??'');}
         if(!values.food?.trim())continue;
-        add({key,kind:'logged',name:values.food,originalName:values.food,values,selected:true,includeNotes:false,restaurant:restaurantName(book,book.foodCapture?.loggedDetails?.[`${log.table.id}:${row}`]??{},restaurants),date:day.date,source:{sheet:sheet.id,table:log.table.id,row},photos:[],basis:'',missing:[]});
+        add({key,kind:'logged',name:values.food,originalName:values.food,values,selected:true,includeNotes:false,restaurant:restaurantName(book,book.foodCapture?.loggedDetails?.[`${log.table.id}:${row}`]??{},restaurants),date:day.date,source:{sheet:sheet.id,table:log.table.id,row},photos:[],basis:'',missing:missingNutrition(values)});
       }
     }
   }
