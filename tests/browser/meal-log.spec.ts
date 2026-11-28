@@ -1,5 +1,5 @@
 import {expect,test,type Page} from '@playwright/test';
-import type {Table} from '../../src/model';
+import type {Table,Workbook} from '../../src/model';
 import {Engine} from '../../src/formula';
 import {converterFields,converterLabels} from '../../src/nutrition-table';
 import {parseArchive} from '../../src/archive';
@@ -94,7 +94,7 @@ test('Logged and Draft share the two-bar header without changing logged foods or
   expect(await toolbar.locator(':scope > button,.day-create > button').evaluateAll(buttons=>buttons.map(button=>button.textContent?.trim()||button.getAttribute('aria-label')))).toEqual(['Meal log','Draft','+ Day','Convert table','+ Food']);
   await expect(page.locator('#meal-draft')).toHaveClass(/icon-button/);await page.locator('#meal-log').click();
   const panel=page.locator('.meal-log-panel'),formal=panel.getByRole('tab',{name:'Logged',exact:true}),draft=panel.getByRole('tab',{name:'Draft',exact:true});
-  await expect(formal).toHaveAttribute('aria-selected','true');await expect(panel.getByRole('button',{name:'Get Nutrition',exact:true})).toBeEnabled();
+  await expect(formal).toHaveAttribute('aria-selected','true');await expect(panel.getByRole('button',{name:'Get nutrition',exact:true})).toBeEnabled();
   const top=(await panel.locator('.meal-log-header').boundingBox())!,days=(await panel.locator('.meal-log-day-bar').first().boundingBox())!;
   expect(days.y).toBeCloseTo(top.y+top.height,0);
   const card=panel.locator('[data-log-card]').last(),grams=card.getByRole('textbox',{name:'Grams',exact:true});
@@ -117,7 +117,7 @@ test('Logged and Draft share the two-bar header without changing logged foods or
   }
   await panel.getByRole('button',{name:'Close Meal log',exact:true}).click();
   await page.locator('#meal-draft').click();await expect(draft).toHaveAttribute('aria-selected','true');
-  await expect(panel.getByRole('button',{name:'Get Nutrition',exact:true})).toBeEnabled();
+  await expect(panel.getByRole('button',{name:'Get nutrition',exact:true})).toBeEnabled();
   for(const width of isMobile?[390,320]:[1365]){
     await page.setViewportSize({width,height:844});
     expect(await panel.evaluate(element=>element.scrollWidth-element.clientWidth)).toBeLessThanOrEqual(1);
@@ -202,6 +202,58 @@ test('Draft saves food, hidden mode values and linked restaurant edits without c
   expect(after.sheet.rows).toEqual(before.sheet.rows);expect(after.sheet.cells).toEqual(before.sheet.cells);
   expect(after.book.tables.find((table:Table)=>table.id===fixture.table)?.rows).toEqual(before.book.tables.find((table:Table)=>table.id===fixture.table)?.rows);
   expect(after.book.foodCapture?.foods).toHaveLength(2);
+});
+test('Draft row actions keep composing Enter and stable keyboard focus',async({page})=>{
+  const fixture=await setup(page);await page.locator('#meal-draft').click();
+  const draft=page.getByRole('region',{name:'Draft foods',exact:true}),cards=draft.locator('[data-draft-card]');
+  await draft.locator('[data-draft-add]').press('Enter');
+  const firstId=(await cards.first().getAttribute('data-draft-card'))!,first=draft.locator(`[data-draft-card="${firstId}"]`);
+  await first.getByRole('textbox',{name:'Draft Food',exact:true}).fill('Synthetic keyboard food');
+  await first.locator('.meal-log-notes summary').click();
+  await first.getByRole('textbox',{name:'Draft Notes',exact:true}).fill('Retain synthetic keyboard notes');
+  await first.getByRole('button',{name:'+ Food',exact:true}).press('Enter');
+  const secondId=(await cards.last().getAttribute('data-draft-card'))!,second=draft.locator(`[data-draft-card="${secondId}"]`);
+  await second.getByRole('textbox',{name:'Draft Food',exact:true}).fill('Synthetic destination');
+  const before:Workbook=(await read(page,fixture.sheet)).book,destination=before.foodCapture!.foods.find(food=>food.id===secondId)!;
+  const restaurant=first.getByRole('textbox',{name:'Restaurant',exact:true});
+  await restaurant.focus();
+  expect(await restaurant.evaluate(input=>{
+    const event=new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true});
+    input.dispatchEvent(event);return{focused:document.activeElement===input,prevented:event.defaultPrevented};
+  })).toEqual({focused:true,prevented:false});
+  await first.getByRole('button',{name:'Move draft food down',exact:true}).press('Enter');
+  await expect(cards.last()).toHaveAttribute('data-draft-card',firstId);
+  await expect(first.getByRole('button',{name:'Move draft food up',exact:true})).toBeFocused();
+  await first.getByRole('button',{name:'Copy draft food',exact:true}).press('Enter');
+  await second.getByRole('button',{name:'Paste draft food',exact:true}).press('Enter');
+  await expect(second.getByRole('button',{name:'Paste draft food',exact:true})).toBeFocused();
+  const feedback=draft.locator('[data-draft-feedback]');
+  await expect(feedback).toContainText('Draft food pasted.');
+  await expect(feedback).toHaveAttribute('role','status');
+  expect(await feedback.ariaSnapshot()).toContain('Draft food pasted.');
+  await expect(draft.getByLabel('Draft date',{exact:true})).toHaveAccessibleName('Draft date');
+  for(const hidden of [feedback,draft.locator('.capture-date .sr-only')]){
+    const box=await hidden.boundingBox();
+    if(!box)throw Error('Accessible Draft feedback and date label must remain rendered.');
+    expect(box.width).toBeLessThanOrEqual(1);expect(box.height).toBeLessThanOrEqual(1);
+  }
+  const pasted:Workbook=(await read(page,fixture.sheet)).book;
+  expect(pasted.foodCapture!.foods.find(food=>food.id===secondId)).toMatchObject({
+    id:secondId,date:destination.date,values:{food:'Synthetic keyboard food',notes:'Retain synthetic keyboard notes'},
+  });
+  await first.getByRole('button',{name:'+ Food',exact:true}).press('Enter');
+  const inserted=cards.last(),insertedId=(await inserted.getAttribute('data-draft-card'))!;
+  await expect(inserted.getByRole('textbox',{name:'Draft Food',exact:true})).toBeFocused();
+  await inserted.getByRole('textbox',{name:'Draft Food',exact:true}).fill('Synthetic inserted food');
+  for(const id of [insertedId,firstId,secondId]){
+    await draft.locator(`[data-draft-card="${id}"]`).getByRole('button',{name:'Delete draft food',exact:true}).press('Enter');
+    await page.getByRole('dialog',{name:'Delete draft food?',exact:true}).getByRole('button',{name:'Delete food',exact:true}).press('Enter');
+    await expect(draft.locator(`[data-draft-card="${id}"]`)).toHaveCount(0);
+    if(id===insertedId)await expect(first.getByRole('button',{name:'Delete draft food',exact:true})).toBeFocused();
+    else if(id===firstId)await expect(second.getByRole('button',{name:'Delete draft food',exact:true})).toBeFocused();
+    else await expect(draft.locator('[data-draft-add]')).toBeFocused();
+  }
+  expect((await read(page,fixture.sheet)).book.sheets).toEqual(before.sheets);
 });
 test('Ingredient pane and direct table edits preserve serving independence, explicit manual choices and stable links after renames',async({page,isMobile})=>{
   const fixture=await setup(page);await page.locator('#meal-draft').click();
@@ -345,12 +397,59 @@ test('Multi requests without Notes survive durable read-back and reload',async({
   await draft.locator('[data-draft-add]').click();
   const card=draft.locator('[data-draft-card]').first();await card.getByRole('textbox',{name:'Draft Food',exact:true}).fill('First synthetic dish\nSecond synthetic dish');
   await card.getByRole('tab',{name:'Multi',exact:true}).click();
-  await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();
+  await panel.getByRole('button',{name:'Get nutrition',exact:true}).click();
   const before=await read(page,fixture.sheet),items=before.book.foodCapture.builder.items.filter((item:{kind:string})=>item.kind==='draft');
   expect(items.map((item:{values:{food:string}})=>item.values.food)).toEqual(['First synthetic dish','Second synthetic dish']);
   await page.reload();await expect(page.locator('#save-state')).toContainText(/^Saved/);await expect(page.locator('#error')).toBeHidden();
   const after=await read(page,fixture.sheet);expect(after.book.foodCapture.builder).toEqual(before.book.foodCapture.builder);
 });
+test('nutrition groups wrap long restaurant labels without hiding selection or date controls',async({page,isMobile})=>{
+  const origin=new URL(process.env.FNT_EXISTING_DATA_ONLY_URL??'http://127.0.0.1:5184/').origin;
+  await page.setViewportSize({width:isMobile?320:1280,height:770});
+  const unexpected:string[]=[];
+  await page.route('**/*',route=>{
+    const url=new URL(route.request().url());
+    if(url.origin!==origin||url.pathname.startsWith('/testing-workbook')){unexpected.push(url.origin+url.pathname);return route.abort();}
+    if(url.pathname==='/__nutrition-layout-fixture')return route.fulfill({contentType:'text/html',body:'<!doctype html><title>Invented nutrition layout fixture</title>'});
+    return route.continue();
+  });
+  await page.goto(origin+'/__nutrition-layout-fixture');
+  await page.evaluate(async()=>{
+    const {Store}=await import(new URL('/src/storage.ts',location.href).href) as typeof import('../../src/storage');
+    const {syntheticConverterBook}=await import(new URL('/tests/converter-polish-fixture.ts',location.href).href) as typeof import('../converter-polish-fixture');
+    const book=syntheticConverterBook(),data=book.foodCapture!,restaurant='Synthetic restaurant '+'unbrokenname'.repeat(14);
+    data.selectedDate=45000;data.foods[0].restaurantText=restaurant;
+    for(const item of data.builder!.items)if(item.kind==='draft')item.restaurant=restaurant;
+    const store=await Store.open();
+    try{if(await store.load())throw Error('The layout fixture must use an empty disposable context.');await store.save(book,0,'Invented nutrition layout fixture');}
+    finally{store.close();}
+  });
+  await page.goto(origin+'/');
+  await expect(page.locator('td[data-r][data-c]').first()).toBeVisible();
+  await page.getByRole('button',{name:'Meal log',exact:true}).click();
+  await page.locator('.meal-log-panel').getByRole('button',{name:'Get nutrition',exact:true}).click();
+  const builder=page.getByRole('region',{name:'Nutrition builder'}),body=builder.locator('[data-builder]');
+  const overflow=()=>body.evaluate(element=>element.scrollWidth-element.clientWidth);
+  await expect.poll(overflow).toBeLessThanOrEqual(1);
+  const group=builder.locator('[data-select-group^="restaurant:"]');
+  await expect(group).toBeChecked();
+  await group.uncheck();await expect(group).not.toBeChecked();
+  await group.check();await expect(group).toBeChecked();
+  const dates=builder.getByRole('combobox',{name:'Choose nutrition dates',exact:true});
+  await dates.click();
+  const popup=page.getByLabel('Nutrition dates dropdown',{exact:true});
+  await expect(popup).toBeVisible();
+  expect(await popup.evaluate(element=>{const box=element.getBoundingClientRect();return box.left>=0&&box.right<=innerWidth&&box.top>=0&&box.bottom<=innerHeight;})).toBe(true);
+  await page.keyboard.press('Escape');await expect(popup).toHaveCount(0);await expect(dates).toBeFocused();
+  await builder.getByRole('button',{name:'Review dish names',exact:true}).click();
+  await expect(builder.locator('[data-name-review]')).toBeVisible();
+  await expect.poll(overflow).toBeLessThanOrEqual(1);
+  await builder.getByRole('button',{name:'Back',exact:true}).click();
+  await page.locator('.meal-log-panel').getByRole('button',{name:'Get nutrition',exact:true}).click();
+  await expect(page.getByRole('region',{name:'Nutrition builder'}).locator('[data-name-review]')).toBeVisible();
+  expect(unexpected).toEqual([]);
+});
+
 test('nutrition requests resume, validate reference servings, keep original descriptions and recopy live reviewed names and notes',async({page,context})=>{
   const fixture=await setup(page);await context.grantPermissions(['clipboard-read','clipboard-write']);
   await page.locator('#meal-draft').click();
@@ -361,7 +460,7 @@ test('nutrition requests resume, validate reference servings, keep original desc
   await cards.first().locator('.meal-log-notes summary').click();await cards.first().getByRole('textbox',{name:'Draft Notes',exact:true}).fill('Synthetic optional nutrition context');
   await draft.locator('[data-draft-add]').click();await cards.last().getByRole('textbox',{name:'Draft Food',exact:true}).fill('Synthetic missing-reference Ingredient');
   await cards.last().getByRole('checkbox',{name:'Add as ingredient',exact:true}).click();
-  await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();
+  await panel.getByRole('button',{name:'Get nutrition',exact:true}).click();
   const builder=panel.getByRole('region',{name:'Nutrition builder'}),items=builder.locator('[data-nutrition-item]');
   await expect(builder.getByRole('button',{name:'Prompt builder',exact:true})).toHaveCSS('font-weight','600');
   const curry=items.filter({has:page.locator('[data-original]',{hasText:'Original description: Synthetic curry with 40g rice and sesame oil'})});
@@ -391,11 +490,11 @@ test('nutrition requests resume, validate reference servings, keep original desc
   const copied=await page.evaluate(()=>navigator.clipboard.readText());expect(copied).toContain('"dishName": "Revised synthetic curry"');expect(copied).not.toContain('Synthetic optional nutrition context');
   await expect(page.locator('#grid-scroll .copying')).toHaveCount(0);
   const before=await read(page,fixture.sheet),batch=before.book.foodCapture.builder;
-  await page.reload();await page.getByRole('button',{name:'Log test',exact:true}).click();await page.locator('#meal-draft').click();await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();
+  await page.reload();await page.getByRole('button',{name:'Log test',exact:true}).click();await page.locator('#meal-draft').click();await panel.getByRole('button',{name:'Get nutrition',exact:true}).click();
   await expect(prompt).toHaveValue(/"dishName": "Revised synthetic curry"/);
   await builder.getByRole('button',{name:'Back',exact:true}).click();
   await draft.locator('[data-draft-add]').click();await cards.last().getByRole('textbox',{name:'Draft Food',exact:true}).fill('Synthetic newcomer');
-  await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();await expect(items.filter({hasText:'Synthetic newcomer'})).toHaveCount(0);
+  await panel.getByRole('button',{name:'Get nutrition',exact:true}).click();await expect(items.filter({hasText:'Synthetic newcomer'})).toHaveCount(0);
   await builder.getByRole('button',{name:'Check new food',exact:true}).click();await expect(items.filter({hasText:'Synthetic newcomer'})).toHaveCount(1);
   const after=await read(page,fixture.sheet),updated=after.book.foodCapture.builder;
   expect(updated.id).toBe(batch.id);
@@ -828,7 +927,7 @@ test('retained generated prompts are revalidated before opening review or copyin
   await page.reload();await expect(page.locator('#save-state')).toContainText(/^Saved/);
   await page.getByRole('button',{name:'Log test',exact:true}).click();await page.locator('#meal-draft').click();
   const panel=page.locator('.meal-log-panel'),builder=panel.getByRole('region',{name:'Nutrition builder'});
-  await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();
+  await panel.getByRole('button',{name:'Get nutrition',exact:true}).click();
   await expect(builder.locator('[data-items]')).not.toHaveAttribute('open','');
   await expect(builder.getByRole('button',{name:'Copy prompt',exact:true})).toBeDisabled();
   await expect(builder.locator('[data-prompt-text]')).toHaveValue('');
@@ -855,7 +954,7 @@ for(const scenario of ['normal','quota','changed-source'] as const)test(`tracked
   for(const [name,value]of [['Draft Food','Original synthetic converter meal'],['Draft Grams','47'],['Draft Amount','2'],['Draft Unit','each'],['Restaurant','Synthetic converter cafe']])await card.getByRole('textbox',{name,exact:true}).fill(value);
   await card.getByRole('textbox',{name:'Restaurant',exact:true}).press('Tab');
   await card.locator('.meal-log-notes summary').click();await card.getByRole('textbox',{name:'Draft Notes',exact:true}).fill('Preserved synthetic note\nSecond line');
-  await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();
+  await panel.getByRole('button',{name:'Get nutrition',exact:true}).click();
   await builder.getByRole('button',{name:'Clear shown',exact:true}).click();
   await builder.locator('[data-nutrition-item]').filter({has:page.locator('[data-original]',{hasText:'Original description: Original synthetic converter meal'})}).locator('[data-field=selected]').check();
   await builder.getByRole('button',{name:'Generate prompt',exact:true}).click();
@@ -874,16 +973,16 @@ for(const scenario of ['normal','quota','changed-source'] as const)test(`tracked
   await converter.locator('[data-convert-table] [data-convert-field=name]').fill('Reviewed synthetic converted meal');
   await expect(converter.locator('[data-convert-status]')).toHaveText('Review saved automatically.');
   await builder.getByRole('button',{name:'Back',exact:true}).click();
-  await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();await openConverter();
+  await panel.getByRole('button',{name:'Get nutrition',exact:true}).click();await openConverter();
   await expect(converter.locator('[data-convert-table] [data-convert-field=name]')).toHaveValue('Reviewed synthetic converted meal');
   await builder.getByRole('button',{name:'Prompt builder',exact:true}).click();
   await expect(converter).toBeHidden();
   await builder.getByRole('button',{name:'Back',exact:true}).click();
-  await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();
+  await panel.getByRole('button',{name:'Get nutrition',exact:true}).click();
   await expect(builder.getByRole('button',{name:'Prompt builder',exact:true})).toHaveAttribute('aria-pressed','true');await expect(converter).toBeHidden();
   await builder.getByRole('button',{name:'Table converter',exact:true}).click();await openConverter();
   await expect(page.locator('#save-state')).toContainText(/^Saved/);
-  await page.reload();await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.getByRole('button',{name:'Log test',exact:true}).click();await page.locator('#meal-draft').click();await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();await openConverter();
+  await page.reload();await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.getByRole('button',{name:'Log test',exact:true}).click();await page.locator('#meal-draft').click();await panel.getByRole('button',{name:'Get nutrition',exact:true}).click();await openConverter();
   await expect(converter.getByRole('textbox',{name:'Nutrition response',exact:true})).toHaveValue(raw);
   await expect(converter.locator('[data-convert-table] [data-convert-field=name]')).toHaveValue('Reviewed synthetic converted meal');
   await converter.getByRole('button',{name:'Validate write-back preview',exact:true}).click();
@@ -894,7 +993,7 @@ for(const scenario of ['normal','quota','changed-source'] as const)test(`tracked
     await draft.getByRole('textbox',{name:'Draft Amount',exact:true}).fill('9');
     await draft.getByRole('textbox',{name:'Draft Amount',exact:true}).press('Tab');
     expect((await read(page,fixture.sheet)).book.foodCapture.foods[0].values.amount).toBe('9');
-    await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();await openConverter();
+    await panel.getByRole('button',{name:'Get nutrition',exact:true}).click();await openConverter();
     await expect(converter.getByRole('button',{name:'Apply reviewed nutrition',exact:true})).toBeDisabled();
     await expect(converter.locator('[data-write-preview]')).toContainText('changed');
     await converter.getByRole('button',{name:'Validate write-back preview',exact:true}).click();
@@ -935,7 +1034,7 @@ for(const scenario of ['normal','quota','changed-source'] as const)test(`tracked
   const undone=await read(page,fixture.sheet);expect(undone.book.foodCapture.foods).toEqual(captured.book.foodCapture.foods);expect(undone.book.foodCapture.nutritionReceipts??[]).toEqual([]);expect(undone.book.tables).toEqual(captured.book.tables);
   await draft.getByRole('button',{name:'Redo',exact:true}).click();
   const redone=await read(page,fixture.sheet);expect(redone.book.foodCapture.nutritionReceipts).toEqual(receipts);expect(redone.book.tables).toEqual(applied.book.tables);
-  await page.reload();await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.getByRole('button',{name:'Log test',exact:true}).click();await page.locator('#meal-draft').click();await panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();await openConverter();
+  await page.reload();await expect(page.locator('#save-state')).toContainText(/^Saved/);await page.getByRole('button',{name:'Log test',exact:true}).click();await page.locator('#meal-draft').click();await panel.getByRole('button',{name:'Get nutrition',exact:true}).click();await openConverter();
   await expect(converter.locator('[data-convert-status]')).toHaveText('Applied and saved.');await expect(converter.getByRole('button',{name:'Apply reviewed nutrition',exact:true})).toBeDisabled();
   expect((await read(page,fixture.sheet)).book.tables).toEqual(applied.book.tables);
 });

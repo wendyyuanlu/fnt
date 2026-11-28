@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import {Engine,scalar} from '../src/formula';
 import {blankSheet,clone,getCell,key,moveRows,renameColumn,setInput,type Workbook} from '../src/model';
-import {addMasterFood,anchorMasterDates,createMasterDay,editMasterDayInput,editMasterDayInputs,localToday,masterDayBlocks,masterLogging,refreshMasterFoodDates,validateDayLogging} from '../src/day-logging';
+import {addMasterFood,addMasterFoods,anchorMasterDates,createMasterDay,editMasterDayInput,editMasterDayInputs,localToday,masterDayBlocks,masterLogging,refreshMasterFoodDates,validateDayLogging} from '../src/day-logging';
 import {defaultHeaderFormula} from '../src/meal-block';
 import {excelDate} from '../src/dates';
 import {writeGridCell} from '../src/reference-grid';
@@ -52,6 +52,45 @@ function loggingFixture(){
   const value=(row:string,c:number)=>scalar(new Engine(book).cell(sheet.id,row,table.columns[c].column));
   return{book,sheet,table,input,value};
 }
+it.each(['tail','middle','marker','binding','default'] as const)('preserves sequential food dates, formulas, groups, dropdowns and neighbors when appending to a %s day',kind=>{
+  const {book,sheet,table,input}=loggingFixture();
+  for(const column of table.columns)delete column.formulaDefault;
+  for(const row of table.rows)sheet.cells[key(row,table.columns[1].column)]={value:[sheet.rows[1].id,sheet.rows[4].id].includes(row)};
+  if(kind==='marker')input(6,1,'=IF(ROWS(Master[Food])>=8,TRUE,FALSE)');
+  if(kind==='default')table.columns[5].formulaDefault='=A7';
+  input(6,5,'=E7+$E$3');input(6,5,'25');
+  if(kind==='binding'){
+    input(5,5,'=IF(ROWS(Master[Food])>=8,TRUE,FALSE)');
+    sheet.cells[key(sheet.rows[6].id,table.columns[1].column)]={binding:{table:table.id,row:sheet.rows[5].id,column:table.columns[5].id}};
+  }
+  sheet.columns[5].wrap=true;
+  sheet.validations.push({id:'food-choice',sheet:sheet.id,source:'',values:['Invented 0','Invented 1'],rows:[sheet.rows[6].id],columns:[table.columns[3].column]});
+  sheet.groups.push({id:'nested',axis:'row',kind:'range',members:sheet.rows.slice(4,7).map(row=>row.id),collapsed:true,label:'Keep this group'});
+  input(8,3,'Preserve outside-table neighbor');
+  const before=clone(book),sequential=clone(book),batch=clone(book),header=sheet.rows[kind==='middle'?1:4].id;
+  const write=(target:Workbook,row:string,index:number)=>{
+    setInput(target,target.sheets[0],row,target.tables[0].columns[3].column,"'Invented "+index);
+    setInput(target,target.sheets[0],row,target.tables[0].columns[4].column,String(12+index));
+  };
+  for(let index=0;index<3;index++)write(sequential,addMasterFood(sequential,sequential.sheets[0],header),index);
+  const rows=addMasterFoods(batch,batch.sheets[0],3,header,(row,index)=>write(batch,row,index));
+  const normalize=(target:Workbook)=>{
+    let json=JSON.stringify(target);
+    target.sheets.forEach((page,s)=>{
+      page.rows.forEach((row,r)=>{json=json.replaceAll(row.id,`row-${s}-${r}`);});
+      page.validations.forEach((validation,v)=>{json=json.replaceAll(validation.id,`validation-${s}-${v}`);});
+      page.groups.forEach((group,g)=>{json=json.replaceAll(group.id,`group-${s}-${g}`);});
+    });
+    return JSON.parse(json);
+  };
+  expect(normalize(batch)).toEqual(normalize(sequential));
+  const evaluated=(target:Workbook)=>{
+    const page=target.sheets[0],owner=target.tables[0],engine=new Engine(target);
+    return owner.rows.map(row=>[scalar(engine.cell(page.id,row,owner.columns[0].column)),scalar(engine.cell(page.id,row,owner.columns[4].column))]);
+  };
+  expect(evaluated(batch)).toEqual(evaluated(sequential));
+  expect(rows).toHaveLength(3);expect(book).toEqual(before);validateBook(batch);
+});
 it('creates explicit real days with bounded totals, keeps old formulas and advances only on successful creation',()=>{
   const {book,sheet,table,value}=loggingFixture(),before=clone(book),result=createMasterDay(book,sheet);
   expect(result.created).toBe(true);expect(value(result.row,0)).toBe(excelDate(2026,11,22));expect(value(result.row,4)).toBe(0);

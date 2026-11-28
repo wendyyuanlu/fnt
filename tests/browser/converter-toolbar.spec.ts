@@ -44,15 +44,80 @@ async function snapshot(page:Page){
     const path='/src/storage.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),store=await Store.open();
     try{
       const state=(await store.load())!;
-      return{batch:state.book.foodCapture!.builder!,converter:state.book.foodCapture!.converter!,tables:state.book.tables,sheets:state.book.sheets.map(({id,rows,columns,cells,groups})=>({id,rows,columns,cells,groups}))};
+      return{batch:state.book.foodCapture!.builder!,converter:state.book.foodCapture!.converter!,nameVersions:state.book.foodCapture!.nameVersions,foods:state.book.foodCapture!.foods,tables:state.book.tables,sheets:state.book.sheets.map(({id,rows,columns,cells,groups})=>({id,rows,columns,cells,groups}))};
     }finally{store.close();}
   });
 }
 async function activate(button:Locator,touch:boolean){if(touch)await button.tap();else await button.click();}
 async function reenter(page:Page,button:Locator,touch:boolean){
-  if(touch)await page.locator('.meal-log-header button[aria-label^="Close "]').tap();
+  if(touch)await page.getByRole('button',{name:'Close nutrition',exact:true}).tap();
   await activate(button,touch);
 }
+test('converter footer stays inside the actual host at the phone reference dimensions',async({page})=>{
+  await seed(page);await page.setViewportSize({width:412,height:788});
+  await page.getByRole('button',{name:'Converter toolbar fixture',exact:true}).click();
+  await page.getByRole('navigation',{name:'Master logging',exact:true}).getByRole('button',{name:'Convert table',exact:true}).click();
+  const converter=page.getByRole('region',{name:'Nutrition table converter',exact:true});
+  await expect(converter).toBeVisible();
+  await expect(page.locator('[data-converter]')).toHaveClass(/capture-pane/);
+  const panel=await page.locator('.meal-log-panel').boundingBox(),footer=await converter.locator('.capture-footer').boundingBox();
+  expect(panel).not.toBeNull();expect(footer).not.toBeNull();
+  expect(footer!.y).toBeGreaterThanOrEqual(panel!.y);
+  expect(footer!.y+footer!.height).toBeLessThanOrEqual(panel!.y+panel!.height+1);
+});
+test('Prompt name review uses its own section and footer, saves dated versions and preserves edits when Select reopens',async({page})=>{
+  await seed(page);
+  const draftId=await page.evaluate(async()=>{
+    const load=(name:string)=>import(/* @vite-ignore */'/src/'+name+'.ts');
+    const {Store}=await load('storage') as typeof import('../../src/storage');
+    const {uid}=await load('model') as typeof import('../../src/model');
+    const {captureData,newNutritionBatch}=await load('food-capture') as typeof import('../../src/food-capture');
+    const {newConverterState}=await load('nutrition-converter') as typeof import('../../src/nutrition-converter');
+    const store=await Store.open();
+    try{
+      const state=(await store.load())!,data=captureData(state.book),id=uid();
+      data.foods.push({id,date:45000,mode:'single',values:{food:'Original synthetic Prompt meal',weight:'47'},parts:[],restaurantText:'Synthetic Prompt cafe',photos:[]});
+      data.builder=newNutritionBatch(state.book,[45000],'Synthetic Prompt request');
+      for(const item of data.builder.items)item.selected=item.kind==='draft'&&item.source.row===id;
+      data.converter=newConverterState(data.builder.id);
+      await store.save(state.book,state.version,'Synthetic Prompt review fixture');return id;
+    }finally{store.close();}
+  });
+  const open=async()=>{
+    await page.getByRole('button',{name:'Converter toolbar fixture',exact:true}).click();
+    await page.getByRole('navigation',{name:'Master logging',exact:true}).getByRole('button',{name:'Convert table',exact:true}).click();
+    await page.locator('[data-workflow="builder"]').click();
+  };
+  await page.reload();await expect(page.locator('#save-state')).toContainText('Saved');await open();
+  const builder=page.getByRole('region',{name:'Nutrition builder',exact:true}),selection=builder.locator('[data-items]'),prompt=builder.locator('[data-prompt]');
+  await builder.getByRole('button',{name:'Generate prompt',exact:true}).click();
+  await expect(selection).not.toHaveAttribute('open','');
+  await prompt.getByRole('button',{name:'Review dish names',exact:true}).click();
+  await expect(selection).not.toHaveAttribute('open','');await expect(prompt).toHaveAttribute('open','');
+  await expect(prompt.getByRole('button',{name:'Review dish names',exact:true})).toHaveAttribute('aria-pressed','true');
+  await expect(selection.locator('[data-field="name"]')).toHaveCount(0);
+  expect(await prompt.locator('[data-item-section]').evaluateAll(sections=>sections.map(section=>(section as HTMLElement).dataset.itemSection))).toEqual(['ingredient','logged','draft']);
+  const name=prompt.getByRole('textbox',{name:'Dish name',exact:true});
+  await name.fill('Reviewed synthetic Prompt meal');
+  await expect(prompt.getByRole('textbox',{name:'Generated nutrition prompt',exact:true})).toHaveValue(/Reviewed synthetic Prompt meal/);
+  await expect(builder.locator('.nutrition-footer').getByRole('button',{name:'Regenerate prompt',exact:true})).toBeVisible();
+  await expect(builder.getByRole('button',{name:'Check for new food',exact:true})).toBeHidden();
+  await page.keyboard.press('Control+s');await expect(page.locator('#save-state')).toContainText('Saved');
+  const before=await snapshot(page);
+  await builder.getByRole('button',{name:'Save name version',exact:true}).click();
+  await expect.poll(async()=>(await snapshot(page)).nameVersions.length).toBe(before.nameVersions.length+1);
+  const saved=await snapshot(page);
+  expect(saved.foods.find(food=>food.id===draftId)!.values.food).toBe('Original synthetic Prompt meal');
+  expect(saved.nameVersions.at(-1)!.names.find(item=>item.name==='Reviewed synthetic Prompt meal')).toBeTruthy();
+  await page.reload();await expect(page.locator('#save-state')).toContainText('Saved');await open();
+  await expect(prompt.getByRole('textbox',{name:'Dish name',exact:true})).toHaveValue('Reviewed synthetic Prompt meal');
+  await selection.locator(':scope > summary').click();
+  await expect(prompt.getByRole('button',{name:'Review dish names',exact:true})).toHaveAttribute('aria-pressed','false');
+  await expect(selection.locator('[data-field="selected"]').first()).toBeVisible();
+  await expect(builder.getByRole('button',{name:'Generate prompt',exact:true})).toBeVisible();
+  await page.keyboard.press('Control+s');await expect(page.locator('#save-state')).toContainText('Saved');
+  expect((await snapshot(page)).batch.items.find(item=>item.source.row===draftId)!.name).toBe('Reviewed synthetic Prompt meal');
+});
 test('both toolbar entrypoints resume the one saved converter without source-table writes or batch reset',async({page,isMobile},testInfo)=>{
   await seed(page);
   const before=await snapshot(page);
@@ -73,7 +138,7 @@ test('both toolbar entrypoints resume the one saved converter without source-tab
   await expect(page.locator('.meal-log-panel')).toHaveCount(1);
   const updated='New unfinished response typed after opening';
   await converter.getByRole('textbox',{name:'Nutrition response',exact:true}).fill(updated);
-  await page.locator('.meal-log-panel').getByRole('button',{name:'Close Meal log',exact:true}).click();
+  await page.getByRole('button',{name:'Close nutrition',exact:true}).click();
   await page.getByRole('button',{name:'Ingredients',exact:true}).click();
   const ingredientsEntry=page.getByRole('button',{name:'Convert table',exact:true});
   await expect(ingredientsEntry).toHaveClass(/icon-button/);

@@ -1,4 +1,4 @@
-import {allSheets,allTables,addRow,clone,deleteRows,moveRows,type Workbook} from './model';
+import {allSheets,allTables,addRow,insertTableRows,clone,deleteRows,moveRows,type Workbook} from './model';
 import {ingredientKey,ingredientMapping,ingredientRecord,rememberIngredients,type IngredientIdentity} from './food-capture';
 import {missingDependencies} from './comparison-merge';
 import type {Ast} from './formula';
@@ -10,12 +10,27 @@ function source(book:Workbook,identity?:IngredientIdentity){
   return{table,sheet};
 }
 export function addIngredientTableRow(book:Workbook,after?:IngredientIdentity):IngredientIdentity{
+  return insertIngredientTableRows(book,1,after)[0];
+}
+export function addIngredientTableRows(book:Workbook,count:number,initialize?:(identity:IngredientIdentity,index:number)=>void):IngredientIdentity[]{
+  return insertIngredientTableRows(book,count,undefined,initialize);
+}
+function insertIngredientTableRows(book:Workbook,count:number,after?:IngredientIdentity,initialize?:(identity:IngredientIdentity,index:number)=>void):IngredientIdentity[]{
   const {table,sheet}=source(book,after),anchor=after?.row??table.rows.at(-1)??table.header;
+  if(!Number.isInteger(count)||count<1)throw Error('Insert at least one whole Ingredient row.');
+  if(sheet.rows.length+count>100000)throw Error('There is not enough worksheet space to add the Ingredients.');
   const food=ingredientMapping(book).fields.food;
   if(!table.columns.some(column=>column.id===food))throw Error('Restore the Ingredient name field before adding an Ingredient.');
   rememberIngredients(book);
-  const row=addRow(book,sheet,sheet.rows.findIndex(row=>row.id===anchor)+1,table);
-  return{table:table.id,row:row.id};
+  const at=sheet.rows.findIndex(row=>row.id===anchor)+1;
+  // Header-kind formulas may inspect the intermediate table size; retain single-row semantics for them.
+  if(count===1||table.columns.some(column=>['ismeal','isday','meal','weight'].includes(column.name.toLowerCase()))){
+    return Array.from({length:count},(_,index)=>{
+      const identity={table:table.id,row:addRow(book,sheet,at+index,table).id};
+      initialize?.(identity,index);return identity;
+    });
+  }
+  return insertTableRows(book,sheet,at,count,table,(row,index)=>initialize?.({table:table.id,row:row.id},index)).map(row=>({table:table.id,row:row.id}));
 }
 export function moveIngredientTableRow(book:Workbook,identity:IngredientIdentity,direction:-1|1):void{
   const {table,sheet}=source(book,identity),at=table.rows.indexOf(identity.row),next=table.rows[at+direction];

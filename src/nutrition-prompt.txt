@@ -10,7 +10,7 @@ For chain restaurants, prioritize the official nutrition guide for the correct c
 
 For homemade or generic dishes, estimate from the ingredients, quantities, and preparation described.
 
-For dishes I label homemade, they usually use less oil than a standard restaurant preparation. If I do not specify an oil amount, use a lower-oil estimate appropriate to the cooking method. If I specify an amount, use that instead.
+For dishes I label homemade or Home cooked, they usually use less oil than a standard restaurant preparation. If I do not specify an oil amount, use a lower-oil estimate appropriate to the cooking method. If I specify an amount, use that instead.
 
 Use the complete description for calculations, even when details are omitted from the formatted Dish Name:
 

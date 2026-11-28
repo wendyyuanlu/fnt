@@ -21,10 +21,20 @@
 .capture-original{white-space:pre-wrap;overflow-wrap:anywhere}
 [data-day-list]{display:flex;flex-wrap:wrap;gap:6px}
 .capture-pane textarea{width:100%;resize:vertical}
-.capture-mode-tabs{display:flex;flex-wrap:wrap;margin:12px 0}
+.capture-mode-tabs{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}
 .capture-date{min-width:0;margin:0}
 .capture-date input{width:100%;min-width:0}
 .capture-restaurant-name{flex:1;min-width:0}
+.capture-restaurant{display:flex;align-items:flex-end;gap:6px}
+.capture-restaurant>.meal-log-field,.capture-restaurant>[data-restaurant-heading]{flex:1;min-width:0}
+.capture-restaurant>[data-restaurant-heading]{align-self:center;overflow-wrap:anywhere}
+.capture-pane [data-ingredient-picker]{flex:1;min-width:0;width:auto}
+.capture-ingredient-tools{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:8px;margin-top:14px}
+.capture-ingredient-tools>.meal-log-field{grid-column:1;grid-row:1}
+.capture-ingredient-tools>[data-ingredient-photos],.capture-ingredient-tools .photo-strip{display:contents}
+.capture-ingredient-tools .photo-strip>:not(:first-child){grid-column:1/-1}
+.capture-ingredient-tools .photo-strip>.button-row:first-child{grid-column:2;grid-row:1;flex-wrap:nowrap}
+.capture-pagination{align-items:center;justify-content:space-between;margin:12px 0}
 .capture-pane .meal-log-card>.button-row{flex-wrap:wrap}
 .meal-log-scroll,.capture-foods{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 12px;scroll-padding:12px}
 .meal-log-day-weight{margin:14px 0}
@@ -48,7 +58,7 @@
 .meal-log-card details:not([open]) summary .format-caret{transform:rotate(-90deg)}
 .meal-log-card summary [data-log-totals]{font-size:12px}
 .meal-log-row-actions{display:flex;gap:6px;margin-top:16px}
-.meal-log-row-actions>:is([aria-label="Delete food"],[aria-label="Delete Ingredient"]){margin-left:auto}
+.meal-log-row-actions>:is([aria-label="Delete food"],[aria-label="Delete Ingredient"],[data-draft-delete]){margin-left:auto}
 .meal-log-ingredient{margin:16px 0 0}
 .meal-log-notes .meal-log-field{margin-top:10px}
 .meal-log-panel [hidden]{display:none!important}
@@ -61,5 +71,8 @@
 .touch-input-device .meal-log-field :is(input,textarea){font-size:16px}
 .touch-input-device :is(.meal-log-header,.meal-log-day-bar,.capture-day-bar){gap:4px;padding:6px}
 .touch-input-device .meal-log-header button{padding:6px 8px}
+.touch-input-device .meal-log-header .panel-tabs{gap:4px}
+.touch-input-device .meal-log-header .panel-tabs button{padding:6px 1px}
+.touch-input-device .meal-log-header [data-log-open="nutrition"]{flex-shrink:0;min-width:0;max-width:64px;padding:2px;white-space:normal}
 .touch-input-device .meal-log-fields{gap:16px 8px}
 .touch-input-device .meal-log-field{font-size:12px}

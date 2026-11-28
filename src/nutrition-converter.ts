@@ -1,5 +1,6 @@
 import {nutrients,nutritionReference,numberValue,type FoodValues,type NutritionBatch,type NutritionItem,type NutritionTarget} from './food-capture';
 import {converterFields,mapNutritionTable,separateDescription,strictNutritionNumber,type ConverterField,type ConverterRow,type ParsedNutritionTable} from './nutrition-table';
+import {validateStandaloneState,type StandaloneConverterState} from './nutrition-converter-import';
 
 export interface ConverterChoice{
   referenceAcknowledged?:boolean;
@@ -18,20 +19,23 @@ export interface ConverterState{
   schema:1;batch:string;mode:'tracked'|'untracked';raw:string;html:string;parsed?:ParsedNutritionTable;
   rows:ConverterRow[];choices:Record<string,ConverterChoice>;linkedChoices:Record<string,ConverterChoice>;removeDescription:boolean;
   processedRaw?:string;status:'editing'|'saving'|'applying'|'applied'|'failed';error?:string;
+  standalone?:StandaloneConverterState;
+  pendingMapping?:ParsedNutritionTable['mapping'];
 }
 export interface ConverterIssue{item?:string;message:string}
 export interface ReviewedNutrition{
   item:NutritionItem;row:ConverterRow;values:FoodValues;description:string;
 }
 export interface ConverterReviewResult{issues:ConverterIssue[];items:ReviewedNutrition[]}
-export function newConverterState(batch=''):ConverterState{
-  return{schema:1,batch,mode:'tracked',raw:'',html:'',rows:[],choices:{},linkedChoices:{},removeDescription:false,status:'editing'};
+export function newConverterState(batch='',standalone?:StandaloneConverterState):ConverterState{
+  return{schema:1,batch,mode:'tracked',raw:'',html:'',rows:[],choices:{},linkedChoices:{},removeDescription:false,status:'editing',...(standalone?{standalone:structuredClone(standalone)}:{})};
 }
 export function selectedNutritionItems(batch:NutritionBatch):NutritionItem[]{
   return batch.items.filter(item=>item.selected&&(item.date===undefined||batch.days.includes(item.date)));
 }
 export function converterReview(state:ConverterState):ConverterReview{
   if(state.mode!=='tracked')throw Error('Untracked tables cannot be matched or applied to this nutrition batch.');
+  if(state.pendingMapping)throw Error('Rebuild the pending column mapping before reviewing or applying.');
   if(!state.parsed){
     if(state.raw.trim()||!Object.values(state.linkedChoices).some(choice=>choice.include))throw Error('Process the current paste before applying.');
   }else if(state.processedRaw!==state.raw)throw Error('Process the current paste before applying.');
@@ -96,7 +100,7 @@ export function reviewNutritionTable(batch:NutritionBatch,review:ConverterReview
 export function remapConverterTable(state:ConverterState,mapping:ParsedNutritionTable['mapping']):ConverterState{
   if(!state.parsed)throw Error('Process a table before changing the mapping.');
   const parsed={...state.parsed,mapping};
-  return{...state,parsed,rows:mapNutritionTable(parsed),choices:{},status:'editing',error:undefined};
+  return{...state,parsed,rows:mapNutritionTable(parsed),choices:{},pendingMapping:undefined,status:'editing',error:undefined};
 }
 export function validateConverterState(value:unknown):asserts value is ConverterState{
   const record=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value);
@@ -104,10 +108,12 @@ export function validateConverterState(value:unknown):asserts value is Converter
   if(!record(value)||value.schema!==1||!text(value.batch)||!['tracked','untracked'].includes(String(value.mode))||!text(value.raw)||!text(value.html)||typeof value.removeDescription!=='boolean'||!['editing','saving','applying','applied','failed'].includes(String(value.status))||!Array.isArray(value.rows)||value.rows.length>5000||!value.rows.every(row=>record(row)&&converterFields.every(field=>text(row[field])))||!record(value.choices)||!record(value.linkedChoices))throw Error('Invalid saved nutrition converter review.');
   for(const [id,choice]of [...Object.entries(value.choices),...Object.entries(value.linkedChoices)])if(!/^[a-zA-Z0-9_.:-]{1,512}$/.test(id)||!record(choice)||choice.overwrite!==undefined&&typeof choice.overwrite!=='boolean'||choice.quantityAcknowledged!==undefined&&typeof choice.quantityAcknowledged!=='boolean'||choice.referenceAcknowledged!==undefined&&typeof choice.referenceAcknowledged!=='boolean'||choice.include!==undefined&&typeof choice.include!=='boolean'||choice.manual!==undefined&&!['keep','reference'].includes(String(choice.manual))||choice.target!==undefined&&(!record(choice.target)||!text(choice.target.sheet)||!text(choice.target.table))||choice.missingReason!==undefined&&!text(choice.missingReason))throw Error('Invalid saved nutrition converter choices.');
   if(value.processedRaw!==undefined&&!text(value.processedRaw)||value.error!==undefined&&!text(value.error))throw Error('Invalid saved converter status.');
+  if(value.standalone!==undefined)validateStandaloneState(value.standalone);
   if(value.parsed!==undefined){
     const parsed=value.parsed;
     if(!record(parsed)||!text(parsed.batch)||!Array.isArray(parsed.headers)||parsed.headers.length>128||!parsed.headers.every(text))throw Error('Invalid saved converter source table.');
     const width=parsed.headers.length;
     if(!Array.isArray(parsed.mapping)||parsed.mapping.length!==width||!parsed.mapping.every(field=>field==='extra'||converterFields.includes(field as ConverterField))||!Array.isArray(parsed.rows)||parsed.rows.length>5000||!parsed.rows.every(row=>Array.isArray(row)&&row.length===width&&row.every(text)))throw Error('Invalid saved converter source table.');
   }
+  if(value.pendingMapping!==undefined&&(!record(value.parsed)||!Array.isArray(value.parsed.headers)||!Array.isArray(value.pendingMapping)||value.pendingMapping.length!==value.parsed.headers.length||!value.pendingMapping.every(field=>field==='extra'||converterFields.includes(field as ConverterField))))throw Error('Invalid saved pending converter mapping.');
 }

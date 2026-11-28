@@ -1,11 +1,12 @@
 import {Engine,scalar} from './formula';
-import {addRow,allSheets,allTables,clone,getCell,isFault,setInput,uid,type Sheet,type Table,type Workbook} from './model';
+import {addRow,allSheets,allTables,clone,getCell,isFault,setInput,uid,type Cell,type Sheet,type Table,type Workbook} from './model';
 import {mealFields,mealLogConfig,mealLogContext,type MealField} from './meal-log';
 import {parseFraction} from './quantity';
 import type {NutritionConflict} from './ingredient-edit';
 import {validateNameVersion} from './nutrition-names';
 import type {ConverterState} from './nutrition-converter';
 import type {ConverterReceipt} from './nutrition-apply';
+import type {StandaloneReceipt} from './nutrition-converter-import';
 
 export const nutrients=['calories','protein','fat','carbs','sugar','sodium'] as const;
 export type Nutrient=typeof nutrients[number];
@@ -49,11 +50,12 @@ export interface FoodCapture{
   schema:1;foods:DraftFood[];restaurants:{id:string;name:string}[];photos:FoodPhoto[];
   loggedDetails?:Record<string,RestaurantLink>;
   ingredientMappings:IngredientMapping[];ingredientDetails:Record<string,{notes:string;photos:string[]}>;
-  ingredientEdits:Record<string,{values:FoodValues&{type?:string};base:FoodValues&{type?:string}}>;nameVersions:NameVersion[];
+  ingredientEdits:Record<string,{values:FoodValues&{type?:string};base:FoodValues&{type?:string};typeBinding?:NonNullable<Cell['binding']>}>;nameVersions:NameVersion[];
   selectedDate?:number;builder?:NutritionBatch;promptTemplate?:string;
   nutritionConflicts?:NutritionConflict[];
   converter?:ConverterState;
   nutritionReceipts?:ConverterReceipt[];
+  nutritionImports?:StandaloneReceipt[];
 }
 interface ResolvedIngredient{
   table:Table;sheet:Sheet;mapping:IngredientMapping;rows:Set<string>;
@@ -168,13 +170,19 @@ export function ingredientList(book:Workbook,reader?:CaptureReader,options?:{inc
     return options?.includeBlank||record.values.food?.trim()?[{...identity,...record,missing:missingNutrition(record.values)}]:[];
   });
 }
+export const homeCookedRestaurant='Home cooked';
+export function restaurantChoices(book:Workbook):{id:string;name:string}[]{
+  return[{id:'',name:homeCookedRestaurant},...(book.foodCapture?.restaurants??[]).filter(item=>item.name.trim().toLocaleLowerCase()!==homeCookedRestaurant.toLocaleLowerCase())];
+}
 export function restaurantName(book:Workbook,food:RestaurantLink,names?:ReadonlyMap<string,string>):string{
   const name=food.restaurant?(names?names.get(food.restaurant):book.foodCapture?.restaurants.find(item=>item.id===food.restaurant)?.name):undefined;
-  return name??food.restaurantText??'';
+  const resolved=name??food.restaurantText??'';
+  return resolved.trim().toLocaleLowerCase()===homeCookedRestaurant.toLocaleLowerCase()?homeCookedRestaurant:resolved;
 }
 export function setRestaurant(book:Workbook,food:RestaurantLink,text:string):void{
   text=text.trim();delete food.restaurantText;
   if(!text){delete food.restaurant;return;}
+  if(text.toLocaleLowerCase()===homeCookedRestaurant.toLocaleLowerCase()){food.restaurantText=homeCookedRestaurant;delete food.restaurant;return;}
   const data=captureData(book);let restaurant=data.restaurants.find(item=>item.name.toLocaleLowerCase()===text.toLocaleLowerCase());
   if(!restaurant){restaurant={id:uid(),name:text};data.restaurants.push(restaurant);}
   food.restaurant=restaurant.id;
@@ -494,7 +502,10 @@ export function validateFoodCapture(value:unknown):asserts value is FoodCapture{
   for(const photo of value.photos){if(!record(photo)||!text(photo.name)||!['image/jpeg','image/png','image/webp','image/gif'].includes(String(photo.mime))||!Number.isInteger(photo.date)||!Number.isSafeInteger(photo.bytes)||Number(photo.bytes)<=0||!/^[a-f0-9]{64}$/.test(String(photo.digest)))throw Error('Invalid food photo.');unique(photo.id);}
   for(const mapping of value.ingredientMappings)if(!record(mapping)||!id(mapping.table)||!record(mapping.fields)||Object.entries(mapping.fields).some(([field,value])=>!['type',...mealFields].includes(field)||value!==undefined&&!id(value)))throw Error('Invalid Ingredient field mapping.');
   for(const [key,details]of Object.entries(value.ingredientDetails))if(!/^[\w.-]+:[\w.-]+$/.test(key)||!record(details)||!text(details.notes)||!photos(details.photos))throw Error('Invalid Ingredient details.');
-  for(const [key,edit]of Object.entries(value.ingredientEdits))if(!/^[\w.-]+:[\w.-]+$/.test(key)||!record(edit)||!values(edit.values)||!values(edit.base))throw Error('Invalid staged Ingredient edit.');
+  for(const [key,edit]of Object.entries(value.ingredientEdits)){
+    if(!/^[\w.-]+:[\w.-]+$/.test(key)||!record(edit)||!values(edit.values)||!values(edit.base))throw Error('Invalid staged Ingredient edit.');
+    if(edit.typeBinding!==undefined&&(!record(edit.typeBinding)||Object.keys(edit.typeBinding).some(key=>!['table','row','column'].includes(key))||!id(edit.typeBinding.table)||!id(edit.typeBinding.row)||!id(edit.typeBinding.column)||!Object.hasOwn(edit.values,'type')))throw Error('Invalid staged Ingredient Type link.');
+  }
   if(value.nutritionConflicts!==undefined){
     if(!array(value.nutritionConflicts))throw Error('Invalid nutrition review.');
     const seen=new Set<string>();

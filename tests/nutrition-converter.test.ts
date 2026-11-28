@@ -1,6 +1,6 @@
 import {describe,expect,it} from 'vitest';
 import {converterFields,converterLabels,mapNutritionTable,parseNutritionTable,separateDescription,strictNutritionNumber} from '../src/nutrition-table';
-import {newConverterState,reviewNutritionTable,validateConverterState} from '../src/nutrition-converter';
+import {converterReview,newConverterState,remapConverterTable,reviewNutritionTable,validateConverterState} from '../src/nutrition-converter';
 import type {NutritionBatch,NutritionItem} from '../src/food-capture';
 
 const header=converterFields.map(field=>converterLabels[field]);
@@ -87,5 +87,21 @@ describe('nutrition table parser and tracked review',()=>{
     expect(()=>validateConverterState({...state,choices:{I00001:{overwrite:'yes'}}})).toThrow();
     const parsed=parseNutritionTable(markdown());expect(()=>validateConverterState({...state,parsed})).not.toThrow();
     parsed.mapping.pop();expect(()=>validateConverterState({...state,parsed})).toThrow();
+  });
+  it('restores pending column choices without applying them, and commits only a successful explicit rebuild',()=>{
+    const raw=markdown(),parsed=parseNutritionTable(raw),state={...newConverterState('batch-1'),raw,processedRaw:raw,parsed,rows:mapNutritionTable(parsed),pendingMapping:[...parsed.mapping]};
+    [state.pendingMapping[3],state.pendingMapping[4]]=[state.pendingMapping[4],state.pendingMapping[3]];
+    const restored=JSON.parse(JSON.stringify(state));validateConverterState(restored);
+    expect(()=>converterReview(restored)).toThrow('Rebuild the pending column mapping');
+    expect(restored.rows[0]).toMatchObject({protein:'2',fat:'1'});
+    const before=structuredClone(restored),invalid=[...restored.pendingMapping!];invalid[3]=invalid[4];
+    expect(()=>remapConverterTable(restored,invalid)).toThrow('only once');
+    expect(restored).toEqual(before);
+    const rebuilt=remapConverterTable(restored,restored.pendingMapping!);
+    expect(rebuilt.pendingMapping).toBeUndefined();
+    expect(converterReview(rebuilt).rows[0]).toMatchObject({protein:'1',fat:'2'});
+    expect(restored).toEqual(before);
+    expect(()=>validateConverterState({...state,pendingMapping:['name']})).toThrow('pending converter mapping');
+    expect(()=>validateConverterState({...state,pendingMapping:state.pendingMapping.map(()=>'unknown')})).toThrow('pending converter mapping');
   });
 });

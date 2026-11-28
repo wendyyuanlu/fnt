@@ -5,7 +5,7 @@ import {Store,syncGitHub,SyncConflict,mergeForSync,encode64,type LocalState,type
 import {syncCodec} from '../src/sync-codec';
 import {sameSharedWorkbook} from '../src/sync-merge';
 import {applyUndo,structuralUndo,type UndoHistory} from '../src/undo-history';
-import {addDraftFood,captureData} from '../src/food-capture';
+import {addDraftFood,captureData,restaurantName,setRestaurant} from '../src/food-capture';
 import {nutritionReviewRows,resolveNutritionReview} from '../src/ingredient-edit';
 import {prepareSyncRecheck} from '../src/sync-recheck';
 import type {StoredComparisonReview,ComparisonReviewView} from '../src/comparison-host';
@@ -47,6 +47,80 @@ class Endpoint{
   };
 }
 describe('shared-ancestor private sync',()=>{
+  describe.each(['draft','logged'] as const)('atomic restaurant links: %s',kind=>{
+    const setup=()=>{
+      const book=fixture(),data=captureData(book);
+      if(kind==='draft'){addDraftFood(book,20000);addDraftFood(book,20000);}
+      else data.loggedDetails={'invented-table:invented-row':{},'invented-table:other-row':{}};
+      const link=(book:Workbook,index=0)=>kind==='draft'?book.foodCapture!.foods[index]:book.foodCapture!.loggedDetails![index?'invented-table:other-row':'invented-table:invented-row'];
+      const path=kind==='draft'?`foodCapture/foods/${data.foods[0].id}/restaurant`:'foodCapture/loggedDetails/invented-table:invented-row/restaurant';
+      return{book,link,path};
+    };
+    it('preserves both coherent alternatives when the same blank food chooses text versus a linked restaurant',async()=>{
+      const {book:base,link,path}=setup(),local=clone(base),remote=clone(base);
+      link(local).restaurantText='Home cooked';setRestaurant(remote,link(remote),'Invented cafe');
+      const merged=await mergeForSync(base,local,remote);
+      expect(merged.conflicts).toEqual([path]);
+      expect(restaurantName(merged.local,link(merged.local))).toBe('Home cooked');
+      expect(restaurantName(merged.remote,link(merged.remote))).toBe('Invented cafe');
+      expect(link(merged.local).restaurant).toBeUndefined();expect(link(merged.remote).restaurantText).toBeUndefined();
+    });
+    it('does not silently replace an explicit unlink with a concurrent text selection',async()=>{
+      const {book:base,link,path}=setup();setRestaurant(base,link(base),'Invented original cafe');
+      const local=clone(base),remote=clone(base);
+      delete link(local).restaurant;link(remote).restaurantText='Home cooked';delete link(remote).restaurant;
+      const merged=await mergeForSync(base,local,remote);
+      expect(merged.conflicts).toEqual([path]);
+      expect(restaurantName(merged.local,link(merged.local))).toBe('');
+      expect(restaurantName(merged.remote,link(merged.remote))).toBe('Home cooked');
+      expect(link(merged.local).restaurant).toBeUndefined();expect(link(merged.local).restaurantText).toBeUndefined();
+    });
+    it('merges a restaurant choice with independent cell data without creating a review',async()=>{
+      const {book:base,link}=setup(),local=clone(base),remote=clone(base);
+      link(local).restaurantText='Home cooked';edit(remote,2,1,77);
+      const merged=await mergeForSync(base,local,remote);
+      expect(merged.conflicts).toEqual([]);expect(cell(merged.local,2,1)).toBe(77);
+      expect(restaurantName(merged.local,link(merged.local))).toBe('Home cooked');
+    });
+    it('merges different restaurant choices on different foods without creating a review',async()=>{
+      const {book:base,link}=setup(),local=clone(base),remote=clone(base);
+      link(local).restaurantText='Home cooked';setRestaurant(remote,link(remote,1),'Invented other cafe');
+      const merged=await mergeForSync(base,local,remote);
+      expect(merged.conflicts).toEqual([]);
+      expect(restaurantName(merged.local,link(merged.local))).toBe('Home cooked');
+      expect(restaurantName(merged.local,link(merged.local,1))).toBe('Invented other cafe');
+    });
+    it.each(['','  '])('treats a cleared text input %j and an absent restaurant as the same unlink',async text=>{
+      const {book:base,link}=setup();setRestaurant(base,link(base),'Invented original cafe');
+      const local=clone(base),remote=clone(base);
+      delete link(local).restaurant;delete link(remote).restaurant;link(remote).restaurantText=text;
+      const merged=await mergeForSync(base,local,remote);
+      expect(merged.conflicts).toEqual([]);expect(restaurantName(merged.local,link(merged.local)).trim()).toBe('');
+      expect(link(merged.local).restaurant).toBeUndefined();
+    });
+    it('automatically accepts identical concurrent restaurant text instead of manufacturing a conflict',async()=>{
+      const {book:base,link}=setup(),local=clone(base),remote=clone(base);
+      link(local).restaurantText=link(remote).restaurantText='Home cooked';edit(remote,2,1,88);
+      const merged=await mergeForSync(base,local,remote);
+      expect(merged.conflicts).toEqual([]);expect(cell(merged.local,2,1)).toBe(88);
+      expect(restaurantName(merged.local,link(merged.local))).toBe('Home cooked');
+    });
+  });
+  it('atomic restaurant links stop private upload with both coherent same-food choices retained',async()=>{
+    const base=fixture(),food=addDraftFood(base,20000),local=clone(base),remote=clone(base);
+    local.foodCapture!.foods[0].restaurantText='Home cooked';
+    setRestaurant(remote,remote.foodCapture!.foods[0],'Invented remote cafe');
+    const endpoint=new Endpoint(remote);endpoint.sha='remote-restaurant-choice';
+    const syncing=syncGitHub(state(local),'invented',endpoint.fetch,[],{base});
+    await expect(syncing).rejects.toBeInstanceOf(SyncConflict);
+    await expect(syncing).rejects.toMatchObject({
+      conflicts:[`foodCapture/foods/${food.id}/restaurant`],
+      local:{foodCapture:{foods:[{id:food.id,restaurantText:'Home cooked'}]}},
+      remote:{foodCapture:{foods:[{id:food.id,restaurant:remote.foodCapture!.foods[0].restaurant}]}},
+    });
+    expect(endpoint.attempts).toBe(0);expect(endpoint.writes).toBe(0);
+    expect(endpoint.book).toEqual(remote);expect(local.foodCapture!.foods[0].restaurant).toBeUndefined();
+  });
   it('merges disjoint inputs, formatting and simultaneous insertions by identity without changing device preferences',async()=>{
     const base=fixture(),local=clone(base),remote=clone(base);
     edit(local,1,0,2);edit(remote,1,1,30);

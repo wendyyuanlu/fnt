@@ -1,6 +1,6 @@
 import {captureData,ingredientKey,ingredientList,type FoodValues,type IngredientIdentity} from './food-capture';
 import type {Engine} from './formula';
-import type {Workbook} from './model';
+import type {Cell,Workbook} from './model';
 import type {Patch} from './undo-history';
 import type {createPhotoUI} from './photo-ui';
 import {localToday} from './day-logging';
@@ -23,6 +23,7 @@ export interface IngredientsPanelHost{
     history:(action:'undo'|'redo')=>void;
     historyState:()=>{undo:boolean;redo:boolean};
   };
+  actions?:NonNullable<IngredientsPanelHost['table']>;
 }
 const esc=(value:unknown)=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]!));
 const fields={food:'Ingredient',weight:'Reference grams',amount:'Reference amount',unit:'Reference unit',calories:'Calories',protein:'Protein (g)',fat:'Fat (g)',carbs:'Carbs (g)',sugar:'Sugar (g)',sodium:'Sodium (mg)',type:'Type',notes:'Notes'} as const;
@@ -31,18 +32,17 @@ function fieldHtml(field:keyof typeof fields,table:boolean):string{
   const tableLabels:Partial<Record<keyof typeof fields,string>>={food:'Food',weight:'Weight (g)',amount:'Amount',unit:'Unit'};
   const label=table?(tableLabels[field]??fields[field]):fields[field];
   const input=field==='notes'?`<textarea rows="3" data-field="${field}" aria-label="Ingredient ${label}"></textarea>`:`<input data-field="${field}" aria-label="Ingredient ${label}" ${['food','unit','type'].includes(field)?'':'inputmode="decimal"'}>`;
-  return`<label class="meal-log-field ${table&&field==='food'?'meal-log-field-wide':''}"><span>${label}</span>${table&&field==='type'?`<span class="meal-log-input">${input}<button type="button" class="icon-button" data-ingredient-type aria-label="Choose Ingredient Type"><span class="format-caret">${dropdownArrowHtml}</span></button></span>`:input}</label>`;
+  return`<label class="meal-log-field ${field==='food'?'meal-log-field-wide':''}"><span>${label}</span>${field==='type'?`<span class="meal-log-input">${input}<button type="button" class="icon-button" data-ingredient-type aria-label="Choose Ingredient Type"><span class="format-caret">${dropdownArrowHtml}</span></button></span>`:input}</label>`;
 }
 export function mountIngredientsPanel(host:IngredientsPanelHost){
-  const element=document.createElement('section'),controller=new AbortController();
+  const element=document.createElement('section'),controller=new AbortController(),actions=host.table??host.actions,expanded=new Set<string>();
   element.className='capture-pane';element.setAttribute('aria-label','Ingredient editor');
-  element.innerHTML='<header class="capture-toolbar"><h2>Ingredients</h2><button type="button" data-ingredient-add>+ Ingredient</button></header><nav class="panel-tabs" aria-label="Ingredient filter"><button type="button" data-filter="all" aria-pressed="true">All</button><button type="button" data-filter="missing" aria-pressed="false">Needs nutrition</button></nav><label class="capture-search">Search Ingredients<input type="search" aria-label="Search Ingredients"></label><button type="button" data-review hidden>Review nutrition changes</button><p class="muted capture-notice">These are your real Ingredients rows. Draft edits save locally; Apply updates the source table. Reference serving is independent of food consumed.</p><div class="capture-foods"></div><footer class="capture-footer"><button type="button" data-page="-1">Previous</button><span data-count></span><button type="button" data-page="1">Next</button></footer>';
+  element.innerHTML=`<nav class="panel-tabs" aria-label="Ingredient filter"><button type="button" data-filter="all" aria-pressed="true">All</button><button type="button" data-filter="missing" aria-pressed="false">Needs nutrition</button></nav><label class="capture-search">Search Ingredients<input type="search" aria-label="Search Ingredients"></label><button type="button" data-review hidden>Review nutrition changes</button><details class="capture-notice"><summary>Reference serving</summary><p class="muted">Reference quantities are independent of food consumed. Draft edits save locally; Apply updates the source Ingredients row.</p></details><div class="capture-foods"></div><footer class="capture-footer"><button type="button" data-ingredient-add>+ Ingredient</button><span data-count></span>${glyph('Undo',toolbarIcon('undo'),'data-ingredient-history="undo"')}${glyph('Redo',toolbarIcon('redo'),'data-ingredient-history="redo"')}</footer>`;
   const list=element.querySelector<HTMLElement>('.capture-foods')!,search=element.querySelector<HTMLInputElement>('[type=search]')!;
   if(host.table){
     element.setAttribute('aria-label','Ingredients TABLE');
     for(const child of element.querySelectorAll<HTMLElement>('.capture-toolbar,.panel-tabs,.capture-search,.capture-notice'))child.hidden=true;
     list.dataset.virtual='true';
-    element.querySelector('.capture-footer')!.innerHTML=`<button type="button" data-ingredient-add>+ Ingredient</button><span data-count></span>${glyph('Undo',toolbarIcon('undo'),'data-ingredient-history="undo"')}${glyph('Redo',toolbarIcon('redo'),'data-ingredient-history="redo"')}`;
   }
   let filter='all',page=0,shape='',frame=0;
   let layout=new RowViewport([]),ordered:string[]=[],savedScroll=0,refreshing=false,replacingCards=false,active:{key:string;field:string}|undefined;
@@ -82,7 +82,7 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
   const records=()=>{
     const book=host.book(),engine=host.engine(),version=host.sourceVersion();
     if(projectionBook!==book||projectionEngine!==engine||projectionVersion!==version){
-      projection=ingredientList(book,engine,host.table?{includeBlank:true}:undefined);byKey=new Map(projection.map(item=>[ingredientKey({table:item.table.id,row:item.row}),item]));
+      projection=ingredientList(book,engine,actions?{includeBlank:true}:undefined);byKey=new Map(projection.map(item=>[ingredientKey({table:item.table.id,row:item.row}),item]));
       projectionBook=book;projectionEngine=engine;projectionVersion=version;
     }
     return projection;
@@ -122,9 +122,12 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
         const key=ingredientKey({table:item.table.id,row:item.row});
         const editable=(Object.keys(fields) as (keyof typeof fields)[]).filter(field=>(!host.table||field!=='notes')&&(field==='notes'||item.mapping.fields[field]));
         const at=matches.indexOf(item);
-        const pending=`<div class="button-row" ${host.table?'data-pending-edit hidden':''}><button type="button" class="primary" data-apply>Apply</button><button type="button" data-discard>Discard draft edits</button></div>`;
-        const actions=pending+(host.table?`<div class="meal-log-row-actions">${glyph('Move Ingredient up',navigationIcon('up'),`data-ingredient-move="-1" ${at===0?'disabled':''}`)}${glyph('Move Ingredient down',navigationIcon('down'),`data-ingredient-move="1" ${at===matches.length-1?'disabled':''}`)}${glyph('Insert Ingredient',toolbarIcon('add'),'data-ingredient-insert')}${glyph('Delete Ingredient',toolbarIcon('trash'),'data-ingredient-delete')}</div>`:'');
-        return`<section class="meal-log-card" data-ingredient-key="${key}" data-table="${item.table.id}" data-row="${item.row}"><h3 data-name ${host.table?'hidden':''}></h3><p class="muted" data-missing role="status"></p><div class="meal-log-fields">${editable.map(field=>fieldHtml(field,!!host.table)).join('')}</div>${actions}</section>`;
+        const pending='<div class="button-row" data-pending-edit hidden><button type="button" class="primary" data-apply>Apply</button><button type="button" data-discard>Discard draft edits</button></div>';
+        const cardActions=pending+(actions?`<div class="meal-log-row-actions">${glyph('Move Ingredient up',navigationIcon('up'),`data-ingredient-move="-1" ${at===0?'disabled':''}`)}${glyph('Move Ingredient down',navigationIcon('down'),`data-ingredient-move="1" ${at===matches.length-1?'disabled':''}`)}${glyph('Insert Ingredient',toolbarIcon('add'),'data-ingredient-insert')}${glyph('Delete Ingredient',toolbarIcon('trash'),'data-ingredient-delete')}</div>`:'');
+        const field=(name:keyof typeof fields)=>editable.includes(name)?fieldHtml(name,!!host.table):'';
+        const content=host.table?`<div class="meal-log-fields">${editable.map(field).join('')}</div>`:
+          `${field('food')}<div class="meal-log-fields">${(['weight','amount','unit'] as const).map(field).join('')}</div><details class="meal-log-macros" data-ingredient-details="macros" ${expanded.has(key+':macros')?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Macros</span></summary><div class="meal-log-fields">${(['calories','protein','fat','carbs','sugar','sodium'] as const).map(field).join('')}</div></details><div class="capture-ingredient-tools">${field('type')}<div data-ingredient-photos></div></div><details class="meal-log-notes" data-ingredient-details="notes" ${expanded.has(key+':notes')?'open':''}><summary><span class="meal-log-macro-label"><span class="format-caret">${dropdownArrowHtml}</span>Notes</span></summary>${field('notes')}</details>`;
+        return`<section class="meal-log-card" data-ingredient-key="${key}" data-table="${item.table.id}" data-row="${item.row}"><h3 data-name hidden></h3><p class="muted" data-missing role="status"></p>${content}${cardActions}</section>`;
       }).join('')||'<p class="muted">No matching Ingredients.</p>';}finally{replacingCards=false;}
       if(host.table){
         list.insertAdjacentHTML('afterbegin','<div data-ingredient-spacer="before" aria-hidden="true"></div>');
@@ -134,7 +137,13 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
       if(host.photos&&!host.table)for(const item of visible){
         const identity={table:item.table.id,row:item.row},key=ingredientKey(identity);
         const photos=host.photos.strip(()=>({book:host.book().id,date:host.book().foodCapture?.selectedDate??localToday(),target:{kind:'ingredient',identity}}),()=>host.book().foodCapture?.ingredientDetails[key]?.photos??[]);
-        list.querySelector(`[data-ingredient-key="${key}"]`)!.append(photos.element);photoPanels.push(photos);
+        list.querySelector(`[data-ingredient-key="${key}"] [data-ingredient-photos]`)!.append(photos.element);photoPanels.push(photos);
+      }
+      if(!host.table){
+        if(matches.length>20)list.insertAdjacentHTML('beforeend',`<nav class="button-row capture-pagination" aria-label="Ingredient pages"><button type="button" data-page="-1" ${page===0?'disabled':''}>Previous</button><span>${page*20+1}-${Math.min(matches.length,(page+1)*20)} of ${matches.length}</span><button type="button" data-page="1" ${(page+1)*20>=matches.length?'disabled':''}>Next</button></nav>`);
+        for(const card of list.querySelectorAll<HTMLElement>('[data-ingredient-key]'))for(const details of card.querySelectorAll<HTMLDetailsElement>('[data-ingredient-details]'))details.ontoggle=()=>{
+          const key=card.dataset.ingredientKey!+':'+details.dataset.ingredientDetails;if(details.open)expanded.add(key);else expanded.delete(key);
+        };
       }
     }
     for(const panel of photoPanels)panel.refresh();
@@ -146,7 +155,8 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
       card.querySelector<HTMLElement>('[data-missing]')!.textContent=[item.missing.length?'Needs nutrition':'Nutrition complete',edit?'Draft edits saved locally':'',stale?'Source changed; review before applying':''].filter(Boolean).join(' · ');
       for(const input of card.querySelectorAll<HTMLInputElement|HTMLTextAreaElement>('[data-field]'))if(input!==document.activeElement)input.value=values[input.dataset.field as keyof Values]??'';
       card.querySelector<HTMLButtonElement>('[data-apply]')!.disabled=!edit;card.querySelector<HTMLButtonElement>('[data-discard]')!.disabled=!edit;
-      if(host.table)card.querySelector<HTMLElement>('[data-pending-edit]')!.hidden=!edit;
+      const pending=card.querySelector<HTMLElement>('[data-pending-edit]')!;if(pending.hidden!==!edit)pending.hidden=!edit;
+      const type=card.querySelector<HTMLButtonElement>('[data-ingredient-type]');if(type&&type.disabled!==!actions)type.disabled=!actions;
     }
     for(const button of element.querySelectorAll<HTMLButtonElement>('[data-filter]'))button.setAttribute('aria-pressed',String(button.dataset.filter===filter));
     const review=element.querySelector<HTMLButtonElement>('[data-review]')!,count=book.foodCapture?.nutritionConflicts?.length??0;
@@ -154,12 +164,9 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
     element.querySelector<HTMLElement>('[data-count]')!.textContent=host.table?`${matches.length} Ingredients`:matches.length?`${page*20+1}–${Math.min(matches.length,(page+1)*20)} of ${matches.length}`:'0 Ingredients';
     if(host.table){
       for(const side of ['before','after'] as const)list.querySelector<HTMLElement>(`[data-ingredient-spacer="${side}"]`)!.style.height=(side==='before'?layout.offsets[start]:layout.offsets.at(-1)!-layout.offsets[end])+'px';
-      const history=host.table.historyState();
-      for(const button of element.querySelectorAll<HTMLButtonElement>('[data-ingredient-history]'))button.disabled=!history[button.dataset.ingredientHistory as 'undo'|'redo'];
-    }else{
-      element.querySelector<HTMLButtonElement>('[data-page="-1"]')!.disabled=page===0;
-      element.querySelector<HTMLButtonElement>('[data-page="1"]')!.disabled=(page+1)*20>=matches.length;
     }
+    const history=actions?.historyState();
+    for(const button of element.querySelectorAll<HTMLButtonElement>('[data-ingredient-history]'))button.disabled=!history?.[button.dataset.ingredientHistory as 'undo'|'redo'];
     if(redrawn&&focus){
       const control=list.querySelector<HTMLInputElement|HTMLButtonElement>(`[data-ingredient-key="${focus.key}"] ${focus.selector}`);
       control?.focus({preventScroll:true});
@@ -169,6 +176,15 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
   };
   const refresh=()=>{if(refreshing)return;refreshing=true;try{draw();}finally{refreshing=false;}};
   const reveal=(row:string,focus=false,end=false)=>{
+    if(!host.table){
+      let matches=records().filter(item=>(filter!=='missing'||item.missing.length)&&(!search.value.trim()||item.values.food?.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())));
+      if(!matches.some(item=>item.row===row)){filter='all';search.value='';matches=records();}
+      const at=matches.findIndex(item=>item.row===row);if(at<0)throw Error('The Ingredient was not found after this action. Reopen Ingredients.');
+      page=Math.floor(at/20);refresh();
+      const card=list.querySelector<HTMLElement>(`[data-row="${row}"]`);card?.scrollIntoView({block:'nearest'});
+      if(focus)card?.querySelector<HTMLInputElement>('[data-field="food"]')?.focus({preventScroll:true});
+      return;
+    }
     refresh();const at=records().findIndex(item=>item.row===row);if(at<0)return;
     list.scrollTop=end?Math.max(0,layout.offsets[at+1]-list.clientHeight):layout.offsets[at];refresh();
     if(focus)list.querySelector<HTMLInputElement>(`[data-row="${row}"] [data-field="food"]`)?.focus({preventScroll:true});
@@ -196,19 +212,23 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
       else if((event.ctrlKey||event.metaKey)&&['z','y'].includes(event.key.toLowerCase())){event.preventDefault();host.table.history(event.key.toLowerCase()==='y'||event.shiftKey?'redo':'undo');}
     }catch(error){host.error(error);}
   },{signal:controller.signal});
+  const stage=(identity:IngredientIdentity,field:keyof Values,value:string,binding?:NonNullable<Cell['binding']>)=>{
+    const key=ingredientKey(identity);records();const record=byKey.get(key);
+    if(!record)throw Error('This Ingredient was removed. Reopen Ingredients before editing.');
+    return host.write('Edit Ingredient draft',[['foodCapture','ingredientEdits',key]],()=>{
+      const data=captureData(host.book()),edit=data.ingredientEdits[key]??={values:{},base:{}};
+      if(!Object.hasOwn(edit.base,field))edit.base[field]=field==='notes'?data.ingredientDetails[key]?.notes??'':record.values[field]??'';
+      edit.values[field]=value;
+      if(field==='type'){if(binding)edit.typeBinding={...binding};else delete edit.typeBinding;}
+    });
+  };
   element.addEventListener('input',event=>{
     const input=event.target;
     if(!(input instanceof HTMLInputElement||input instanceof HTMLTextAreaElement)||event instanceof InputEvent&&event.isComposing)return;
     try{
       if(input!==search){
         const card=input.closest<HTMLElement>('[data-ingredient-key]');if(!card||!input.dataset.field)return;
-        const key=card.dataset.ingredientKey!,field=input.dataset.field as keyof Values;
-        records();const record=byKey.get(key);if(!record)throw Error('This Ingredient was removed. Reopen Ingredients before editing.');
-        host.write('Edit Ingredient draft',[['foodCapture','ingredientEdits',key]],()=>{
-          const data=captureData(host.book()),edit=data.ingredientEdits[key]??={values:{},base:{}};
-          if(!Object.hasOwn(edit.base,field))edit.base[field]=field==='notes'?data.ingredientDetails[key]?.notes??'':record.values[field]??'';
-          edit.values[field]=input.value;
-        });
+        stage({table:card.dataset.table!,row:card.dataset.row!},input.dataset.field as keyof Values,input.value);
       }else page=0;
       schedule();
     }catch(error){host.error(error);}
@@ -217,8 +237,8 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
   element.addEventListener('click',event=>{
     const button=event.target instanceof Element?event.target.closest<HTMLButtonElement>('button'):null;if(!button||button.disabled)return;
     try{
-      if(button.hasAttribute('data-ingredient-add')){if(host.table){const added=host.table.add();if(added){refresh();reveal(added.row,true);}}else host.add();}
-      else if(button.dataset.ingredientHistory)host.table?.history(button.dataset.ingredientHistory as 'undo'|'redo');
+      if(button.hasAttribute('data-ingredient-add')){if(actions){const added=actions.add();if(added){refresh();reveal(added.row,true);}}else host.add();}
+      else if(button.dataset.ingredientHistory)actions?.history(button.dataset.ingredientHistory as 'undo'|'redo');
       else if(button.hasAttribute('data-review'))host.review();
       else if(button.dataset.filter){filter=button.dataset.filter;page=0;refresh();}
       else if(button.dataset.page){page+=Number(button.dataset.page);refresh();list.scrollTop=0;}
@@ -226,11 +246,11 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
         const card=button.closest<HTMLElement>('[data-ingredient-key]');if(!card)return;
         const key=card.dataset.ingredientKey!,edit=host.book().foodCapture?.ingredientEdits[key];
         const identity={table:card.dataset.table!,row:card.dataset.row!};
-        if(host.table){
-          if(button.hasAttribute('data-ingredient-type'))host.table.dropdown(identity,button);
-          else if(button.hasAttribute('data-ingredient-insert')){const added=host.table.add(identity);if(added){refresh();reveal(added.row,true);}}
-          else if(button.dataset.ingredientMove){if(host.table.move(identity,Number(button.dataset.ingredientMove) as -1|1)){refresh();reveal(identity.row);}}
-          else if(button.hasAttribute('data-ingredient-delete'))host.table.remove(identity);
+        if(actions){
+          if(button.hasAttribute('data-ingredient-type'))actions.dropdown(identity,button);
+          else if(button.hasAttribute('data-ingredient-insert')){const added=actions.add(identity);if(added){refresh();reveal(added.row,true);}}
+          else if(button.dataset.ingredientMove){if(actions.move(identity,Number(button.dataset.ingredientMove) as -1|1)){refresh();reveal(identity.row);}}
+          else if(button.hasAttribute('data-ingredient-delete'))actions.remove(identity);
         }
         if(button.hasAttribute('data-discard'))host.write('Discard Ingredient draft',[['foodCapture','ingredientEdits',key]],()=>{delete captureData(host.book()).ingredientEdits[key];});
         else if(button.hasAttribute('data-apply')&&edit)host.apply({table:card.dataset.table!,row:card.dataset.row!},edit.values,edit.base);
@@ -238,7 +258,7 @@ export function mountIngredientsPanel(host:IngredientsPanelHost){
       }
     }catch(error){host.error(error);}
   },{signal:controller.signal});
-  return{element,refresh,last,commit,navigate:(direction:-1|1)=>{refresh();const row=records()[Math.max(0,Math.min(ordered.length-1,layout.at(list.scrollTop)+direction))]?.row;if(row)reveal(row);},
+  return{element,refresh,last,commit,stageType:(identity:IngredientIdentity,value:string,binding?:NonNullable<Cell['binding']>)=>{const ok=stage(identity,'type',value,binding);if(ok)refresh();return ok;},navigate:(direction:-1|1)=>{refresh();const row=records()[Math.max(0,Math.min(ordered.length-1,layout.at(list.scrollTop)+direction))]?.row;if(row)reveal(row);},
     rememberScroll:()=>{savedScroll=list.scrollTop;savedAnchor=scrollAnchor();},restoreScroll:()=>{if(!restoreAnchor(savedAnchor))list.scrollTop=savedScroll;},restoreFocus:()=>{if(active)list.querySelector<HTMLInputElement|HTMLTextAreaElement>(`[data-ingredient-key="${active.key}"] [data-field="${active.field}"]`)?.focus({preventScroll:true});},
     dispose:()=>{cancelAnimationFrame(frame);resize.disconnect();for(const panel of photoPanels)panel.dispose();controller.abort();projection=[];byKey.clear();projectionBook=undefined;projectionEngine=undefined;}};
 }

@@ -18,6 +18,35 @@ npm run dev -- --port 5173
 ```
 
 Open `http://127.0.0.1:5173`. Development updates appear immediately.
+To reconnect a local preview to **only the workbook already saved at that
+address and browser profile**, use this explicit development-only mode:
+
+```powershell
+$env:VITE_FNT_EXISTING_DATA_ONLY='true'
+npm run dev -- --port 5173 --strictPort
+```
+
+Do not restart an occupied or previously used preview origin without checking
+for unsaved work: an open development tab can reload when its server reconnects.
+This mode does not seed a demo, import the published workbook, perform startup
+workbook/catalog migrations, initialize date-page settings, restore a remembered
+sync credential, or automatically reopen a comparison. Existing sync/review
+metadata, pending edits and recovery history remain saved unchanged. If the
+origin/profile has no workbook, it shows **No saved workbook at this address**
+instead of substituting sample data. **Open existing private workbook** is an
+explicit alternative at that empty origin: enter a private data repository and
+read-only token, read and review its actual title/source/revision, then separately
+choose **Open locally**. Reading uploads and saves nothing. Confirmation refuses
+an existing workbook or protected recovery data, including another tab's
+in-flight save. It preserves the inspected sync ancestor with sync paused and no
+remembered token; connecting and syncing later is separate. Original workbook
+attachments are included, but photo originals are not downloaded by this action
+and may require a separate private-gallery retrieval or complete backup.
+Editing and explicit local saves remain
+available after an existing workbook opens; private sync requires an explicit
+connection. Remove the environment variable to return to the ordinary starter
+behavior. This flag has no effect on a production build.
+
 For the offline-capable production build:
 
 ```powershell
@@ -257,6 +286,13 @@ remain viewable only in history.
   metadata follows stable table/row identities without adding spreadsheet columns
   or changing nutrition cells. Unlinked Logged nutrition requests retain this
   restaurant context in their captured batch.
+  Home cooked is always the first restaurant choice, without creating a saved
+  restaurant entry. It uses ordinary restaurant text and the existing Draft
+  request grouping. Existing case/space variants resolve to the same label
+  without rewriting stored restaurant links or saved batches.
+  The default prompt's homemade/lower-oil guidance also
+  covers this label; explicit oil amounts still take priority. Selecting it
+  never changes nutrient values or overwrites saved/custom prompt templates.
   Manual nutrient overrides are never silently replaced when source values,
   consumed quantities, conversion factors or formula dependencies change.
   Logged overrides with retained calculations, explicitly Ingredient-linked
@@ -276,9 +312,15 @@ remain viewable only in history.
   uncertain, cyclic or spill-dependent paths conservatively remain in review.
   Structural and mapping changes retain the full review path.
 
-  **Food panels > Ingredients** edits real source rows, with a Needs nutrition
+  **Meal log** has **Logged**, **Draft** and **Ingredients** tabs.
+  **Ingredients** edits real source rows, with a Needs nutrition
   filter, staged field changes and explicit stale-source/manual-nutrition
   review. Consumed quantities remain separate from Ingredient reference servings.
+  Its Type picker uses the source field's shared dropdown even when another
+  sheet is active. The choice remains staged until Apply and retains its stable
+  dropdown identity afterward. A removed or renamed staged option must be
+  selected again before applying; Discard leaves the source unchanged.
+  Change the dropdown assignment in the source spreadsheet.
   The Ingredients sheet's phone button opens **TABLE**, a continuous,
   virtualized view of those same rows, initially at the last Ingredient.
   Edits commit on Enter or leaving a field; unfinished edits persist and retain
@@ -291,14 +333,25 @@ remain viewable only in history.
   only for blank manual nutrient cells, so completing the Ingredient later also
   completes its Logged nutrition. These managed calculations follow a changed
   Ingredient link; existing manual values and unrelated formulas are preserved.
-  **Get Nutrition** retains a batch with stable request/source identities:
+  **Get nutrition** retains a batch with stable request/source identities:
   choose days, foods and Ingredients, fill missing reference servings, opt Notes
-  in or out, edit the template and generate/copy a prompt. Reviewed dish names
-  update that prompt without overwriting original descriptions. Back/reload
-  resume the batch and selected Prompt builder/Table converter tab; Check new
+  in or out, edit the template and generate/copy a prompt. Ingredients, Draft
+  and Logged have separate lists, with restaurant subgroups under Draft.
+  Group selections include items on other pages. Choose dates with the calendar
+  or searchable Single day/Multi days picker; All available days includes every
+  eligible day. The bulk 100g reference option changes only requests with
+  completely missing servings, not source servings or consumed quantities.
+  Reviewed dish names and each Draft restaurant group's request name
+  update that prompt without overwriting original descriptions or source
+  restaurants. **Review dish names** opens the selected-name editors inside
+  Prompt, ordered Ingredients / Logged / Draft, and collapses Select. Its
+  footer provides Regenerate prompt and Save name version; reopening Select
+  returns to food selection without discarding reviewed names. Back returns to the originating Meal log tab; reloads
+  resume the batch and selected Get nutrition/Table converter tab; Check new
   appends only unseen sources; Reset alone repulls
   existing snapshots. Dated name versions and identity-checked JSON name
-  backups support recovery. Generated prompt text is read-only; its template
+  backups support recovery, with dish and restaurant names shown before
+  restoring a version. Generated prompt text is read-only; its template
   and reviewed names are editable. Reference input is available only when all
   captured serving fields are blank; correct an existing or partial serving at
   its Ingredient source and explicitly reset the batch.
@@ -311,7 +364,18 @@ remain viewable only in history.
   Apply writes the reviewed Ingredient, original Logged and dated Draft routes
   together with a durable receipt and Undo history. Failed saves are not
   reported as applied; retrying persistence cannot log the operation twice.
-  Untracked mode is explicitly parse/edit review only, not workbook import.
+  **New table** retains an independent paste, mapping and editable review.
+  Column selections autosave separately in both modes, including before Rebuild.
+  Pending selections survive navigation and reload; explicitly rebuild them
+  before reviewing or applying. A rejected rebuild retains the saved choices
+  and existing rows.
+  Explicitly choose Master with a calendar date, or Ingredients with each row's
+  existing Type dropdown option, then review the complete Add before confirming.
+  Tracked Batch/Item IDs are refused in this mode. All rows are preflighted and
+  added atomically using ordinary workbook history, with original names/response
+  retained in durable receipts. Retrying a failed post-Add save cannot insert
+  duplicate rows. A tracked batch reset preserves this independent review and
+  its receipts; it cannot unlock or alter already-applied tracked values.
   Linked quantity formulas use Fnt's `UNITFACTOR(from,to)` with live conversion
   dependencies and stable conversion-column identities. Excel export preserves
   this Fnt-defined function, but Excel cannot recalculate it as a native function.
@@ -1031,9 +1095,9 @@ grid, closes a dropdown, or changes Meal log scroll. Acknowledgements clear only
 the captured operation IDs; edits made during transfer remain locally saved and
 pending. Sync compression runs in a worker rather than on the UI thread.
 Compressed archives include original imported packages; larger files use the
-Git blob read endpoint. Operation IDs recognize lost-ack retries. Divergence
-preserves local and remote checkpoints and requires an explicit choice; **there
-is no automatic structural merge or last-write-wins overwrite**. Network/API
+Git blob read endpoint. Operation IDs recognize lost-ack retries. Compatible
+changes merge automatically; incompatible changes preserve both versions in
+recovery and require an explicit choice, never a last-write-wins overwrite. Network/API
 failures retain pending local edits. Authorized synthetic-only live checks
 against private `wendyyuanlu/fnt-data` passed actual GitHub writes/reads, independent
 desktop/mobile-emulated clients, offline reload/divergence, a real stale-SHA 409,
@@ -1051,6 +1115,17 @@ seconds; clean visible tabs check remote revisions about every ten seconds.
 Offline edits remain durably pending. Compatible changes merge by stable identity
 against the last confirmed shared revision, including edits made while offline.
 Input/formula/binding changes stay atomic; independent formatting can merge.
+A Logged or Draft food's linked restaurant identity and free text also stay one
+choice: incompatible concurrent selections on the same food preserve both
+coherent alternatives for review. Different foods, independent cell changes and
+identical selections still merge automatically.
+Before using New table or editing linked restaurant choices across devices,
+load the updated app code on every device that can write and close older open
+tabs. Older clients can discard an unknown New table draft when resetting a
+tracked batch, or merge restaurant identity and text independently. Updating the
+Website does not update code already loaded in another tab or an older local
+development checkout. Do not mix those older writers with these flows; complete
+the explicit per-device destination review and reconnect separately.
 Incoming changes wait for the current editor or dialog to close. Toolbar layout,
 navigation activity and outline collapse preferences remain device-local.
 Recovery and the private GitHub sync dialog expose both whole-copy actions.

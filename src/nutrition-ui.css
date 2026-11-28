@@ -1,0 +1,21 @@
+.nutrition-header{flex-wrap:nowrap}
+.nutrition-header .panel-tabs{flex:1;min-width:0;gap:6px;border-bottom:0}
+.nutrition-header .panel-tabs button{flex:1;min-width:0;white-space:normal;padding:6px 2px}
+.nutrition-footer>[data-action=generate],.nutrition-footer>[data-action=new],.nutrition-footer>[data-action=save-names]{flex:1;min-width:0;white-space:normal}
+.nutrition-prompt-heading{justify-content:space-between;flex-wrap:wrap}
+.nutrition-prompt-heading>.button-row{flex-wrap:wrap}
+.nutrition-section{margin:12px 0;overflow-wrap:anywhere}
+.nutrition-section>summary{display:flex;align-items:center;gap:6px;cursor:pointer;list-style:none}
+.nutrition-section>summary::-webkit-details-marker{display:none}
+.nutrition-section>summary .count{margin-left:auto}
+.nutrition-section:not([open])>summary>.format-caret{transform:rotate(-90deg)}
+.nutrition-section .nutrition-section{margin-left:14px}
+.nutrition-item-heading{display:flex;align-items:flex-start;gap:8px}
+.nutrition-item-heading>.inline{flex:1;min-width:0;overflow-wrap:anywhere}
+.nutrition-item-heading>[data-field=basis]{width:118px;min-width:0;flex-shrink:0}
+.nutrition-day-bar{display:flex;align-items:center;gap:8px;margin:12px 0}
+.nutrition-day-bar .capture-mode-tabs{flex:1;min-width:0;margin:0;gap:4px;border-bottom:0;flex-wrap:nowrap}
+.nutrition-day-bar .capture-mode-tabs button{min-width:0;white-space:normal;padding:6px 2px}
+.nutrition-day-bar>[data-day-picker]{min-width:0;max-width:45%}
+.nutrition-name-backups{flex-wrap:wrap}
+.nutrition-name-backups .file-action{min-width:0}

@@ -49,7 +49,7 @@ import {addMealIngredient,createMealNutritionReader,editMealDayWeight,markMealNe
 import {mountMealLog,type MealLogInputField,type MealLogTab,type MealLogView} from './meal-log-ui';
 import {mountDraftPanel} from './draft-ui';
 import {addDraftIngredient,appendNewFood,captureData,changedLinkedNutritionIntents,changedNutritionSnapshots,createFoodCaptureContext,generateNutritionPrompt,ingredientKey,ingredientMapping,ingredientRecord,newNutritionBatch,nutrients,numberValue,refreshNutritionPrompt,rememberIngredients,restoreNameVersion,saveNameVersion,scaledDraft,type FoodValues,type IngredientIdentity,type NameVersion} from './food-capture';
-import {mountIngredientsPanel} from './ingredients-ui';
+import {mountIngredientsPanel,type IngredientsPanelHost} from './ingredients-ui';
 import {addIngredientTableRow,moveIngredientTableRow,deleteIngredientTableRow} from './ingredient-table';
 import {captureNutritionReview,nutritionReviewRows,queueNutritionReview,resolveNutritionReview,writeIngredientValues} from './ingredient-edit';
 import {mountRestaurantField,showRestaurants} from './restaurant-ui';
@@ -58,6 +58,7 @@ import {encodeNameBackup,parseNameBackup} from './nutrition-names';
 import defaultNutritionPrompt from './nutrition-prompt.txt?raw';
 import {converterReview,newConverterState,validateConverterState,type ConverterReview,type ConverterState} from './nutrition-converter';
 import {converterSignature,prepareNutritionApply,type PreparedNutritionApply} from './nutrition-apply';
+import {prepareStandaloneImport,standaloneReview,type StandaloneReview} from './nutrition-converter-import';
 import {inspectPhoto,type PhotoBlob} from './food-photos';
 import {makePhotoThumbnail} from './photo-images';
 import {createPhotoUI,type PhotoScope} from './photo-ui';
@@ -301,19 +302,22 @@ function prepareCaptureIngredients():boolean{
 function prepareNutritionBatch():boolean{
   if(!prepareCaptureIngredients())return false;
   return!!book.foodCapture!.builder||mutateMetadata('Start nutrition batch',()=>{
-    const data=captureData(book);data.builder=newNutritionBatch(book,[data.selectedDate??localToday()],data.promptTemplate??defaultNutritionPrompt,engine);data.converter=newConverterState(data.builder.id);
+    const data=captureData(book);data.builder=newNutritionBatch(book,[data.selectedDate??localToday()],data.promptTemplate??defaultNutritionPrompt,engine);data.converter=newConverterState(data.builder.id,data.converter?.standalone);
   },[['foodCapture','builder'],['foodCapture','converter']],false,false,true);
 }
 let nutritionSourceVersion=0,nutritionApplying=false;
 function stageNutritionReview(next:ConverterState):void{
   validateConverterState(next);
   const data=book.foodCapture;
-  if(!data?.builder||data.builder.id!==next.batch)throw Error('This review belongs to an older nutrition batch. Reopen the current converter.');
-  if(data.converter?.status==='applied'&&JSON.stringify(data.converter)!==JSON.stringify(next))throw Error('This review was already applied. Undo it or start a new batch before editing.');
-  if(!mutateMetadata('Edit nutrition response',()=>{captureData(book).converter=clone(next);},[['foodCapture','converter']],false,false,true))throw Error(error||'The nutrition review could not be staged.');
+  if((data?.builder?.id??'')!==next.batch)throw Error('This review belongs to an older nutrition batch. Reopen the current converter.');
+  if(data?.converter?.status==='applied'){
+    const tracked=(state:ConverterState)=>JSON.stringify({...state,mode:undefined,standalone:undefined});
+    if(tracked(data.converter)!==tracked(next))throw Error('This review was already applied. Undo it or start a new batch before editing.');
+  }
+  if(!mutateMetadata('Edit nutrition response',()=>{captureData(book).converter=clone(next);},data?[['foodCapture','converter']]:[['foodCapture']],false,false,true))throw Error(error||'The nutrition review could not be staged.');
 }
 async function saveNutritionReview(next:ConverterState):Promise<void>{
-  if(book.foodCapture?.builder?.id!==next.batch)throw Error('This review belongs to an older nutrition batch.');
+  if((book.foodCapture?.builder?.id??'')!==next.batch)throw Error('This review belongs to an older nutrition batch.');
   await saveCaptureDurably('Save nutrition response');
 }
 async function saveCaptureDurably(label:string):Promise<void>{
@@ -340,6 +344,27 @@ async function applyNutritionReview(review:ConverterReview):Promise<unknown>{
       if(!applied)throw Error(error||'Nutrition could not be applied. No partial result was accepted.');
     }
     await saveCaptureDurably('Apply reviewed nutrition');
+    return prepared.receipt;
+  }finally{nutritionApplying=false;busy=false;renderStatus();mealPanel?.refresh();}
+}
+async function applyStandaloneNutrition(review:StandaloneReview):Promise<unknown>{
+  if(busy||nutritionApplying)throw Error('Wait for the current save or sync to finish.');
+  nutritionApplying=true;busy=true;renderStatus();
+  try{
+    await saveCaptureDurably('Save new table review before adding');
+    const data=captureData(book),saved=data.converter;
+    if(!saved||saved.mode!=='untracked'||saved.batch!==(data.builder?.id??'')||!saved.standalone||JSON.stringify(standaloneReview(saved.standalone))!==JSON.stringify(review))throw Error('The saved new table review changed. Review the current Add before continuing.');
+    const prepared=prepareStandaloneImport(book,review,data.nutritionImports??[]);
+    if(!prepared.alreadyApplied){
+      const next=captureData(prepared.book);(next.nutritionImports??=[]).push(prepared.receipt);
+      next.converter={...clone(saved),standalone:{...clone(saved.standalone),status:'applied'}};
+      validateBook(prepared.book);
+      busy=false;
+      const applied=mutate('Add reviewed nutrition table',()=>{book=prepared.book;});
+      busy=true;
+      if(!applied)throw Error(error||'The table could not be added. No partial result was accepted.');
+    }
+    await saveCaptureDurably('Save added nutrition table');
     return prepared.receipt;
   }finally{nutritionApplying=false;busy=false;renderStatus();mealPanel?.refresh();}
 }
@@ -505,7 +530,7 @@ function previewNameVersion(version:NameVersion):void{
   const batch=book.foodCapture?.builder;if(!batch){flash('Open a nutrition batch first.');return;}
   try{restoreNameVersion(clone(batch),version);}catch(error){flash(error);return;}
   const revision=book.revision,byId=new Map(batch.items.map(item=>[item.id,item]));
-  dialog('Restore dish names?',`<p>${esc(version.time)} · Batch ${esc(version.batch)}. Only reviewed names and restaurants change; original descriptions and Item IDs remain intact.</p><div class="table-scroll"><table><thead><tr><th>Item</th><th>Current name</th><th>Saved name</th></tr></thead><tbody>${version.names.map(name=>`<tr><th>${esc(name.id)}</th><td>${esc(byId.get(name.id)!.name)}</td><td>${esc(name.name)}</td></tr>`).join('')}</tbody></table></div><div class="button-row"><button type="button" data-cancel>Cancel</button><button type="button" class="primary" data-restore>Restore names</button></div>`,dialog=>{
+  dialog('Restore dish names?',`<p>${esc(version.time)} · Batch ${esc(version.batch)}. Only reviewed names and restaurants change; original descriptions and Item IDs remain intact.</p><div class="table-scroll"><table><thead><tr><th>Item</th><th>Current name</th><th>Saved name</th><th>Current restaurant</th><th>Saved restaurant</th></tr></thead><tbody>${version.names.map(name=>`<tr><th>${esc(name.id)}</th><td>${esc(byId.get(name.id)!.name)}</td><td>${esc(name.name)}</td><td>${esc(byId.get(name.id)!.restaurant)}</td><td>${esc(name.restaurant)}</td></tr>`).join('')}</tbody></table></div><div class="button-row"><button type="button" data-cancel>Cancel</button><button type="button" class="primary" data-restore>Restore names</button></div>`,dialog=>{
     dialog.querySelector<HTMLButtonElement>('[data-cancel]')!.onclick=()=>dialog.close();
     dialog.querySelector<HTMLButtonElement>('[data-restore]')!.onclick=()=>{
       if(book.revision!==revision){flash('The batch changed. Reopen this preview before restoring.');return;}
@@ -513,6 +538,10 @@ function previewNameVersion(version:NameVersion):void{
       if(mutateMetadata('Restore reviewed dish names',()=>{saveNameVersion(captureData(book));restoreNameVersion(captureData(book).builder!,version);},[['foodCapture','nameVersions'],...paths,...nutritionPromptPaths],false,false,true)){dialog.close();mealPanel?.refresh();}
     };
   });
+}
+async function saveNutritionNameVersion():Promise<void>{
+  if(!mutateMetadata('Save dish name version',()=>{saveNameVersion(captureData(book));},[['foodCapture','nameVersions']],false,false,true))throw Error(error||'The dish name version could not be staged.');
+  await saveCaptureDurably('Save dish name version');
 }
 function nutritionNameVersions():void{
   const data=book.foodCapture,batch=data?.builder;if(!data||!batch){flash('Open a nutrition batch first.');return;}
@@ -523,7 +552,8 @@ function nutritionNameVersions():void{
     for(const version of versions){
       const button=document.createElement('button');button.type='button';button.textContent=version.time;button.onclick=()=>previewNameVersion(version);list.append(button);
     }
-    dialog.querySelector<HTMLButtonElement>('[data-save]')!.onclick=()=>{if(mutateMetadata('Save dish name version',()=>{saveNameVersion(captureData(book));},[['foodCapture','nameVersions']],false,false,true)){dialog.close();nutritionNameVersions();}};
+    const save=dialog.querySelector<HTMLButtonElement>('[data-save]')!;
+    save.onclick=()=>{save.disabled=true;void saveNutritionNameVersion().then(()=>{if(dialog.open){dialog.close();nutritionNameVersions();}}).catch(flash).finally(()=>{save.disabled=false;});};
   });
 }
 function reviewNutritionChanges():void{
@@ -544,9 +574,9 @@ function applyIngredientDraft(identity:IngredientIdentity,values:FoodValues&{typ
   const conflicts=Object.keys(values).filter(field=>Object.hasOwn(base,field)&&base[field as keyof typeof base]!==current[field as keyof typeof current]&&values[field as keyof typeof values]!==current[field as keyof typeof current]);
   const apply=(fields:typeof values)=>{
     const ok=mutate('Edit Ingredient',()=>{
-      writeIngredientValues(book,identity,fields);
       const edits=captureData(book).ingredientEdits,edit=edits[key];
-      if(edit){for(const field of Object.keys(values) as (keyof typeof values)[]){delete edit.values[field];delete edit.base[field];}if(!Object.keys(edit.values).length)delete edits[key];}
+      writeIngredientValues(book,identity,fields,undefined,fields.type!==undefined?edit?.typeBinding:undefined);
+      if(edit){for(const field of Object.keys(values) as (keyof typeof values)[]){delete edit.values[field];delete edit.base[field];}if(Object.hasOwn(values,'type'))delete edit.typeBinding;if(!Object.keys(edit.values).length)delete edits[key];}
     });
     if(ok)mealPanel?.refresh();return ok;
   };
@@ -641,10 +671,29 @@ function openMealLog(tab:MealLogTab='formal'):void{
       },
       linkIngredient:linkDraftIngredient,dialog,error:flash
     });
+    const ingredientActions:NonNullable<IngredientsPanelHost['table']>={
+      add:after=>{let added:IngredientIdentity|undefined;if(mutate('Create Ingredient',()=>{added=addIngredientTableRow(book,after);}))return added;},
+      move:(identity,direction)=>mutate('Move Ingredient',()=>moveIngredientTableRow(book,identity,direction)),
+      remove:identity=>mutate('Delete Ingredient',()=>deleteIngredientTableRow(book,identity)),
+      dropdown:(identity,anchor)=>{
+        const record=ingredientRecord(book,identity,engine),field=record.table.columns.find(column=>column.id===record.mapping.fields.type);
+        if(!field){flash('Restore the Ingredient Type field before choosing its dropdown.');return;}
+        openCellDropdown(anchor,true,undefined,{sheet:record.sheet,row:identity.row,column:field.column,manual:()=>anchor.closest('.meal-log-input')?.querySelector<HTMLInputElement>('input')?.focus(),chosen:()=>mealPanel?.refresh(),
+          restoreFocus:()=>mealPanel?.element.querySelector<HTMLButtonElement>(`[data-capture-view="table"] [data-row="${identity.row}"] [data-ingredient-type]`)?.focus({preventScroll:true})});
+      },
+      history:name=>{void action(name);},historyState:()=>({undo:!busy&&!!undo.length,redo:!busy&&!!redo.length})
+    };
     const ingredientsPanel=mountIngredientsPanel({
       book:()=>book,engine:()=>engine,sourceVersion:()=>displayedVersion,photos:photoUI,
       write:(label,paths,change)=>prepareCaptureIngredients()&&mutateMetadata(label,change,paths,false,false,true),
       apply:applyIngredientDraft,review:reviewNutritionChanges,error:flash,
+      actions:{...ingredientActions,dropdown:(identity,anchor)=>{
+        const record=ingredientRecord(book,identity,engine),field=record.table.columns.find(column=>column.id===record.mapping.fields.type);
+        if(!field){flash('Restore the Ingredient Type field before choosing its dropdown.');return;}
+        const focus=()=>mealPanel?.element.querySelector<HTMLButtonElement>(`[data-capture-view="ingredients"] [data-row="${identity.row}"] [data-ingredient-type]`)?.focus({preventScroll:true});
+        openCellDropdown(anchor,true,undefined,{sheet:record.sheet,row:identity.row,column:field.column,manual:()=>anchor.closest('.meal-log-input')?.querySelector<HTMLInputElement>('input')?.focus(),
+          select:choice=>ingredientsPanel.stageType(identity,choice.value,choice.binding),chosen:()=>{mealPanel?.refresh();focus();},restoreFocus:focus});
+      }},
       add:()=>askText('New Ingredient','',name=>{
         if(mutate('Create Ingredient',()=>{addDraftIngredient(book,{id:uid(),date:localToday(),mode:'single',values:{food:name},parts:[],photos:[]},engine);})){mealPanel?.refresh();}
       })
@@ -653,28 +702,17 @@ function openMealLog(tab:MealLogTab='formal'):void{
       book:()=>book,engine:()=>engine,sourceVersion:()=>displayedVersion,
       write:(label,paths,change)=>prepareCaptureIngredients()&&mutateMetadata(label,change,paths,false,false,true),
       apply:applyIngredientDraft,review:reviewNutritionChanges,error:flash,add:()=>{},
-      table:{
-        add:after=>{let added:IngredientIdentity|undefined;if(mutate('Create Ingredient',()=>{added=addIngredientTableRow(book,after);}))return added;},
-        move:(identity,direction)=>mutate('Move Ingredient',()=>moveIngredientTableRow(book,identity,direction)),
-        remove:identity=>mutate('Delete Ingredient',()=>deleteIngredientTableRow(book,identity)),
-        dropdown:(identity,anchor)=>{
-          const record=ingredientRecord(book,identity,engine),field=record.table.columns.find(column=>column.id===record.mapping.fields.type);
-          if(!field){flash('Restore the Ingredient Type field before choosing its dropdown.');return;}
-          openCellDropdown(anchor,true,undefined,{row:identity.row,column:field.column,manual:()=>anchor.closest('.meal-log-input')?.querySelector<HTMLInputElement>('input')?.focus(),chosen:()=>mealPanel?.refresh(),
-            restoreFocus:()=>mealPanel?.element.querySelector<HTMLButtonElement>(`[data-capture-view="table"] [data-row="${identity.row}"] [data-ingredient-type]`)?.focus({preventScroll:true})});
-        },
-        history:name=>{void action(name);},historyState:()=>({undo:!busy&&!!undo.length,redo:!busy&&!!redo.length})
-      }
+      table:ingredientActions
     }):undefined;
     const nutritionPanel=mountNutritionPanel({
       book:()=>book,engine:()=>engine,sourceVersion:()=>displayedVersion,
-      converter:{book:()=>book,state:()=>book.foodCapture?.converter,sourceVersion:()=>displayedVersion+nutritionSourceVersion,stage:stageNutritionReview,change:saveNutritionReview,apply:applyNutritionReview,receipts:()=>book.foodCapture?.nutritionReceipts??[],error:flash},
+      converter:{book:()=>book,state:()=>book.foodCapture?.converter,sourceVersion:()=>displayedVersion+nutritionSourceVersion,stage:stageNutritionReview,change:saveNutritionReview,apply:applyNutritionReview,receipts:()=>book.foodCapture?.nutritionReceipts??[],applyImport:applyStandaloneNutrition,imports:()=>book.foodCapture?.nutritionImports??[],error:flash},
       write:(label,paths,change)=>prepareNutritionBatch()&&mutateMetadata(label,change,paths,false,false,true),
       days:days=>checkNewNutritionFood(days),checkNew:()=>{checkNewNutritionFood();},generate:generateCurrentNutritionPrompt,
-      reset:()=>dialog('Reset nutrition batch?',`<p>This starts a new Batch ID from current sources and clears this batch's selections, reference overrides, reviewed names, generated prompt, pasted converter response and review choices. Existing name versions and apply receipts are retained; names can only be restored to their matching batch. Undo remains available.</p><button type="button" class="danger" data-reset>Reset batch</button>`,dialog=>{
-        dialog.querySelector<HTMLButtonElement>('[data-reset]')!.onclick=()=>{if(mutateMetadata('Reset nutrition batch',()=>{const data=captureData(book),previous=data.builder!;saveNameVersion(data);data.builder=newNutritionBatch(book,previous.days,data.promptTemplate??previous.template,engine);data.converter=newConverterState(data.builder.id);},[['foodCapture','builder'],['foodCapture','converter'],['foodCapture','nameVersions']],false,false,true)){dialog.close();mealPanel?.refresh();}};
+      reset:()=>dialog('Reset nutrition batch?',`<p>This starts a new Batch ID from current sources and clears this batch's selections, reference overrides, reviewed names, generated prompt, tracked converter response and review choices. The independent New table review, existing name versions and all apply receipts are retained; names can only be restored to their matching batch. Undo remains available.</p><button type="button" class="danger" data-reset>Reset batch</button>`,dialog=>{
+        dialog.querySelector<HTMLButtonElement>('[data-reset]')!.onclick=()=>{if(mutateMetadata('Reset nutrition batch',()=>{const data=captureData(book),previous=data.builder!;saveNameVersion(data);data.builder=newNutritionBatch(book,previous.days,data.promptTemplate??previous.template,engine);data.converter=newConverterState(data.builder.id,data.converter?.standalone);},[['foodCapture','builder'],['foodCapture','converter'],['foodCapture','nameVersions']],false,false,true)){dialog.close();mealPanel?.refresh();}};
       }),
-      back:()=>mealPanel?.showTab(tab==='table'?'table':'draft'),versions:nutritionNameVersions,
+      back:()=>mealPanel?.showTab(mealPanel.nutritionOrigin),close:()=>{closeMealLog();},versions:nutritionNameVersions,saveNames:saveNutritionNameVersion,
       exportNames:()=>{
         let version:NameVersion|undefined;
         if(mutateMetadata('Back up current dish names',()=>{version=saveNameVersion(captureData(book));},[['foodCapture','nameVersions']],false,false,true)&&version)download('fnt-nutrition-names-'+version.time.replace(/[:.]/g,'-')+'.json',encodeNameBackup(version));
@@ -2421,10 +2459,10 @@ function writeLinkedCell(s:Sheet,row:string,column:string,binding:NonNullable<Ce
   const previous=getCell(s,row,column);
   s.cells[key(row,column)]={...previous,value:undefined,formula:undefined,original:undefined,calculation:previous.formula??previous.calculation,binding};
 }
-function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{row:string;column:string;manual:()=>void;linked?:()=>void;chosen:()=>void;restoreFocus?:()=>void}):void{
+function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{sheet?:Sheet;row:string;column:string;manual:()=>void;linked?:()=>void;select?:(choice:DropdownChoice)=>boolean;chosen:()=>void;restoreFocus?:()=>void}):void{
   closeCellDropdown?.();
   if(busy||!editableReference()||!external&&!inGrid(selected.r,selected.c))return;
-  const s=sheet(),row=external?.row??s.rows[selected.r].id,column=external?.column??s.columns[selected.c].id,validation=cellValidation(s,row,column);
+  const s=external?.sheet??sheet(),row=external?.row??s.rows[selected.r].id,column=external?.column??s.columns[selected.c].id,validation=cellValidation(s,row,column);
   cell??=root.querySelector<HTMLElement>(`td[data-r="${selected.r}"][data-c="${selected.c}"]`)??undefined;
   if(!validation||!cell){if(external)flash('No dropdown is assigned to this field. Assign its DD in the spreadsheet; typed input is still available.');return;}
   if(!external&&touchInputDevice&&!touchCell&&!beginTouchEdit())return;
@@ -2494,6 +2532,13 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{
       if(sharedInput){draft=undefined;draftLiteral=false;hideTouchEditor();}
       remember(browsing);
       close();
+      if(external?.select){
+        try{
+          if(!allSheets(book).includes(s)||!s.rows.some(r=>r.id===row)||!s.columns.some(c=>c.id===column)||cellValidation(s,row,column)?.id!==validation.id)throw Error('The dropdown target changed. Open it again.');
+          if(external.select(choice))external.chosen();
+        }catch(error){flash(error);}
+        return;
+      }
       const ok=mutate('Choose dropdown option',()=>{
         if(!s.rows.some(r=>r.id===row)||!s.columns.some(c=>c.id===column)||cellValidation(s,row,column)?.id!==validation.id)throw Error('The dropdown target changed. Open it again.');
         if(choice.binding){
@@ -2530,7 +2575,9 @@ function openCellDropdown(cell?:HTMLElement,force=true,query?:string,external?:{
       }
       position();
     };
-    popup.querySelector<HTMLButtonElement>('.dropdown-add-source')!.onclick=()=>{if(!commitDraft())return;hideTouchEditor();close();openDropdownAssignment();};
+    const addSource=popup.querySelector<HTMLButtonElement>('.dropdown-add-source')!;
+    if(external?.sheet){addSource.disabled=true;addSource.title='Open this field in its source spreadsheet to change its dropdown assignment.';}
+    addSource.onclick=()=>{if(!commitDraft())return;hideTouchEditor();close();openDropdownAssignment();};
     if(sharedInput)popup.onpointerdown=e=>{if((e.target as HTMLElement).closest('button'))e.preventDefault();};
     popup.onkeydown=e=>{
       if(e.key==='Escape'){

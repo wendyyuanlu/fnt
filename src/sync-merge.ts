@@ -79,6 +79,7 @@ function sequence(base:string[],local:string[],remote:string[],ids:Set<string>):
   return result.length===ids.size?result:undefined;
 }
 const inputFields=new Set(['value','formula','calculation','original','spillHint','dateLiteral','fractionInput','fractionLiteral','binding']);
+const restaurantFields=new Set(['restaurant','restaurantText']);
 function valueMerger(conflicts:Set<string>){
   const visit=(b:unknown,l:unknown,r:unknown,path:string[],side:'local'|'remote'):unknown=>{
     if(syncEqual(l,r))return l;
@@ -103,16 +104,20 @@ function valueMerger(conflicts:Set<string>){
       return [...preferred.filter(id=>ids.has(id)),...[...ids].filter(id=>!preferredIds.has(id)).sort()].map(id=>values.get(id));
     }
     if(record(l)&&record(r)&&(b===undefined||record(b))){
-      if(path.at(-2)==='cells'){
-        const content=(value:RecordValue|undefined)=>Object.fromEntries(Object.entries(value??{}).filter(([key,value])=>inputFields.has(key)&&value!==undefined&&!(key==='value'&&value===null)));
+      const fields=path.at(-2)==='cells'?inputFields:path.length===3&&path[0]==='foodCapture'&&['foods','loggedDetails'].includes(path[1])?restaurantFields:undefined;
+      if(fields){
+        const content=(value:RecordValue|undefined)=>Object.fromEntries(Object.entries(value??{}).filter(([key,value])=>
+          fields.has(key)&&value!==undefined&&!(key==='value'&&value===null)&&
+          !(fields===restaurantFields&&key==='restaurantText'&&typeof value==='string'&&!value.trim())
+        ));
         const bc=content(b as RecordValue|undefined),lc=content(l),rc=content(r);
         let chosen:RecordValue;
         if(syncEqual(lc,rc)||syncEqual(bc,rc))chosen=lc;
         else if(syncEqual(bc,lc))chosen=rc;
-        else{conflicts.add([...path,'input'].join('/'));chosen=side==='local'?lc:rc;}
+        else{conflicts.add([...path,fields===inputFields?'input':'restaurant'].join('/'));chosen=side==='local'?lc:rc;}
         const result:RecordValue={...chosen};
         for(const key of new Set([...Object.keys(b??{}),...Object.keys(l),...Object.keys(r)])){
-          if(inputFields.has(key))continue;
+          if(fields.has(key))continue;
           const value=visit(record(b)?b[key]:undefined,l[key],r[key],[...path,key],side);
           if(value!==undefined)result[key]=value;
         }

@@ -9,6 +9,7 @@ import {syncEqual,withDevicePreferences,type SyncMerge} from './sync-merge';
 import {validateFoodCapture} from './food-capture';
 import {validateConverterState} from './nutrition-converter';
 import {validateConverterReceipt} from './nutrition-apply';
+import {validateStandaloneReceipt} from './nutrition-converter-import';
 import {decodePhotoArchives,encodePhotoArchives,inspectPhoto,referencedPhotoIds,validatePhotoArchives,type PhotoArchive,type PhotoBlob} from './food-photos';
 import type {SyncRecheck} from './sync-recheck';
 import {assertUndecidedReview} from './comparison-host';
@@ -210,6 +211,15 @@ function validateWorkbook(value:unknown,cells:boolean):asserts value is Workbook
     if(!Array.isArray(b.foodCapture.nutritionReceipts))throw Error('Invalid nutrition receipt history.');
     const ids=new Set<string>();
     for(const receipt of b.foodCapture.nutritionReceipts){validateConverterReceipt(receipt);if(ids.has(receipt.id))throw Error('Duplicate nutrition apply receipt.');ids.add(receipt.id);}
+  }
+  if(b.foodCapture?.nutritionImports!==undefined){
+    if(!Array.isArray(b.foodCapture.nutritionImports))throw Error('Invalid standalone Add receipt history.');
+    const ids=new Set<string>(),operations=new Set<string>();
+    for(const receipt of b.foodCapture.nutritionImports){
+      validateStandaloneReceipt(receipt);
+      if(ids.has(receipt.id)||operations.has(receipt.operation))throw Error('Duplicate standalone Add receipt.');
+      ids.add(receipt.id);operations.add(receipt.operation);
+    }
   }
   for(const field of ['toolbarOrder','toolbarDividers'] as const){
     const ids=b[field];

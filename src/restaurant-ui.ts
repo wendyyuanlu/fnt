@@ -1,5 +1,5 @@
 import {dropdownArrowHtml,mountDropdownOptions,mountDropdownPopup} from './dropdown-ui';
-import {deleteRestaurant,renameRestaurant,restaurantFoods,restaurantName,setRestaurant,type RestaurantLink} from './food-capture';
+import {deleteRestaurant,homeCookedRestaurant,renameRestaurant,restaurantChoices,restaurantFoods,restaurantName,setRestaurant,type RestaurantLink} from './food-capture';
 import type {Engine} from './formula';
 import {toolbarIcon} from './icons';
 import type {Workbook} from './model';
@@ -27,11 +27,14 @@ export function mountRestaurantField(host:RestaurantHost,element:HTMLElement,cur
     if(disabled)popup.close();
   };
   const popup=mountDropdownPopup(trigger,'Restaurants',(panel,position,close)=>{
-    const view=mountDropdownOptions(panel,{choices:host.book().foodCapture?.restaurants??[],name:'Restaurants',value:item=>item.name,selected:item=>item.id===current().restaurant,position,
+    const view=mountDropdownOptions(panel,{choices:restaurantChoices(host.book()),name:'Restaurants',value:item=>item.name,selected:item=>item.id?item.id===current().restaurant:restaurantName(host.book(),current()).trim().toLocaleLowerCase()===homeCookedRestaurant.toLocaleLowerCase(),position,
       choose:item=>act(()=>{if(host.write('Choose restaurant',paths(),()=>{
+        if(!item.id){setRestaurant(host.book(),current(),homeCookedRestaurant);return;}
         if(!host.book().foodCapture?.restaurants.some(restaurant=>restaurant.id===item.id))throw Error('This restaurant was removed. Reopen the picker.');
         const link=current();link.restaurant=item.id;delete link.restaurantText;
       })){close();refresh();host.changed();}})});
+    const footer=document.createElement('div'),manage=document.createElement('button');footer.className='dropdown-footer';
+    manage.type='button';manage.textContent='Manage';manage.onclick=()=>{close();showRestaurants(host);};footer.append(manage);panel.append(footer);position();
     view.search.focus({preventScroll:true});return view.dispose;
   },320);
   const edit=()=>{

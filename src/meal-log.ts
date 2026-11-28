@@ -76,10 +76,10 @@ export function createMealNutritionReader(book:Workbook,sheet:Sheet,engine=new E
 export function mealNeedsNutrition(book:Workbook,sheet:Sheet,row:string,engine=new Engine(book)):boolean{
   return mealNutritionReader(book,sheet,engine,(table,row)=>table.rows.includes(row))(row);
 }
-export function markMealNeedsNutrition(book:Workbook,sheet:Sheet,row:string):void{
+export function markMealNeedsNutrition(book:Workbook,sheet:Sheet,row:string,read?:(row:string)=>boolean):void{
   const config=mealLogConfig(book,sheet),table=allTables(book).find(table=>table.id===config.table),foodColumn=table?.columns.find(column=>column.id===config.fields.food);
   if(!foodColumn||!table?.rows.includes(row))return;
-  const food=getCell(sheet,row,foodColumn.column),incomplete=mealNeedsNutrition(book,sheet,row);
+  const food=getCell(sheet,row,foodColumn.column),incomplete=read?read(row):mealNeedsNutrition(book,sheet,row);
   if(incomplete)sheet.cells[key(row,foodColumn.column)]={...food,foodDraft:true};
   else if(food.foodDraft){const cell={...food};delete cell.foodDraft;sheet.cells[key(row,foodColumn.column)]=cell;}
 }

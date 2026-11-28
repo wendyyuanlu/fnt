@@ -1,5 +1,6 @@
 import {describe,expect,it,vi} from 'vitest';
-import {addDraftFood,addDraftIngredient,appendNewFood,availableFoodDays,captureData,changedLinkedNutritionIntents,changedNutritionSnapshots,createFoodCaptureContext,deleteRestaurant,generateNutritionPrompt,ingredientList,ingredientRecord,newNutritionBatch,nutritionCandidates,nutritionReference,parseServing,quantityFactor,refreshNutritionPrompt,rememberNutritionConversions,renameRestaurant,restaurantFoods,restaurantName,restoreNameVersion,saveNameVersion,scaledDraft,setRestaurant,validateFoodCapture,type DraftFood} from '../src/food-capture';
+import {addDraftFood,addDraftIngredient,appendNewFood,availableFoodDays,captureData,changedLinkedNutritionIntents,changedNutritionSnapshots,createFoodCaptureContext,deleteRestaurant,generateNutritionPrompt,ingredientList,ingredientRecord,newNutritionBatch,nutritionCandidates,nutritionReference,parseServing,quantityFactor,refreshNutritionPrompt,rememberNutritionConversions,renameRestaurant,restaurantChoices,restaurantFoods,restaurantName,restoreNameVersion,saveNameVersion,scaledDraft,setRestaurant,validateFoodCapture,type DraftFood} from '../src/food-capture';
+import defaultNutritionPrompt from '../src/nutrition-prompt.txt?raw';
 import {compile,Engine} from '../src/formula';
 import {setInput,type Table,type Workbook} from '../src/model';
 import {captureDraftNutrition,captureNutritionReview,nutritionReviewRows,queueDraftNutritionReview,queueNutritionReview,resolveNutritionReview,writeIngredientValues} from '../src/ingredient-edit';
@@ -16,6 +17,16 @@ function fixture(count=3):Workbook{
 }
 function draft(values:DraftFood['values']={},linked=true):DraftFood{
   return{id:'draft',date:45000,mode:'single',values,parts:[],photos:[],...(linked?{ingredient:{table:'ingredients',row:'r0'}}:{})};
+}
+function ingredientTypes(book:Workbook){
+  const sheet=book.sheets[0];
+  sheet.columns.push({id:'type',label:'Type'},{id:'option',label:'Option'});
+  sheet.rows.push({id:'types-header'},{id:'type-row'});
+  sheet.cells['type-row:option']={value:'Synthetic category'};
+  book.tables[0].columns.push({id:'type',column:'type',name:'Type'});
+  book.tables.push({id:'types',name:'Types',sheet:sheet.id,header:'types-header',rows:['type-row'],columns:[{id:'type-label',column:'option',name:'Option'}]});
+  captureData(book).ingredientMappings.push({table:'ingredients',fields:Object.fromEntries(book.tables[0].columns.map(column=>[column.id,column.id]))});
+  return{sheet,binding:{table:'types',row:'type-row',column:'type-label'}};
 }
 function conversions(book:Workbook,rules:[string,string,number][]){
   const table:Table={id:'conversions',name:'Conversions',sheet:'s',header:'ch',rows:rules.map((_,i)=>'c'+i),columns:[{id:'from',column:'from',name:'From Unit'},{id:'to',column:'to',name:'To Unit'},{id:'factor',column:'factor',name:'Conversion Factor'}]};
@@ -56,6 +67,40 @@ describe.each([1,2,3])('food-capture foundation, repetition %i',()=>{
     const logged=items.find(item=>item.kind==='logged')!;
     expect(logged.values.calories).toBe('123');
     expect(logged.missing).toEqual(['protein','fat','carbs','sugar','sodium']);
+    expect(book).toEqual(before);
+  });
+  it('keeps Home cooked available first without seeding or duplicating saved restaurants',()=>{
+    const book=fixture(1),empty=structuredClone(book);
+    expect(restaurantChoices(book)).toEqual([{id:'',name:'Home cooked'}]);
+    expect(book).toEqual(empty);
+    const food=addDraftFood(book,45000),data=captureData(book);
+    setRestaurant(book,food,'Synthetic cafe');
+    data.restaurants.push({id:'legacy-home',name:'HOME COOKED'});
+    const registry=structuredClone(data.restaurants);
+    expect(restaurantChoices(book).map(item=>item.name)).toEqual(['Home cooked','Synthetic cafe']);
+    setRestaurant(book,food,'  home COOKED  ');
+    expect(food.restaurant).toBeUndefined();expect(food.restaurantText).toBe('Home cooked');
+    expect(data.restaurants).toEqual(registry);
+    deleteRestaurant(book,'legacy-home');
+    expect(restaurantName(book,food)).toBe('Home cooked');
+    expect(restaurantChoices(book).map(item=>item.name)).toEqual(['Home cooked','Synthetic cafe']);
+    expect(()=>validateFoodCapture(data)).not.toThrow();
+  });
+  it('bundles Home cooked Draft foods with existing oil guidance without changing nutrition',()=>{
+    const book=fixture(1),foods=[addDraftFood(book,45000),addDraftFood(book,45000)];
+    foods.forEach((food,index)=>{food.values={food:'Home dish '+index,calories:index?'0':'123',notes:'Specified oil: 2g'};setRestaurant(book,food,'Home cooked');});
+    captureData(book).restaurants.push({id:'legacy-home',name:'  HOME COOKED  '});
+    foods[0].restaurant='legacy-home';delete foods[0].restaurantText;
+    const before=structuredClone(book),batch=newNutritionBatch(book,[45000],defaultNutritionPrompt);
+    for(const item of batch.items){item.selected=item.kind==='draft';item.includeNotes=true;}
+    const prompt=generateNutritionPrompt(batch);
+    expect(prompt.match(/### Draft food \/ Home cooked/g)).toHaveLength(1);
+    expect(prompt.match(/"restaurant": "Home cooked"/g)).toHaveLength(2);
+    expect(prompt).toContain('For dishes I label homemade or Home cooked');
+    expect(prompt.match(/use a lower-oil estimate/g)).toHaveLength(1);
+    expect(prompt).toContain('If I specify an amount, use that instead.');
+    expect(prompt).toContain('Specified oil: 2g');
+    expect(prompt).toContain('"calories": "123"');expect(prompt).toContain('"calories": "0"');
     expect(book).toEqual(before);
   });
   it('shares stable restaurant identities between Logged and Draft without changing consumption cells',()=>{
@@ -527,6 +572,30 @@ describe.each([1,2,3])('food-capture foundation, repetition %i',()=>{
     const before=structuredClone(book),other=createFoodCaptureContext(fixture());
     expect(()=>writeIngredientValues(book,identity,{calories:'99'},other)).toThrow('different workbook');
     expect(book).toEqual(before);
+  });
+  it('applies staged Type choices as stable links and validates their saved metadata',()=>{
+    const book=fixture(1),{sheet,binding}=ingredientTypes(book),identity={table:'ingredients',row:'r0'},data=captureData(book);
+    data.ingredientEdits['ingredients:r0']={values:{type:'Synthetic category'},base:{type:''},typeBinding:binding};
+    const saved=JSON.parse(JSON.stringify(data));expect(()=>validateFoodCapture(saved)).not.toThrow();
+    for(const invalid of [{...binding,row:'bad/row'},{...binding,extra:'unexpected'}]){
+      const copy=structuredClone(saved);copy.ingredientEdits['ingredients:r0'].typeBinding=invalid;
+      expect(()=>validateFoodCapture(copy)).toThrow('staged Ingredient Type link');
+    }
+    writeIngredientValues(book,identity,{type:'Synthetic category'},undefined,binding);
+    expect(sheet.cells['r0:type'].binding).toEqual(binding);
+    book.tables[1].name='Renamed types';book.tables[1].columns[0].name='Renamed option';sheet.columns.reverse();
+    setInput(book,sheet,'type-row','option',"'Renamed category");
+    expect(ingredientRecord(book,identity,new Engine(book)).values.type).toBe('Renamed category');
+  });
+  it('rejects removed or renamed staged Type options before changing any Ingredient fields',()=>{
+    const book=fixture(1),{sheet,binding}=ingredientTypes(book),identity={table:'ingredients',row:'r0'};
+    setInput(book,sheet,'type-row','option',"'Changed category");
+    const before=structuredClone(book);
+    expect(()=>writeIngredientValues(book,identity,{calories:'999',type:'Synthetic category'},undefined,binding)).toThrow('option changed');
+    expect(book).toEqual(before);
+    book.tables[1].rows=[];const removed=structuredClone(book);
+    expect(()=>writeIngredientValues(book,identity,{calories:'999',type:'Changed category'},undefined,binding)).toThrow('option was removed');
+    expect(book).toEqual(removed);
   });
   it.each([10,100])('reads %i Ingredient rows linearly and retains values/order',count=>{
     const book=fixture(count),engine=new Engine(book),table=book.tables[0];let reads=0;

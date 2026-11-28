@@ -1,7 +1,7 @@
-import {Engine,scalar} from './formula';
+import {Engine,maySpill,scalar} from './formula';
 import {dateSerial} from './date-pagination';
 import {excelDate,maxDateSerial} from './dates';
-import {addRow,adjacentTableForCell,allTables,getCell,inheritTableRow,isFault,key,setInput,uid,type Sheet,type Workbook} from './model';
+import {addRow,adjacentTableForCell,allTables,getCell,inheritTableRow,insertTableRows,isFault,key,setInput,uid,type Sheet,type TableRowInheritanceContext,type Workbook} from './model';
 import {defaultHeaderFormula} from './meal-block';
 import {hypotheticalProjection} from './grouping';
 
@@ -90,9 +90,9 @@ export function refreshMasterFoodDates(book:Workbook,sheetId?:string):void{
     }
   }
 }
-function inheritFood(book:Workbook,sheet:Sheet,row:string,templates:Set<string>):void{
+function inheritFood(book:Workbook,sheet:Sheet,row:string,templates:Set<string>,context?:TableRowInheritanceContext):void{
   const {table}=masterLogging(book,sheet);
-  if(templates.size)inheritTableRow(book,sheet,table,row,table.rows.indexOf(row),false,templates);
+  if(templates.size)inheritTableRow(book,sheet,table,row,table.rows.indexOf(row),false,templates,context);
   else for(const field of table.columns){
     const old=getCell(sheet,row,field.column);
     sheet.cells[key(row,field.column)]={format:old.format};
@@ -104,6 +104,16 @@ function attachFood(sheet:Sheet,table:string,block:{header:string;rows:string[]}
   for(const group of sheet.groups)if(group.axis==='row'&&(!group.table||group.table===table)&&group.members.includes(block.header)&&!group.members.includes(row))group.members.push(row);
   if(!sheet.groups.some(group=>group.axis==='row'&&group.kind==='summary'&&(!group.table||group.table===table)&&group.members[0]===block.header))sheet.groups.push({id:uid(),axis:'row',kind:'summary',table,members:[...block.rows,row],collapsed:false,label:'Day details'});
   for(const group of sheet.groups)if(group.axis==='row'&&group.members[0]===block.header)group.collapsed=false;
+}
+export function reviewMasterFoods(book:Workbook,sheet:Sheet,date:number,count:number):void{
+  const {table,config}=masterLogging(book,sheet),engine=new Engine(book),blocks=masterDayBlocks(book,sheet,engine),hypo=hypotheticalProjection(book,sheet,'row');
+  const dateColumn=table.columns.find(field=>field.id===config.date)!;
+  const existing=blocks.some(block=>block.isDay&&block.date===date&&!hypo(block.header,dateColumn.column));
+  if(!Number.isInteger(count)||count<1||sheet.rows.length+count+(existing?0:1)>100000)throw Error('There is not enough worksheet space to add the reviewed food rows.');
+  if(!existing){
+    if(config.totals.some(id=>!table.columns.some(field=>field.id===id)))throw Error('A configured Master total field was removed. Restore it before creating a new day.');
+    masterDateAnchors(book,sheet,engine);
+  }
 }
 export function createMasterDay(book:Workbook,sheet:Sheet,hypothetical=false,tableScope=false,options?:{date?:number;advance?:boolean}):{row:string;created:boolean}{
   const {table,date,marker,label,food,config}=masterLogging(book,sheet);
@@ -150,6 +160,33 @@ export function addMasterFood(book:Workbook,sheet:Sheet,selectedRow?:string,opti
   sheet.dayLogging??={...config,totals:[...config.totals]};
   return row.id;
 }
+export function addMasterFoods(book:Workbook,sheet:Sheet,count:number,header:string,initialize:(row:string,index:number)=>void):string[]{
+  if(!Number.isInteger(count)||count<1)throw Error('Insert at least one whole food row.');
+  const sequential=()=>Array.from({length:count},(_,index)=>{
+    const row=addMasterFood(book,sheet,header);initialize(row,index);return row;
+  });
+  if(count===1)return sequential();
+  const {table,date,marker,food,config}=masterLogging(book,sheet),blocks=masterDayBlocks(book,sheet),block=blocks.find(block=>block.isDay&&block.header===header);
+  if(!food)throw Error('Restore the Master Food field before adding food.');
+  if(!block)throw Error('Create or select a day before adding food.');
+  if(sheet.rows.length+count>100000)throw Error('This sheet has reached its row limit.');
+  const headers=table.columns.filter(column=>column.id===config.marker||column.id===config.label||['ismeal','isday','meal','weight'].includes(column.name.toLowerCase()));
+  // Only append a literal-header tail day; other templates retain their exact sequential layout semantics.
+  if(block.rows.at(-1)!==table.rows.at(-1)||table.columns.some(column=>column.formulaDefault)||
+    table.rows.some(row=>headers.some(column=>{const cell=getCell(sheet,row,column.column);return!!(cell.formula||cell.calculation||cell.binding);}))||
+    Object.values(sheet.cells).some(cell=>cell.formula&&(cell.spillHint||maySpill(cell.formula))||cell.calculation&&maySpill(cell.calculation)))return sequential();
+  const at=sheet.rows.findIndex(row=>row.id===block.rows.at(-1))+1,templates=new Set(blocks.flatMap(block=>block.rows.slice(block.isDay?1:0)));
+  const rows=insertTableRows(book,sheet,at,count,table,(row,index,context)=>{
+    inheritFood(book,sheet,row.id,templates,context);
+    if(!getCell(sheet,row.id,marker.column).formula)setInput(book,sheet,row.id,marker.column,'FALSE');
+    foodDate(sheet,row.id,date.column,header,table.id);attachFood(sheet,table.id,block,row.id);
+    initialize(row.id,index);templates.add(row.id);block.rows.push(row.id);
+  });
+  const positions=new Map(sheet.rows.map((row,index)=>[row.id,index]));
+  for(const group of sheet.groups)if(group.axis==='row'&&group.members.includes(header))group.members.sort((a,b)=>positions.get(a)!-positions.get(b)!);
+  sheet.dayLogging??={...config,totals:[...config.totals]};
+  return rows.map(row=>row.id);
+}
 export function isMasterDayInput(book:Workbook,sheet:Sheet,row:string,column:string):boolean{
   const table=sheet.dayLogging?allTables(book).find(table=>table.sheet===sheet.id&&table.id===sheet.dayLogging!.table):allTables(book).find(table=>table.sheet===sheet.id&&table.name==='Master')??allTables(book).find(table=>table.sheet===sheet.id&&table.id===sheet.pagination?.table);
   if(!table||row===table.header||!table.rows.includes(row)&&adjacentTableForCell(book,sheet,row,column)?.id!==table.id)return false;
@@ -187,7 +224,7 @@ export function editMasterDayInputs(book:Workbook,sheet:Sheet,updates:{row:strin
   if(after.some(block=>block.isDay&&(!before.has(block.header)||changedDates.has(block.header))))sortMasterDays(book,sheet);
 }
 
-export function anchorMasterDates(book:Workbook,sheet:Sheet,engine=new Engine(book)):number{
+function masterDateAnchors(book:Workbook,sheet:Sheet,engine:Engine){
   const saved=sheet.dayLogging,table=saved?allTables(book).find(table=>table.sheet===sheet.id&&table.id===saved.table):allTables(book).find(table=>table.sheet===sheet.id&&table.name==='Master')??allTables(book).find(table=>table.sheet===sheet.id&&table.id===sheet.pagination?.table);
   const config=saved?{column:saved.date,marker:saved.marker}:sheet.pagination?.table===table?.id?sheet.pagination:undefined;
   const date=config?.column?table?.columns.find(field=>field.id===config.column):table?.columns.find(field=>field.name==='Date');
@@ -203,6 +240,10 @@ export function anchorMasterDates(book:Workbook,sheet:Sheet,engine=new Engine(bo
     if(value===undefined||value<1||value>maxDateSerial)throw Error('A Master day-header formula has no valid calculated date. Its rows have not been moved.');
     anchors.push({row,date:value});
   }
+  return{anchors,date};
+}
+export function anchorMasterDates(book:Workbook,sheet:Sheet,engine=new Engine(book)):number{
+  const {anchors,date}=masterDateAnchors(book,sheet,engine);
   for(const anchor of anchors){
     const address=key(anchor.row,date.column),cell=sheet.cells[address];
     sheet.cells[address]={...cell,value:anchor.date,calculation:cell.formula,formula:undefined,spillHint:undefined};

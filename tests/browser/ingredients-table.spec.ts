@@ -165,7 +165,7 @@ test('TABLE keeps scroll stable, edits the same source, preserves manual nutriti
   expect((await local(page)).tables.find(table=>table.id===f.table.id)!.rows).toContain(row);
 });
 test('TABLE uses the existing nutrition builder and returns without adding consumption or duplicate Ingredients',async({page})=>{
-  const f=await install(page);await f.panel.getByRole('button',{name:'Get Nutrition',exact:true}).click();
+  const f=await install(page);await f.panel.getByRole('button',{name:'Get nutrition',exact:true}).click();
   await expect(f.panel.getByRole('tab',{name:'Logged',exact:true})).toBeHidden();
   await expect(f.panel.getByRole('heading',{name:'Get nutrition',exact:true})).toBeVisible();
   await f.panel.getByRole('button',{name:'Back',exact:true}).click();

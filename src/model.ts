@@ -225,6 +225,13 @@ export function deleteColumn(book: Workbook, sheet: Sheet, id: string): void {
 export function addRow(book: Workbook, sheet: Sheet, at: number, table?: Table): Row {
   return insertRows(book,sheet,at,1,table?[table]:[])[0];
 }
+export interface TableRowInheritanceContext{
+  translation:TranslationContext;engine?:Engine;
+  calculated?:{table:string;positions:Map<string,number>;columns:Map<string,Set<string>>};
+}
+export function insertTableRows(book:Workbook,sheet:Sheet,at:number,count:number,table:Table,initialize?:(row:Row,index:number,context:TableRowInheritanceContext)=>void):Row[]{
+  return insertRows(book,sheet,at,count,[table],initialize);
+}
 export function inheritSheetRowWrap(sheet:Sheet,rows:readonly string[]):void{
   for(const column of sheet.columns)if(column.wrap!==undefined)for(const row of rows){
     const cell=getCell(sheet,row,column.id);
@@ -237,7 +244,7 @@ export function insertSheetRows(book:Workbook,sheet:Sheet,at:number,count:number
   if(table&&!owners.includes(table))owners.push(table);
   return insertRows(book,sheet,at,count,owners);
 }
-function insertRows(book:Workbook,sheet:Sheet,at:number,count:number,owners:Table[]):Row[]{
+function insertRows(book:Workbook,sheet:Sheet,at:number,count:number,owners:Table[],initialize?:(row:Row,index:number,context:TableRowInheritanceContext)=>void):Row[]{
   if(at<0||at>sheet.rows.length)throw Error('Row insertion is outside the sheet.');
   if(!Number.isInteger(count)||count<1)throw Error('Insert at least one whole row.');
   const rows:Row[]=Array.from({length:count},()=>({id:uid()})),positions=new Map(sheet.rows.map((row,index)=>[row.id,index]));
@@ -248,7 +255,25 @@ function insertRows(book:Workbook,sheet:Sheet,at:number,count:number,owners:Tabl
   for(const {table,before}of insertions)table.rows.splice(before,0,...rows.map(row=>row.id));
   if(owners.length){
     const translation=createTranslationContext(book),engine=owners.some(table=>table.columns.some(column=>['ismeal','isday','meal','weight'].includes(column.name.toLowerCase())))?new Engine(book):undefined;
-    for(const {table,before}of insertions)for(const [index,row]of rows.entries())inheritTableRow(book,sheet,table,row.id,before+index,false,undefined,{translation,engine});
+    const pending=initialize?new Set(rows.map(row=>row.id)):undefined;
+    for(const {table,before}of insertions){
+      const templates=pending?new Set(table.rows.filter(row=>!pending.has(row))):undefined;
+      const calculated=initialize?{table:table.id,positions:new Map(table.rows.map((row,index)=>[row,index])),columns:new Map(table.columns.map(column=>[column.column,new Set<string>()]))}:undefined;
+      const refresh=(row:string)=>{
+        if(calculated)for(const column of table.columns){
+          const cell=getCell(sheet,row,column.column),donors=calculated.columns.get(column.column)!;
+          if(cell.formula||cell.calculation)donors.add(row);else donors.delete(row);
+        }
+      };
+      if(calculated)for(const row of templates!)refresh(row);
+      const context:TableRowInheritanceContext={translation,engine,calculated};
+      for(const [index,row]of rows.entries()){
+        inheritTableRow(book,sheet,table,row.id,before+index,false,templates,context);
+        initialize?.(row,index,context);refresh(row.id);
+        if(initialize)engine?.invalidate(table.columns.map(col=>`${sheet.id}:${key(row.id,col.column)}`));
+        templates?.add(row.id);
+      }
+    }
   }
   return rows;
 }
@@ -274,13 +299,11 @@ export function inheritInsertedGroups(sheet:Sheet,axis:Group['axis'],insertions:
     }
   }
 }
-export function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string,at:number,preserve=false,templates?:ReadonlySet<string>,context?:{translation?:TranslationContext;engine?:Engine}):void {
-  const candidates=[...table.rows.slice(0,at).reverse(),...table.rows.slice(at+1)].filter(id=>!templates||templates.has(id));
+function tableRowHeaderReader(book:Workbook,sheet:Sheet,table:Table,reader?:Engine):(row:string)=>boolean{
   const marker=table.columns.find(c=>['ismeal','isday'].includes(c.name.toLowerCase())),label=table.columns.find(c=>['meal','weight'].includes(c.name.toLowerCase()));
-  const engine=marker||label?context?.engine??new Engine(book):undefined;
+  const engine=marker||label?reader??new Engine(book):undefined;
   engine?.beginPass();
-  const translation=context?.translation??createTranslationContext(book);
-  const isHeader=(id:string)=>{
+  return(id:string)=>{
     if(!engine)return false;
     let value=scalar(engine.cell(sheet.id,id,(marker??label)!.column));
     if(isFault(value))throw Error('Fix the meal/day header marker error before adding records.');
@@ -288,7 +311,20 @@ export function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string
     if(marker&&label){value=scalar(engine.cell(sheet.id,id,label.column));if(isFault(value))throw Error('Fix the meal/day header label error before adding records.');}
     return value!==null&&value!=='';
   };
+}
+export function validateTableRowTemplates(book:Workbook,sheet:Sheet,table:Table):void{
+  if(!table.columns.some(c=>['ismeal','isday','meal','weight'].includes(c.name.toLowerCase())))return;
+  const isHeader=tableRowHeaderReader(book,sheet,table);
+  for(const row of table.rows)isHeader(row);
+}
+export function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string,at:number,preserve=false,templates?:ReadonlySet<string>,context?:{translation?:TranslationContext;engine?:Engine;calculated?:TableRowInheritanceContext['calculated']}):void {
+  const candidates=[...table.rows.slice(0,at).reverse(),...table.rows.slice(at+1)].filter(id=>!templates||templates.has(id));
+  const marker=table.columns.find(c=>['ismeal','isday'].includes(c.name.toLowerCase()));
+  const isHeader=tableRowHeaderReader(book,sheet,table,context?.engine);
+  const translation=context?.translation??createTranslationContext(book);
   const header=candidates.length?isHeader(row):false,sameKind=candidates.filter(id=>isHeader(id)===header);
+  const calculated=context?.calculated?.table===table.id?context.calculated:undefined;
+  const candidateSet=calculated?new Set(candidates):undefined,sameKindSet=calculated?new Set(sameKind):undefined;
   for(const col of table.columns){
     const current=getCell(sheet,row,col.column);
     const wrap=col.wrap??sheet.columns.find(column=>column.id===col.column)?.wrap;
@@ -297,7 +333,21 @@ export function inheritTableRow(book:Workbook,sheet:Sheet,table:Table,row:string
       continue;
     }
     const matching=col===marker?candidates:sameKind;
-    const template=matching.find(id=>getCell(sheet,id,col.column).formula??getCell(sheet,id,col.column).calculation)??matching[0];
+    let template:string|undefined;
+    if(calculated){
+      const donors=calculated.columns.get(col.column)!,eligible=col===marker?candidateSet!:sameKindSet!;
+      if(donors.size>=matching.length)template=matching.find(id=>donors.has(id));
+      else{
+        let before=-1,after=Infinity,following:string|undefined;
+        for(const id of donors)if(eligible.has(id)){
+          const position=calculated.positions.get(id)!;
+          if(position<at&&position>before){before=position;template=id;}
+          else if(position>at&&position<after){after=position;following=id;}
+        }
+        template??=following;
+      }
+    }else template=matching.find(id=>{const cell=getCell(sheet,id,col.column);return cell.formula??cell.calculation;});
+    template??=matching[0];
     if(!template&&wrap===undefined)continue;
     const source=template?getCell(sheet,template,col.column):{};
     const formula=source.formula??source.calculation;

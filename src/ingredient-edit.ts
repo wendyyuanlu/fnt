@@ -1,6 +1,6 @@
 import {captureData,createFoodCaptureContext,ingredientKey,ingredientRecord,ingredientSource,nutritionConversionColumns,nutrients,numberValue,scaledDraft,type FoodCaptureContext,type FoodValues,type IngredientIdentity,type Nutrient} from './food-capture';
 import {Engine,scalar,type Ast} from './formula';
-import {allSheets,allTables,isFault,key,setInput,type Workbook} from './model';
+import {allSheets,allTables,getCell,isFault,key,setInput,type Cell,type Workbook} from './model';
 import {mapMealFields} from './meal-log';
 import {restoreCalculation} from './calculation';
 import {editSnapshot} from './undo-history';
@@ -260,15 +260,26 @@ export function resolveNutritionReview(book:Workbook,decisions:NutritionDecision
     return fields.length?[{...review,fields}]:[];
   });
 }
-export function writeIngredientValues(book:Workbook,identity:IngredientIdentity,values:FoodValues&{type?:string},context?:FoodCaptureContext):void{
+export function writeIngredientValues(book:Workbook,identity:IngredientIdentity,values:FoodValues&{type?:string},context?:FoodCaptureContext,typeBinding?:NonNullable<Cell['binding']>):void{
   const source=context?ingredientRecord(book,identity,context):ingredientSource(createFoodCaptureContext(book),identity);
+  if(typeBinding){
+    const table=allTables(book).find(table=>table.id===typeBinding.table),column=table?.columns.find(column=>column.id===typeBinding.column);
+    if(values.type===undefined||!table||!column||!table.rows.includes(typeBinding.row))throw Error('The staged Type option was removed. Choose its dropdown option again or discard this Type edit.');
+    const value=scalar(new Engine(book).cell(table.sheet,typeBinding.row,column.column));
+    if(isFault(value)||String(value??'')!==values.type)throw Error('The staged Type option changed. Choose its dropdown option again before applying.');
+  }
   const writes=Object.entries(values).filter(([field])=>field!=='notes').map(([field,text])=>{
     const column=source.table.columns.find(column=>column.id===source.mapping.fields[field as keyof typeof source.mapping.fields]);
     if(!column)throw Error(`Restore the Ingredients ${field} field before applying this edit.`);
     return{field,text,column};
   });
   if(values.notes!==undefined&&!book.foodCapture)throw Error('Initialize food capture before editing Ingredient notes.');
-  for(const {field,text,column}of writes)setInput(book,source.sheet,identity.row,column.column,['food','unit','type'].includes(field)?"'"+text:text);
+  for(const {field,text,column}of writes){
+    if(field==='type'&&typeBinding){
+      const previous=getCell(source.sheet,identity.row,column.column);
+      source.sheet.cells[key(identity.row,column.column)]={...previous,value:undefined,formula:undefined,original:undefined,calculation:previous.formula??previous.calculation,binding:{...typeBinding}};
+    }else setInput(book,source.sheet,identity.row,column.column,['food','unit','type'].includes(field)?"'"+text:text);
+  }
   if(values.notes!==undefined){
     const data=book.foodCapture;if(!data)throw Error('Initialize food capture before editing Ingredient notes.');
     const key=ingredientKey(identity),previous=data.ingredientDetails[key];
