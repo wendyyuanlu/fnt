@@ -20,9 +20,15 @@ const cell=(book:Workbook,r=1,c=0)=>{const s=book.sheets[0];return s.cells[key(s
 const state=(book:Workbook,sha='base',pending=true):LocalState=>({book,version:1,updated:'',sync:config,remoteSha:sha,pending:pending?[{id:uid(),label:'Edit',time:''}]:[]});
 class Endpoint{
   sha='base';book:Workbook;operations:string[]=[];receipts:Record<string,string>={};writes=0;attempts=0;races=0;loseAcknowledgement=false;
+  snapshots=new Map<string,Workbook>();blobReads=0;
   beforeWrite?:()=>void;
   constructor(book:Workbook){this.book=clone(book);}
   fetch:typeof fetch=async(input,init)=>{
+    if(String(input).includes('/git/blobs/')){
+      this.blobReads++;
+      const sha=String(input).split('/git/blobs/')[1],book=this.snapshots.get(sha);
+      return book?Response.json({sha,encoding:'base64',content:encode64(JSON.stringify({format:'fnt-sync-v1',book,operations:[]}))}):Response.json({message:'Not found'},{status:404});
+    }
     if(!String(input).includes('/contents/'))return Response.json({private:true,has_pages:false});
     if(init?.method!=='PUT')return Response.json({sha:this.sha,content:encode64(JSON.stringify({format:'fnt-sync-v1',book:this.book,operations:this.operations,receipts:this.receipts}))});
     this.attempts++;
@@ -252,6 +258,45 @@ describe('GitHub CAS convergence and durable ancestry',()=>{
     expect(result.sha).toBe('saved-1');expect(cell(endpoint.book)).toBe(2);
     const retry=await syncGitHub(state(clone(endpoint.book),'base'),'invented',endpoint.fetch);
     expect(retry.sha).toBe('saved-1');expect(endpoint.writes).toBe(1);
+  });
+  it.each([false,true])('recovers the exact legacy Git blob ancestor for disjoint edits without hiding a same-cell collision (%s)',async collision=>{
+    const base=fixture(),local=clone(base),endpoint=new Endpoint(base),sha='a'.repeat(40);
+    endpoint.snapshots.set(sha,clone(base));
+    edit(local,2,0,42);
+    local.sheets[0].groups.push({id:'local-group',axis:'row',members:[local.sheets[0].rows[2].id],label:'Local',collapsed:false});
+    edit(endpoint.book,1,1,30);endpoint.sha='newer-remote';
+    if(collision){edit(local,1,0,2);edit(endpoint.book,1,0,3);}
+    const current=state(local,sha),result=syncGitHub(current,'invented',endpoint.fetch);
+    if(collision){
+      const conflict=await result.catch(error=>error);
+      expect(conflict).toBeInstanceOf(SyncConflict);expect(conflict.conflicts).toHaveLength(1);
+      expect(cell(conflict.local)).toBe(2);expect(cell(conflict.remote)).toBe(3);
+      for(const book of [conflict.local,conflict.remote]){expect(cell(book,2,0)).toBe(42);expect(cell(book,1,1)).toBe(30);expect(book.sheets[0].groups).toHaveLength(1);}
+      expect(endpoint.writes).toBe(0);
+    }else{
+      const merged=await result;
+      expect(merged.acknowledged).toEqual(current.pending.map(operation=>operation.id));
+      expect(cell(endpoint.book,2,0)).toBe(42);expect(cell(endpoint.book,1,1)).toBe(30);expect(endpoint.book.sheets[0].groups).toHaveLength(1);
+      expect(endpoint.writes).toBe(1);
+    }
+    expect(endpoint.blobReads).toBe(1);
+  });
+  it.each(['missing','different-workbook'] as const)('keeps legacy divergence paused when its historical ancestor is %s',async reason=>{
+    const base=fixture(),local=clone(base),endpoint=new Endpoint(base),sha='b'.repeat(40);
+    edit(local,2,0,42);edit(endpoint.book,1,1,30);endpoint.sha='newer-remote';
+    if(reason==='different-workbook')endpoint.snapshots.set(sha,fixture());
+    await expect(syncGitHub(state(local,sha),'invented',endpoint.fetch)).rejects.toBeInstanceOf(SyncConflict);
+    expect(endpoint.blobReads).toBe(1);expect(endpoint.attempts).toBe(0);
+  });
+  it('surfaces historical-ancestor permission failures and rejects a mismatched blob response without uploading',async()=>{
+    const base=fixture(),local=clone(base),endpoint=new Endpoint(base),sha='c'.repeat(40);
+    edit(local,2,0,42);edit(endpoint.book,1,1,30);endpoint.sha='newer-remote';
+    for(const status of [403,200]){
+      const fetcher:typeof fetch=async(input,init)=>String(input).includes('/git/blobs/')?
+        Response.json(status===403?{message:'Forbidden'}:{sha:'d'.repeat(40),encoding:'base64',content:encode64(JSON.stringify({format:'fnt-sync-v1',book:base,operations:[]}))},{status}):endpoint.fetch(input,init);
+      await expect(syncGitHub(state(local,sha),'invented',fetcher)).rejects.toThrow(status===403?'Cannot read saved sync revision (403)':'did not return the saved sync revision');
+    }
+    expect(endpoint.attempts).toBe(0);
   });
   it('persists destination-scoped ancestry and incoming changes atomically, retaining newer edits, attachments and recovery',async()=>{
     const name=uid(),store=await Store.open(name),base=fixture(),endpoint=new Endpoint(base);

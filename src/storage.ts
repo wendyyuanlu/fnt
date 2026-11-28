@@ -695,6 +695,16 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
         if(!hasPendingContent(state))return{sha,...(!equivalent?{remote:withDevicePreferences(remote,captured)}:{}),confirmed:remote,originals:attachments,acknowledged:pendingIds};
         if(equivalent)return{sha,confirmed:remote,originals:attachments,acknowledged:pendingIds};
       }
+      if(!ancestor&&state.remoteSha&&/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(state.remoteSha)&&captured.id===remote.id){
+        const previous=await request(`${root}/git/blobs/${encodeURIComponent(state.remoteSha)}`,{headers,cache:'no-store',redirect:'error'});
+        if(previous.ok){
+          const blob=await previous.json() as {sha?:string;encoding?:string;content?:string};
+          if(blob.sha!==state.remoteSha||blob.encoding!=='base64'||typeof blob.content!=='string')throw Error('GitHub did not return the saved sync revision. Local edits retained; nothing overwritten.');
+          const baseline=await runSyncCodec({kind:'unpack',value:blob.content}) as {format?:string;book?:Workbook};
+          if(baseline.format!=='fnt-sync-v1'||!baseline.book)throw Error('The saved sync revision is not an Fnt sync file. Local edits retained.');
+          if(baseline.book.id===captured.id)ancestor=baseline.book;
+        }else if(![404,410,422].includes(previous.status))throw Error(`Cannot read saved sync revision (${previous.status}). Local edits retained.`);
+      }
       if(!ancestor)throw new SyncConflict(remote,sha,remoteOriginals);
       const merged=await mergeForSync(ancestor,captured,remote);
       if(merged.conflicts.length)throw new SyncConflict(merged.remote,sha,attachments,merged.local,ancestor,remote,merged.conflicts);

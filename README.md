@@ -937,8 +937,10 @@ delete-versus-edit and newly broken structural/formula dependencies preserve bot
 copies in Recovery and pause uploads. Focused conflict variants already contain
 accepted disjoint edits on both sides; no silent last-write-wins is used.
 Coupled structural conflicts conservatively retain the original valid copies
-rather than manufacturing an invalid merged workbook. Older devices without a
-provable shared ancestor may require a one-time deliberate comparison; the app
+rather than manufacturing an invalid merged workbook. Older devices first try
+to recover their exact last-synced Git blob using the saved revision SHA when no
+local ancestor record exists. If that historical copy is unavailable or belongs
+to a different workbook, a one-time deliberate comparison may be required; the app
 does not guess which old copy is authoritative. Saved comparison source pairs,
 choices and undo history are not rewritten beneath an existing review.
 
