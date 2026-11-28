@@ -14,10 +14,14 @@ export interface PrivateGitHubClient {
   contentURL:(path:string)=>string;
 }
 
+export function validateSyncConfig(config:SyncConfig|undefined):asserts config is SyncConfig{
+  if(!config||!/^[\w.-]+$/.test(config.owner)||!/^[\w.-]+$/.test(config.repo)||typeof config.branch!=='string'||!config.branch||typeof config.path!=='string'||!config.path.endsWith('.json')||config.path.split('/').some(s=>s==='..'))throw Error('Invalid sync destination. Use a JSON file in a private data repository.');
+  if(`${config.owner}/${config.repo}`.toLowerCase()==='wendyyuanlu/fnt')throw Error('The website source repository cannot be used for nutrition data. Choose a separate private data repository with no Pages publishing.');
+}
+
 export async function withPrivateGitHub<T>(config:SyncConfig|undefined,token:string,fetcher:typeof fetch,run:(client:PrivateGitHubClient)=>Promise<T>):Promise<T>{
   if(!config||!token)throw Error('Connect a private repository and enter a token for this browser session.');
-  if(!/^[\w.-]+$/.test(config.owner)||!/^[\w.-]+$/.test(config.repo)||typeof config.branch!=='string'||!config.branch||typeof config.path!=='string'||!config.path.endsWith('.json')||config.path.split('/').some(s=>s==='..'))throw Error('Invalid sync destination. Use a JSON file in a private data repository.');
-  if(`${config.owner}/${config.repo}`.toLowerCase()==='wendyyuanlu/fnt')throw Error('The website source repository cannot be used for nutrition data. Choose a separate private data repository with no Pages publishing.');
+  validateSyncConfig(config);
   const root=`https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}`;
   const headers={Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'};
   const controller=new AbortController();let deadline:ReturnType<typeof setTimeout>|undefined;

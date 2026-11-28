@@ -1053,6 +1053,47 @@ against the last confirmed shared revision, including edits made while offline.
 Input/formula/binding changes stay atomic; independent formatting can merge.
 Incoming changes wait for the current editor or dialog to close. Toolbar layout,
 navigation activity and outline collapse preferences remain device-local.
+Recovery and the private GitHub sync dialog expose both whole-copy actions.
+Compare remains available independently of whole-copy replacement. **Use latest
+GitHub copy** saves a full local recovery archive before changing this browser.
+**Replace GitHub with this copy** saves the previous local state and the actual
+displaced GitHub workbook before uploading the explicitly selected copy. Its
+confirmed GitHub revision must still match; a changed revision or rejected
+conditional write requires a fresh read and confirmation, not a forced retry.
+Both actions retain saved comparison reviews and leave automatic sync paused.
+If the selected GitHub copy is saved locally but refreshing its view fails,
+editing and autosave stay paused even after the dialog closes. The saved copy
+is not rolled back; the displaced local copy remains in Recovery. Preserve any
+unsaved work before reopening the page to load the saved copy. A failure before
+the local transaction commits leaves the previous copy editable.
+The controls start from the exact saved owner, repository, branch and file path.
+Editing the normal connection form does not change that saved destination until
+you explicitly connect. Replacement previews show the selected source and its
+revision before a separate confirmation; changing it requires reading it again.
+New connections and private-workbook opens use the fixed filename
+`fnt-data.json`. A device still configured for another filename shows that exact
+saved destination and stops ordinary sync rather than silently switching files.
+Use **Use fnt-data.json on this device** in Recovery or private sync to read both
+the legacy and canonical files. Neither file is assumed to be newest. If the
+canonical file exists, separately choose to use it locally or replace it with
+this browser's saved workbook. If it is absent, separately confirm creation from
+this browser; adopting the legacy GitHub workbook locally first is a different
+choice. Recovery retains the displaced copies, and the legacy file is not
+deleted. A changed source, racing canonical creation or uncertain upload requires
+a fresh review, not a forced retry. Reading alone never changes the saved
+destination, and confirmed choices leave automatic sync paused. Complete this
+review on each device; changing one device does not change another device's
+local configuration or publish a new app version.
+Recovery archives include available local photo originals; reading a GitHub
+workbook does not download its separate private-gallery photo originals.
+The storage migration archives full local state and the confirmed legacy copy
+before adding a durable intent; pending edits, comparison reviews, Undo and photo
+recovery remain intact while the old saved destination is retained. Creation is
+a single conditional PUT without an overwrite SHA. A verified transfer readback
+and version-checked local finalization must both succeed before the saved path
+and ancestry change or captured operations are acknowledged. Remembered
+credentials move only within the identical owner/repository/branch; unresolved
+comparison review remains pending and automatic sync stays paused.
 Unchanged remote revisions with a saved shared base do not download/decompress
 the workbook blob or create another full local checkpoint. Older profiles without
 a local base record first try to recover their exact last-synced Git blob using
@@ -1063,6 +1104,13 @@ Response headers time out after 30 seconds; a
 rather than leaving a transfer hanging. Navigation-only visit journals do not
 create remote commits. Accepted incoming changes retain a pre-adoption recovery
 copy and rebase local Undo/Redo without undoing other devices' changes.
+The incoming workbook, recovery checkpoint, sync ancestry and rebased history
+commit together before the app replaces its displayed workbook or formula engine.
+Editing pauses during this short local transaction; a rejected transaction keeps
+the previous workbook, engine and Undo/Redo intact. A failure to display an already
+committed update instead fences editing and autosave, so stale controls cannot
+overwrite the accepted workbook. It reports the saved update and does not reload
+or navigate automatically; preserve any unsaved work before reopening the page.
 An incomplete local save, including pending photo bytes, blocks adoption rather
 than marking unsaved data durable. Incoming Ingredient changes preserve manual
 Draft/Logged nutrition and queue recalculated choices; that new review metadata

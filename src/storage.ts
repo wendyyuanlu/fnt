@@ -2,7 +2,7 @@ import { clone, uid, type Workbook } from './model';
 import { ArchiveEncoder, compressArchive, decompressArchive, stringifyArchive } from './archive';
 import {validateHypotheticalStyle} from './hypothetical';
 import {applyUndo,type History,type UndoHistory} from './undo-history';
-import {githubFormDefaults,withPrivateGitHub} from './github-client';
+import {githubFormDefaults,validateSyncConfig,withPrivateGitHub,type PrivateGitHubClient} from './github-client';
 import {validateMealLog} from './meal-log';
 import {runSyncCodec} from './sync-processing';
 import {syncEqual,withDevicePreferences,type SyncMerge} from './sync-merge';
@@ -25,6 +25,25 @@ export interface LocalState {
   book: Workbook; version: number; pending: Pending[]; updated: string;
   sync?: SyncConfig; remoteSha?: string;syncPaused?:boolean;syncReview?:boolean;
   publishedSnapshot?:string;
+}
+export interface PrivateWorkbookSource{config:SyncConfig;sha:string;book:Workbook;originals:Original[]}
+export const canonicalSyncPath='fnt-data.json';
+export function canonicalSyncConfig(config:SyncConfig):SyncConfig{
+  validateSyncConfig(config);
+  return{...config,path:canonicalSyncPath};
+}
+export interface CanonicalMigration{
+  id:string;version:number;book:string;pending:string[];
+  source:{config:SyncConfig;sha:string};target:SyncConfig;
+}
+export interface CanonicalMigrationResult{
+  migration:string;config:SyncConfig;sha:string;confirmed:Workbook;originals:Original[];acknowledged:string[];
+}
+const canonicalMigrationKey='sync:canonical-migration';
+const sameSyncConfig=(a:SyncConfig|undefined,b:SyncConfig):boolean=>!!a&&a.owner===b.owner&&a.repo===b.repo&&a.branch===b.branch&&a.path===b.path;
+function validateCanonicalMigration(migration:CanonicalMigration):void{
+  validateSyncConfig(migration?.source?.config);requireFileRevision(migration?.source?.sha);
+  if(typeof migration.id!=='string'||!migration.id||!Number.isSafeInteger(migration.version)||migration.version<1||typeof migration.book!=='string'||!migration.book||!Array.isArray(migration.pending)||!migration.pending.includes(migration.id)||new Set(migration.pending).size!==migration.pending.length||migration.pending.some(id=>typeof id!=='string'||!id)||migration.source.config.path===canonicalSyncPath||!sameSyncConfig(migration.target,canonicalSyncConfig(migration.source.config)))throw Error('Invalid canonical sync migration. Read both GitHub destinations again.');
 }
 export const hasPendingContent=(state:LocalState):boolean=>state.pending.some(operation=>operation.label!=='Visit table');
 export interface Checkpoint { id: string; label: string; time: string; book: Workbook; backup?: string|Blob }
@@ -113,6 +132,22 @@ function resetJournal(store:IDBObjectStore,state:LocalState):void{
   const {book,...metadata}=state;
   store.delete(journalRange());
   store.put({state:metadata,book:book.id,revision:book.revision,baseVersion:state.version,count:0} satisfies JournalHead,journalHeadKey);
+}
+function carryUndoVersion(store:IDBObjectStore,expected:number,next:number,book:string,fail:(error:unknown)=>void):void{
+  const history=store.get('undo');
+  history.onsuccess=()=>{
+    try{
+      const saved=history.result as {version:number;book:string;history:UndoHistory}|undefined;
+      if(saved?.version===expected&&saved.book===book)store.put({...saved,version:next},'undo');
+    }catch(error){fail(error);}
+  };
+}
+function clearMaterializedNavigation(store:IDBObjectStore,book:string,fail:(error:unknown)=>void):void{
+  const navigation=store.get(navigationKey(book));
+  navigation.onsuccess=()=>{
+    try{if(navigation.result)store.put({...navigation.result,pending:[]},navigationKey(book));}
+    catch(error){fail(error);}
+  };
 }
 const navigationKey=(book:string)=>`navigation:${book}`;
 function withNavigation(state:LocalState,navigation?:Navigation):LocalState{
@@ -336,6 +371,179 @@ export class Store {
     let result:LocalState|undefined,failure:unknown;
     readState(tx.objectStore('state'),state=>{result=state;},e=>{failure=e;tx.abort();});
     try{await done;}catch(e){throw failure??e;}return result;
+  }
+  async initializePrivateWorkbook(source:PrivateWorkbookSource):Promise<LocalState>{
+    const {config,sha,book,originals}=clone(source);
+    validateSyncConfig(config);requireFileRevision(sha);validateBook(book);validateOriginals(book,originals);
+    const tx=this.db.transaction(['state','originals','photos'],'readwrite'),done=complete(tx),store=tx.objectStore('state'),packages=tx.objectStore('originals');
+    let result:LocalState|undefined,failure:unknown;
+    const fail=(error:unknown)=>{failure=error;tx.abort();};
+    readState(store,previous=>{
+      try{
+        if(previous)throw Error('A workbook is already saved at this address. Nothing was replaced. Open its existing data or use recovery.');
+        const current=store.getKey('current'),head=store.getKey(journalHeadKey),reviews=store.getAllKeys(IDBKeyRange.bound('comparison:','comparison:\uffff')),navigation=store.get(navigationKey(book.id)),undo=store.get('undo'),base=store.get(syncBaseKey(config)),attempt=store.get(syncAttemptKey(config)),conflict=store.get(syncConflictKey(config));
+        const attachments=originals.map(original=>({original,existing:packages.get(original.id)}));
+        const photos=(book.foodCapture?.photos??[]).map(photo=>({photo,existing:tx.objectStore('photos').get(photo.id)}));
+        let remaining=8+attachments.length+photos.length;
+        const ready=()=>{
+          if(--remaining)return;
+          try{
+            if(reviews.result.length)throw Error('Saved comparison recovery data already exists at this address. Nothing was replaced. Preserve and recover that data before opening another workbook.');
+            if(current.result!==undefined||head.result!==undefined||navigation.result!==undefined||undo.result?.book===book.id||base.result!==undefined||attempt.result!==undefined||conflict.result!==undefined)throw Error('Saved recovery data already exists for this workbook or destination. Nothing was replaced. Use recovery before opening another copy.');
+            for(const {original,existing}of attachments)if(existing.result&&(existing.result.name!==original.name||existing.result.data!==original.data))throw Error('An original attachment identity has different saved contents. Nothing was replaced.');
+            for(const {photo,existing}of photos)if(existing.result&&(existing.result.digest!==photo.digest||existing.result.bytes!==photo.bytes||existing.result.mime!==photo.mime))throw Error('A photo identity has different saved contents. Nothing was replaced.');
+            result={book,version:1,pending:[],updated:new Date().toISOString(),sync:config,remoteSha:sha,syncPaused:true};
+            for(const {original,existing}of attachments)if(existing.result===undefined)packages.add(original);
+            store.put({sha,book} satisfies SyncBase,syncBaseKey(config));
+            store.put(result,'current');resetJournal(store,result);
+          }catch(error){fail(error);}
+        };
+        current.onsuccess=ready;head.onsuccess=ready;reviews.onsuccess=ready;navigation.onsuccess=ready;undo.onsuccess=ready;base.onsuccess=ready;attempt.onsuccess=ready;conflict.onsuccess=ready;
+        for(const {existing}of attachments)existing.onsuccess=ready;
+        for(const {existing}of photos)existing.onsuccess=ready;
+      }catch(error){fail(error);}
+    },fail);
+    try{await done;}catch(error){throw failure??error;}return result!;
+  }
+  async usePrivateWorkbook(source:PrivateWorkbookSource,expected:number):Promise<LocalState>{
+    const {config,sha,book,originals}=clone(source);
+    validateSyncConfig(config);requireFileRevision(sha);validateBook(book);validateOriginals(book,originals);
+    const previous=await this.load();
+    if(!previous||previous.version!==expected)throw Error('The local workbook changed. Read the GitHub copy again; nothing was replaced.');
+    const recovery=await this.backupBlob(previous);
+    const tx=this.db.transaction(['state','history','originals','photos'],'readwrite'),done=complete(tx),store=tx.objectStore('state'),packages=tx.objectStore('originals');
+    let result:LocalState|undefined,failure:unknown;
+    const fail=(error:unknown)=>{failure=error;tx.abort();};
+    readState(store,current=>{
+      try{
+        if(!current||current.version!==expected)throw Error('The local workbook changed while recovery was being saved. Nothing was replaced.');
+        const attachments=originals.map(original=>({original,existing:packages.get(original.id)}));
+        const photos=(book.foodCapture?.photos??[]).map(photo=>({photo,existing:tx.objectStore('photos').get(photo.id)}));
+        let remaining=1+attachments.length+photos.length;
+        const ready=()=>{
+          if(--remaining)return;
+          try{
+            for(const {original,existing}of attachments)if(existing.result&&(existing.result.name!==original.name||existing.result.data!==original.data))throw Error('An original attachment identity has different saved contents. Nothing was replaced.');
+            for(const {photo,existing}of photos)if(existing.result&&(existing.result.digest!==photo.digest||existing.result.bytes!==photo.bytes||existing.result.mime!==photo.mime))throw Error('A photo identity has different saved contents. Nothing was replaced.');
+            const adopted=withDevicePreferences(book,current.book);
+            adopted.revision=Math.max(current.book.revision,book.revision)+1;
+            validateBook(adopted);
+            result={...current,book:adopted,version:expected+1,pending:[],updated:new Date().toISOString(),sync:config,remoteSha:sha,syncPaused:true,syncReview:false};
+            delete result.publishedSnapshot;
+            tx.objectStore('history').put({id:uid(),label:'Before using latest GitHub copy',time:new Date().toISOString(),book:current.book,backup:recovery} satisfies Checkpoint);
+            for(const {original,existing}of attachments)if(existing.result===undefined)packages.add(original);
+            store.put({sha,book} satisfies SyncBase,syncBaseKey(config));
+            store.delete(syncAttemptKey(config));
+            store.put(result,'current');resetJournal(store,result);
+          }catch(error){fail(error);}
+        };
+        for(const {existing}of attachments)existing.onsuccess=ready;
+        for(const {existing}of photos)existing.onsuccess=ready;
+        ready();
+      }catch(error){fail(error);}
+    },fail);
+    try{await done;}catch(error){throw failure??error;}return result!;
+  }
+  async preparePrivateReplacement(source:PrivateWorkbookSource,expected:number):Promise<LocalState>{
+    const {config,sha,book,originals}=clone(source);
+    validateSyncConfig(config);requireFileRevision(sha);validateBook(book);validateOriginals(book,originals);
+    const previous=await this.load();
+    if(!previous||previous.version!==expected)throw Error('The local workbook changed. GitHub replacement was not started.');
+    const recovery=await this.backupBlob(previous);
+    const tx=this.db.transaction(['state','history'],'readwrite'),done=complete(tx),store=tx.objectStore('state');
+    let result:LocalState|undefined,failure:unknown;
+    readState(store,current=>{
+      try{
+        if(!current||current.version!==expected)throw Error('The local workbook changed while recovery was being saved. GitHub replacement was not started.');
+        const time=new Date().toISOString();
+        result={...current,version:expected+1,pending:[...current.pending,{id:uid(),label:'Replace GitHub with this copy',time}],updated:time,sync:config,remoteSha:sha,syncPaused:true};
+        tx.objectStore('history').put({id:uid(),label:'Before replacing GitHub with this copy',time,book:current.book,backup:recovery} satisfies Checkpoint);
+        store.put({sha,book} satisfies SyncBase,syncBaseKey(config));store.delete(syncAttemptKey(config));
+        store.put(result,'current');resetJournal(store,result);
+        carryUndoVersion(store,expected,expected+1,current.book.id,error=>{failure=error;tx.abort();});
+      }catch(error){failure=error;tx.abort();}
+    },error=>{failure=error;tx.abort();});
+    try{await done;}catch(error){throw failure??error;}return result!;
+  }
+  async preservePrivateWorkbook(source:PrivateWorkbookSource,expected:number):Promise<string>{
+    const {config,sha,book,originals}=clone(source);
+    const backup=privateWorkbookBackup({config,sha,book,originals});
+    const tx=this.db.transaction(['state','history'],'readwrite'),done=complete(tx),id=uid();
+    let failure:unknown;
+    readState(tx.objectStore('state'),current=>{
+      try{
+        if(!current||current.version!==expected)throw Error('The local workbook changed. GitHub replacement was not started.');
+        tx.objectStore('history').put({id,label:'GitHub copy before explicit replacement',time:new Date().toISOString(),book,backup} satisfies Checkpoint);
+      }catch(error){failure=error;tx.abort();}
+    },error=>{failure=error;tx.abort();});
+    try{await done;}catch(error){throw failure??error;}return id;
+  }
+  async prepareCanonicalMigration(source:PrivateWorkbookSource,expected:number):Promise<{state:LocalState;migration:CanonicalMigration}>{
+    source=clone(source);
+    const sourceBackup=privateWorkbookBackup(source),target=canonicalSyncConfig(source.config);
+    if(source.config.path===canonicalSyncPath)throw Error('This GitHub source already uses fnt-data.json. No migration was started.');
+    const previous=await this.load();
+    if(!previous||previous.version!==expected)throw Error('The local workbook changed. Canonical migration was not started.');
+    if(previous.sync&&!sameSyncConfig(canonicalSyncConfig(previous.sync),target))throw Error('Canonical migration only changes the filename in the saved repository and branch. Use the explicit recovery choices before changing repositories.');
+    const recovery=await this.backupBlob(previous);
+    const tx=this.db.transaction(['state','history'],'readwrite'),done=complete(tx),store=tx.objectStore('state');
+    let result:{state:LocalState;migration:CanonicalMigration}|undefined,failure:unknown;
+    const fail=(error:unknown)=>{failure=error;tx.abort();};
+    readState(store,current=>{
+      try{
+        if(!current||current.version!==expected)throw Error('The local workbook changed while recovery was being saved. Canonical migration was not started.');
+        const time=new Date().toISOString(),id=uid();
+        const state:LocalState={...current,version:expected+1,pending:[...current.pending,{id,label:'Move sync to fnt-data.json',time}],updated:time,syncPaused:true};
+        const migration:CanonicalMigration={id,version:state.version,book:state.book.id,pending:state.pending.map(operation=>operation.id),source:{config:source.config,sha:source.sha},target};
+        validateCanonicalMigration(migration);
+        result={state,migration};
+        const history=tx.objectStore('history');
+        history.put({id:uid(),label:'Before moving sync to fnt-data.json',time,book:current.book,backup:recovery} satisfies Checkpoint);
+        history.put({id:uid(),label:'Legacy GitHub copy before canonical migration',time,book:source.book,backup:sourceBackup} satisfies Checkpoint);
+        store.put(migration,canonicalMigrationKey);store.put(state,'current');resetJournal(store,state);
+        carryUndoVersion(store,expected,state.version,current.book.id,fail);
+        clearMaterializedNavigation(store,current.book.id,fail);
+      }catch(error){fail(error);}
+    },fail);
+    try{await done;}catch(error){throw failure??error;}return result!;
+  }
+  async finishCanonicalMigration(migration:CanonicalMigration,result:CanonicalMigrationResult,expected:number):Promise<LocalState>{
+    migration=clone(migration);result=clone(result);
+    validateCanonicalMigration(migration);validateBook(result.confirmed);validateOriginals(result.confirmed,result.originals);requireFileRevision(result.sha);
+    if(result.migration!==migration.id||!sameSyncConfig(result.config,migration.target)||!Array.isArray(result.acknowledged)||result.acknowledged.length!==migration.pending.length||new Set(result.acknowledged).size!==migration.pending.length||migration.pending.some(id=>!result.acknowledged.includes(id)))throw Error('The canonical acknowledgement does not match this migration. Local edits retained.');
+    const previous=await this.load();
+    if(!previous||previous.version!==expected||migration.version!==expected||!await runSyncCodec({kind:'equal',local:previous.book,remote:result.confirmed},{snapshots:true}))throw Error('The local workbook changed. GitHub may already contain the canonical copy; read it before retrying.');
+    const tx=this.db.transaction(['state','originals'],'readwrite'),done=complete(tx),store=tx.objectStore('state'),packages=tx.objectStore('originals');
+    let saved:LocalState|undefined,failure:unknown;
+    const fail=(error:unknown)=>{failure=error;tx.abort();};
+    readState(store,current=>{
+      try{
+        if(!current||current.version!==expected||current.book.id!==migration.book)throw Error('The local workbook changed. GitHub may already contain the canonical copy; read it before retrying.');
+        const intent=store.get(canonicalMigrationKey),credential=store.get(syncCredentialKey);
+        const attachments=result.originals.map(original=>({original,existing:packages.get(original.id)}));
+        let remaining=2+attachments.length;
+        const ready=()=>{
+          if(--remaining)return;
+          try{
+            if(JSON.stringify(intent.result)!==JSON.stringify(migration))throw Error('The saved migration changed. Read the canonical copy before retrying.');
+            for(const {original,existing}of attachments)if(existing.result&&(existing.result.name!==original.name||existing.result.data!==original.data))throw Error('An original attachment identity has different saved contents. Canonical finalization was not applied.');
+            const acknowledged=new Set(result.acknowledged);
+            saved={...current,version:expected+1,pending:current.pending.filter(operation=>!acknowledged.has(operation.id)),updated:new Date().toISOString(),sync:migration.target,remoteSha:result.sha,syncPaused:true};
+            for(const {original,existing}of attachments)if(existing.result===undefined)packages.add(original);
+            store.put({sha:result.sha,book:result.confirmed} satisfies SyncBase,syncBaseKey(migration.target));
+            const remembered=credential.result as {config?:SyncConfig;token?:unknown}|undefined;
+            if(remembered?.config&&sameSyncConfig(canonicalSyncConfig(remembered.config),migration.target))store.put({...remembered,config:migration.target},syncCredentialKey);
+            store.delete(canonicalMigrationKey);
+            store.put(saved,'current');resetJournal(store,saved);
+            carryUndoVersion(store,expected,saved.version,current.book.id,fail);
+            clearMaterializedNavigation(store,current.book.id,fail);
+          }catch(error){fail(error);}
+        };
+        intent.onsuccess=ready;credential.onsuccess=ready;
+        for(const {existing}of attachments)existing.onsuccess=ready;
+      }catch(error){fail(error);}
+    },fail);
+    try{await done;}catch(error){throw failure??error;}return saved!;
   }
   async assertVersion(expected:number):Promise<void>{
     const tx=this.db.transaction('state'),done=complete(tx),store=tx.objectStore('state'),head=store.get(journalHeadKey),current=store.get('current');
@@ -815,53 +1023,168 @@ export class SyncConflict extends Error {
 export class SyncPaused extends Error {}
 export interface SyncPlan{sha:string;local:Workbook;remote:Workbook;originalRemote:Workbook;originals:Original[];conflicts:string[];base?:Workbook}
 export interface SyncResult{sha:string;remote?:Workbook;confirmed?:Workbook;originals?:Original[];readPath?:string;acknowledged?:string[];plan?:SyncPlan}
+function requireFileRevision(sha:unknown):string{
+  if(typeof sha!=='string'||!sha)throw Error('GitHub did not return a file revision. Nothing overwritten.');
+  return sha;
+}
+function privateWorkbookBackup(source:PrivateWorkbookSource):Blob{
+  const {config,sha,book,originals}=source;
+  validateSyncConfig(config);requireFileRevision(sha);validateBook(book);validateOriginals(book,originals);
+  const snapshot:Backup={format:'fnt-backup',version:1,state:{book,version:0,pending:[],updated:new Date().toISOString(),sync:config,remoteSha:sha,syncPaused:true},originals};
+  const missing=[...referencedPhotoIds(book)];if(missing.length)snapshot.missingPhotos=missing;
+  validateBackup(snapshot);
+  return new Blob([new ArchiveEncoder().stringify(snapshot)],{type:'application/json'});
+}
+async function readSyncFile(client:PrivateGitHubClient,tryRenamed:boolean):Promise<{response:Response;readPath:string}>{
+  let readPath=client.config.path,response=await client.request(client.contentURL(readPath),{headers:client.headers,cache:'no-store',redirect:'error'});
+  if(tryRenamed&&response.status===404){
+    const renamed=githubFormDefaults(client.config).path;
+    if(renamed!==readPath){
+      readPath=renamed;
+      response=await client.request(client.contentURL(readPath),{headers:client.headers,cache:'no-store',redirect:'error'});
+    }
+  }
+  return{response,readPath};
+}
+interface SyncFileData{sha:string;content:string;encoding?:string;size?:number}
+async function decodeSyncFile(client:PrivateGitHubClient,sha:string,data:SyncFileData):Promise<{remote:Workbook;originals:Original[];operations:string[];receipts:Record<string,string>}>{
+  if(data.encoding==='none'||(!data.content&&data.size)){
+    const blob=await client.request(`${client.root}/git/blobs/${encodeURIComponent(sha)}`,{headers:client.headers,cache:'no-store',redirect:'error'});
+    if(!blob.ok)throw Error(`Cannot read larger remote workbook (${blob.status}). Nothing overwritten.`);
+    data=await blob.json() as SyncFileData;
+    if(data.sha!==sha)throw Error('GitHub did not return the requested file revision. Nothing overwritten.');
+  }
+  if(typeof data.content!=='string')throw Error('GitHub did not return file content. Nothing overwritten.');
+  const envelope=await runSyncCodec({kind:'unpack',value:data.content}) as {format:string;book:Workbook;operations:string[];originals?:Original[];receipts?:Record<string,string>};
+  if(!envelope||envelope.format!=='fnt-sync-v1')throw Error('Remote file is not an Fnt sync file. Nothing overwritten.');
+  const remote=envelope.book,originals=envelope.originals??[];
+  validateOriginals(remote,originals);
+  const operations=Array.isArray(envelope.operations)?envelope.operations.filter((id):id is string=>typeof id==='string'):[],receipts=envelope.receipts;
+  if(receipts!==undefined&&(!receipts||typeof receipts!=='object'||Array.isArray(receipts)||Object.entries(receipts).some(([device,id])=>!device||typeof id!=='string'||!id)))throw Error('Remote sync transfer receipts are invalid. Local edits retained.');
+  return{remote,originals,operations,receipts:receipts??{}};
+}
+export async function readPrivateWorkbook(config:SyncConfig,token:string,fetcher:typeof fetch=fetch):Promise<PrivateWorkbookSource>{
+  return withPrivateGitHub(clone(config),token,fetcher,async client=>{
+    const {response,readPath}=await readSyncFile(client,true);
+    if(response.status===404)throw Error(`No saved GitHub workbook exists at ${readPath}. Check the private repository, branch and path. Nothing was created or uploaded.`);
+    if(!response.ok)throw Error(`Cannot read private workbook (${response.status}). Nothing was saved or uploaded.`);
+    const data=await response.json() as SyncFileData,sha=requireFileRevision(data.sha),decoded=await decodeSyncFile(client,sha,data);
+    return{config:{...client.config,path:readPath},sha,book:decoded.remote,originals:decoded.originals};
+  });
+}
+export async function readCanonicalWorkbook(config:SyncConfig,token:string,fetcher:typeof fetch=fetch):Promise<PrivateWorkbookSource|undefined>{
+  return withPrivateGitHub(canonicalSyncConfig(config),token,fetcher,async client=>{
+    const {response}=await readSyncFile(client,false);
+    if(response.status===404)return;
+    if(!response.ok)throw Error(`Cannot read canonical workbook (${response.status}). Its absence was not established; nothing was created.`);
+    const data=await response.json() as SyncFileData,sha=requireFileRevision(data.sha),decoded=await decodeSyncFile(client,sha,data);
+    return{config:client.config,sha,book:decoded.remote,originals:decoded.originals};
+  });
+}
+export class CanonicalWorkbookExists extends Error{
+  constructor(public source:PrivateWorkbookSource){
+    super('fnt-data.json already exists. Review it before choosing which copy to use; neither GitHub file was replaced.');
+    this.name='CanonicalWorkbookExists';
+  }
+}
+export class CanonicalMigrationUncertain extends Error{
+  constructor(public original:unknown){
+    super('GitHub may already contain the new fnt-data.json, but this migration was not confirmed. Local edits and the legacy file are retained. Read both GitHub copies before retrying; do not create or replace either blindly.');
+    this.name='CanonicalMigrationUncertain';
+  }
+}
+export async function createCanonicalWorkbook(
+  state:LocalState,migration:CanonicalMigration,token:string,fetcher:typeof fetch=fetch,originals:Original[]=[],
+  options?:{assertCurrent:()=>Promise<void>;canUpload:()=>boolean;beforeUpload?:(attempt:SyncAttempt)=>Promise<void>},
+):Promise<CanonicalMigrationResult>{
+  migration=clone(migration);validateCanonicalMigration(migration);
+  if(state.version!==migration.version||state.book.id!==migration.book||state.syncPaused!==true||migration.pending.some(id=>!state.pending.some(operation=>operation.id===id)))throw Error('The saved canonical migration does not match this local copy. Nothing was created.');
+  if(!options||typeof options.assertCurrent!=='function'||typeof options.canUpload!=='function')throw Error('Canonical migration requires current-version and cancellation guards. Nothing was created.');
+  const guards=options,attachments=clone(originals),book=await runSyncCodec({kind:'capture',book:state.book}) as Workbook;
+  validateBook(book);validateOriginals(book,attachments);
+  const guard=async()=>{await guards.assertCurrent();if(!guards.canUpload())throw new SyncPaused('Canonical migration paused. No further request was sent.');};
+  let sent=false;
+  const guardedFetch:typeof fetch=async(input,init)=>{
+    await guard();
+    if(init?.method==='PUT')sent=true;
+    return fetcher(input,init);
+  };
+  await guard();
+  // The client's overall deadline can reject outside its operation callback.
+  try{return await withPrivateGitHub(migration.source.config,token,guardedFetch,async client=>{
+    const assertSource=async()=>{
+      const {response}=await readSyncFile(client,false);
+      if(!response.ok)throw Error(`Cannot revalidate the legacy workbook (${response.status}). Migration was not confirmed.`);
+      const data=await response.json() as SyncFileData;
+      if(requireFileRevision(data.sha)!==migration.source.sha)throw Error('The legacy GitHub copy changed. Read both latest copies and confirm again.');
+    };
+    await assertSource();
+    const response=await client.request(client.contentURL(migration.target.path),{headers:client.headers,cache:'no-store',redirect:'error'});
+    if(response.ok){
+      const data=await response.json() as SyncFileData,sha=requireFileRevision(data.sha),decoded=await decodeSyncFile(client,sha,data);
+      throw new CanonicalWorkbookExists({config:clone(migration.target),sha,book:decoded.remote,originals:decoded.originals});
+    }
+    if(response.status!==404)throw Error(`Cannot establish that fnt-data.json is absent (${response.status}). Nothing was created.`);
+    const transfer:SyncAttempt={id:uid(),device:uid(),book};
+    const content=await runSyncCodec({kind:'pack',value:{format:'fnt-sync-v1',book,operations:[...migration.pending,transfer.id],receipts:{[transfer.device!]:transfer.id},originals:attachments}});
+    await guard();
+    await guards.beforeUpload?.(clone(transfer));
+    await assertSource();
+      const upload=await client.request(client.contentURL(migration.target.path),{method:'PUT',headers:{...client.headers,'Content-Type':'application/json'},redirect:'error',body:JSON.stringify({message:'Fnt: create canonical workbook without replacing either existing copy',branch:migration.target.branch,content})});
+      if(upload.status===409||upload.status===422)throw Error('fnt-data.json appeared or changed before creation. Review the latest canonical copy; no existing file was overwritten.');
+      if(!upload.ok)throw Error(`Canonical creation was not acknowledged (${upload.status}).`);
+      const ack=await upload.json() as {content?:{sha?:string}},sha=requireFileRevision(ack.content?.sha);
+      const readback=await client.request(client.contentURL(migration.target.path),{headers:client.headers,cache:'no-store',redirect:'error'});
+      if(!readback.ok)throw Error(`Canonical readback failed (${readback.status}).`);
+      const data=await readback.json() as SyncFileData;
+      if(requireFileRevision(data.sha)!==sha)throw Error('The canonical file moved after creation.');
+      const decoded=await decodeSyncFile(client,sha,data);
+      if(decoded.receipts[transfer.device!]!==transfer.id||JSON.stringify(decoded.originals)!==JSON.stringify(attachments)||!await runSyncCodec({kind:'equal',local:book,remote:decoded.remote},{snapshots:true}))throw Error('The canonical readback did not confirm this transfer.');
+      await assertSource();await guard();
+      return{migration:migration.id,config:clone(migration.target),sha,confirmed:book,originals:attachments,acknowledged:[...migration.pending]};
+  });}catch(error){
+    if(sent)throw new CanonicalMigrationUncertain(error);
+    throw error;
+  }
+}
 export async function mergeForSync(base:Workbook,local:Workbook,remote:Workbook):Promise<SyncMerge&{unchangedLocal:boolean;unchangedRemote:boolean}>{
   return await runSyncCodec({kind:'merge',base,local,remote},{snapshots:true}) as SyncMerge&{unchangedLocal:boolean;unchangedRemote:boolean};
 }
-export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[],options?:{readOnly?:boolean;planOnly?:boolean;canUpload?:()=>boolean;base?:Workbook;attempt?:SyncAttempt;beforeUpload?:(attempt:SyncAttempt)=>Promise<void>}): Promise<SyncResult> {
+export interface PrivateReplacement{sha:string;preserve:(source:PrivateWorkbookSource)=>Promise<void>}
+export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[],options?:{readOnly?:boolean;planOnly?:boolean;canUpload?:()=>boolean;base?:Workbook;attempt?:SyncAttempt;beforeUpload?:(attempt:SyncAttempt)=>Promise<void>;replaceRemote?:PrivateReplacement}): Promise<SyncResult> {
+  const replacement=options?.replaceRemote?{...options.replaceRemote}:undefined;
+  if(replacement){
+    requireFileRevision(replacement.sha);
+    if(options?.readOnly||options?.planOnly||typeof replacement.preserve!=='function')throw Error('GitHub replacement needs a confirmed revision and a recovery callback, not a read or merge preflight.');
+    validateOriginals(state.book,originals);
+  }
+  const attachments=replacement?clone(originals):originals;
   const captured={...state,pending:clone(state.pending),sync:state.sync?clone(state.sync):undefined};
   captured.book=await runSyncCodec({kind:'capture',book:state.book}) as Workbook;
   if(options?.readOnly&&options.planOnly)throw Error('Choose either a remote read or a merge preflight.');
-  return privateSync(captured,token,fetcher,originals,options?.readOnly===true,options?.canUpload,options?.base,options?.attempt,options?.beforeUpload,options?.planOnly===true);
+  return privateSync(captured,token,fetcher,attachments,options?.readOnly===true,options?.canUpload,options?.base,options?.attempt,options?.beforeUpload,options?.planOnly===true,replacement);
 }
-async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[],readOnly:boolean,canUpload?:()=>boolean,base?:Workbook,previousAttempt?:SyncAttempt,beforeUpload?:(attempt:SyncAttempt)=>Promise<void>,planOnly=false):Promise<SyncResult>{
-  return withPrivateGitHub(state.sync,token,fetcher,async({root,headers,request,contentURL,config:cfg})=>{
+async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[],readOnly:boolean,canUpload?:()=>boolean,base?:Workbook,previousAttempt?:SyncAttempt,beforeUpload?:(attempt:SyncAttempt)=>Promise<void>,planOnly=false,replacement?:PrivateReplacement):Promise<SyncResult>{
+  return withPrivateGitHub(state.sync,token,fetcher,async client=>{
+  const {root,headers,request,config:cfg}=client;
   const url = `${root}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}`;
   const captured=state.book,pendingIds=state.pending.map(operation=>operation.id),pendingContent=hasPendingContent(state)||planOnly&&state.syncReview;
   let ancestor=base;
   for(let attempt=0;attempt<3;attempt++){
-  let readPath=cfg.path,response=await request(url,{headers,cache:'no-store',redirect:'error'});
-  if(readOnly&&response.status===404){
-    const renamed=githubFormDefaults(cfg).path;
-    if(renamed!==cfg.path){
-      readPath=renamed;
-      response=await request(contentURL(readPath),{headers,cache:'no-store',redirect:'error'});
-    }
-  }
+  const {response,readPath}=await readSyncFile(client,readOnly);
   let sha: string | undefined, remote: Workbook | undefined,book=captured,attachments=originals,operations:string[]=[],receipts:Record<string,string>={},proven:SyncReceipt|undefined,changed=false;
   if (response.ok) {
-    let data = await response.json() as {sha:string;content:string;encoding?:string;size?:number};
-    sha = data.sha;
-    if(typeof sha!=='string'||!sha)throw Error('GitHub did not return a file revision. Nothing overwritten.');
-    if(!readOnly&&!planOnly&&sha===state.remoteSha&&!pendingContent&&ancestor)return{sha};
+    const data = await response.json() as SyncFileData;
+    sha = requireFileRevision(data.sha);
+    if(replacement&&sha!==replacement.sha)throw Error('GitHub changed since the copy you confirmed. Read its latest copy and confirm again; no replacement was uploaded.');
+    if(!replacement&&!readOnly&&!planOnly&&sha===state.remoteSha&&!pendingContent&&ancestor)return{sha};
     {
-      if(data.encoding==='none'||(!data.content&&data.size)){
-        const blob=await request(`${root}/git/blobs/${encodeURIComponent(sha)}`,{headers,cache:'no-store',redirect:'error'});
-        if(!blob.ok)throw Error(`Cannot read larger remote workbook (${blob.status}). Nothing overwritten.`);
-        data=await blob.json() as typeof data;
-      }
-      if(typeof data.content!=='string')throw Error('GitHub did not return file content. Nothing overwritten.');
-      const envelope=await runSyncCodec({kind:'unpack',value:data.content}) as {format:string;book:Workbook;operations:string[];originals?:Original[];receipts?:Record<string,string>};
-      if (envelope.format !== 'fnt-sync-v1') throw Error('Remote file is not an Fnt sync file. Nothing overwritten.');
-      remote = envelope.book;
-      const remoteOriginals=envelope.originals??[];
-      validateOriginals(remote,remoteOriginals);
-      operations=Array.isArray(envelope.operations)?envelope.operations.filter((id):id is string=>typeof id==='string'):[];
-      if(envelope.receipts!==undefined){
-        if(!envelope.receipts||typeof envelope.receipts!=='object'||Array.isArray(envelope.receipts)||Object.entries(envelope.receipts).some(([device,id])=>!device||typeof id!=='string'||!id))throw Error('Remote sync transfer receipts are invalid. Local edits retained.');
-        receipts=envelope.receipts;
-      }
+      const decoded=await decodeSyncFile(client,sha,data),remoteOriginals=decoded.originals;
+      remote=decoded.remote;operations=decoded.operations;receipts=decoded.receipts;
       if(readOnly)return{sha,remote,originals:remoteOriginals,readPath};
+      if(replacement){
+        await replacement.preserve({config:clone(cfg),sha,book:clone(remote),originals:clone(remoteOriginals)});
+      }else{
       const byId=new Map(remoteOriginals.map(original=>[original.id,original]));
       for(const original of originals){
         const previous=byId.get(original.id);
@@ -903,22 +1226,24 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
       if(merged.conflicts.length)throw new SyncConflict(merged.remote,sha,attachments,merged.local,ancestor,remote,merged.conflicts);
       book=merged.local;changed=!merged.unchangedLocal;
       if(merged.unchangedRemote)return{sha,...(!merged.unchangedLocal?{remote:book}:{}),confirmed:remote,originals:attachments,acknowledged:pendingIds};
+      }
     }
   } else if (response.status !== 404) throw Error(`Cannot read sync file (${response.status}). Local edits retained.`);
-  else if (!readOnly&&state.remoteSha) throw Error('Remote file was removed. Local edits retained; refusing to recreate it silently.');
+  else if (replacement||!readOnly&&state.remoteSha) throw Error('Remote file was removed. Local edits retained; refusing to recreate it silently.');
   if(readOnly||planOnly)throw Error(`No saved GitHub workbook exists at ${readPath}${readPath!==cfg.path?` (saved destination: ${cfg.path})`:''}. Check the path in Recovery > Private GitHub sync. Comparison did not upload anything.`);
-  if(state.syncReview||canUpload&&!canUpload())throw new SyncPaused('Sync paused for comparison review. No upload was made.');
+  if(!replacement&&state.syncReview||canUpload&&!canUpload())throw new SyncPaused('Sync paused for comparison review. No upload was made.');
   validateOriginals(book,attachments);
   const device=previousAttempt?.device??uid(),transfer:SyncAttempt={id:uid(),device,book,...(proven?{ancestor:proven}:{})};
   const content=await runSyncCodec({kind:'pack',value:{format:'fnt-sync-v1',book,operations:[...new Set([...operations,...pendingIds,transfer.id])].slice(-10000),receipts:{...receipts,[device]:transfer.id},originals:attachments}});
   await beforeUpload?.(transfer);
   if(canUpload&&!canUpload())throw new SyncPaused('Sync paused for comparison review. No upload was made.');
   const upload = await request(url,{method:'PUT',headers:{...headers,'Content-Type':'application/json'},redirect:'error',body:JSON.stringify({
-    message:`Fnt: save ${state.pending.length} local changes`, branch:cfg.branch, ...(sha ? {sha} : {}),
+    message:replacement?'Fnt: explicitly replace GitHub workbook with this device':`Fnt: save ${state.pending.length} local changes`, branch:cfg.branch, ...(sha ? {sha} : {}),
     content,
   })});
   if(!upload.ok){
     if(upload.status===409||upload.status===422){
+      if(replacement)throw Error('GitHub changed before replacement completed. Read its latest copy and confirm again; the newer revision was not overwritten.');
       if(!ancestor&&sha===state.remoteSha&&remote)ancestor=remote;
       if(attempt<2)continue;
       throw Error('Remote kept changing during upload. Local edits retained; automatic sync will retry.');

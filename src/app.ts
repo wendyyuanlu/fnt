@@ -8,7 +8,8 @@ import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,re
 import {githubFormDefaults} from './github-client';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
-import { Store, SyncConflict, SyncPaused, syncGitHub,mergeForSync, hasPendingContent,validateBook,validateBookMetadata,validateCellChanges, type Backup, type LocalState,type SyncResult,type SyncConfig } from './storage';
+import { Store, SyncConflict, SyncPaused, syncGitHub,mergeForSync,readPrivateWorkbook,readCanonicalWorkbook,createCanonicalWorkbook, hasPendingContent,validateBook,validateBookMetadata,validateCellChanges, type Backup, type LocalState,type SyncResult,type SyncConfig,type PrivateWorkbookSource } from './storage';
+import {openPrivateWorkbook,type PrivateWorkbookAction} from './private-workbook-ui';
 import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch,type UndoHistory} from './undo-history';
 import {runSyncCodec} from './sync-processing';
 import {cachedCellText,dateFormatContext} from './display-values';
@@ -63,6 +64,10 @@ import {createPhotoUI,type PhotoScope} from './photo-ui';
 import {createPrivatePhotoUI} from './private-photo-ui';
 
 const root = document.querySelector<HTMLDivElement>('#app')!;
+const existingDataOnly=import.meta.env.DEV&&import.meta.env.VITE_FNT_EXISTING_DATA_ONLY==='true';
+const canonicalWorkbookPath='fnt-data.json';
+const legacyPrivateSync=()=>!!state?.sync&&state.sync.path!==canonicalWorkbookPath;
+let openingExistingData=existingDataOnly;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const grip=(horizontal:boolean)=>`<svg aria-hidden="true" width="${horizontal?12:8}" height="${horizontal?8:12}" viewBox="0 0 ${horizontal?12:8} ${horizontal?8:12}">${Array.from({length:6},(_,i)=>`<circle cx="${i%(horizontal?3:2)*4+2}" cy="${Math.floor(i/(horizontal?3:2))*4+2}" r="1" fill="currentColor"/>`).join('')}</svg>`;
 const formattingShortcuts=[
@@ -141,6 +146,7 @@ let touchOutsideGesture=false;
 let fillSource:ReturnType<typeof bounds>|undefined,fillPointer:number|undefined;
 let status = 'Opening local workbook...', error = '', busy = false, token = '';
 let savedGeneration = 0, generation = 0, saving: Promise<void> = Promise.resolve();
+let incomingPublicationFailed=false;
 const undo: History[] = [], redo: History[] = [];
 let copied: {sheet:string; r:number;c:number;rows:string[];columns:string[];cells:Cell[][];origins?:{row:string;column:string}[][];outlineOrigins?:{row:string;column:string}[][];cut?:boolean;table?:string;kind?:'rows'|'columns'|'cells'} | undefined;
 const clipboardHistory=new WeakMap<History,{current:NonNullable<typeof copied>;restore:NonNullable<typeof copied>}>();
@@ -1356,6 +1362,7 @@ function changed(label: string,reset=true,quiet=false,forward?:History): void {
 async function flush(label = 'Edit workbook',preservedStatus?:string): Promise<void> {
   clearTimeout(saveTimer);
   saving = saving.then(async () => {
+    if(incomingPublicationFailed)throw Error('Autosave is paused because accepted updates were saved but could not be displayed safely. The accepted workbook has not been replaced.');
     if (savedGeneration === generation && state) return;
     await navigationSaving;
     const snapshot = book, revision=book.revision,g = generation,undoHistory=clone({undo,redo}),records=scopedChanges.splice(0),photos=[...pendingPhotoBlobs.values()],full=fullSaveRequired||!state;
@@ -1399,9 +1406,10 @@ let privateSyncFlight:Promise<void>|undefined;
 let preservedSyncConflict:SyncConflict|undefined;
 let comparisonActive=false;
 let rememberPrivateSync=false;
+let privateCopyOpen=false;
 function schedulePrivateSync(delay=2000):void{
   clearTimeout(privateSyncTimer);
-  if(!state?.sync||state.syncPaused||state.syncReview||!token||privateSyncConflict||comparisonActive||privateSyncFlight||!navigator.onLine){privateSyncDue=0;return;}
+  if(!state?.sync||legacyPrivateSync()||state.syncPaused||state.syncReview||!token||privateSyncConflict||comparisonActive||privateCopyOpen||privateSyncFlight||!navigator.onLine){privateSyncDue=0;return;}
   const due=Date.now()+(delay===0?0:hasPendingContent(state)?delay:Math.max(delay,10000));
   privateSyncDue=privateSyncDue?Math.min(privateSyncDue,due):due;
   privateSyncTimer=setTimeout(()=>{
@@ -1420,11 +1428,12 @@ async function updateSyncMetadata(change:Parameters<Store['syncMetadata']>[1]):P
 }
 function incomingSyncBlocked():boolean{
   const active=document.activeElement;
-  return busy||draft!==undefined||!!touchCell||!!appendDraft||!!colorPicker?.pending||!!document.querySelector('dialog[open],.cell-dropdown')||
+  return busy||draft!==undefined||!!touchCell||!!appendDraft||!!colorPicker?.pending||!!resizing||!!movingRows||!!movingColumns||!!selectionPaintFrame||!!document.querySelector('dialog[open],.cell-dropdown')||
     (active instanceof HTMLInputElement||active instanceof HTMLTextAreaElement)&&active!==document.querySelector('#formula')&&root.contains(active);
 }
+class IncomingSyncViewError extends Error {}
 async function receiveIncomingSync(base:Workbook,result:SyncResult,config:SyncConfig,credential:string,submittedComparison=false):Promise<void>{
-  const valid=()=>token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)&&!state.syncReview&&(!comparisonActive||submittedComparison);
+  const valid=()=>!legacyPrivateSync()&&token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)&&!state.syncReview&&!privateCopyOpen&&(!comparisonActive||submittedComparison);
   for(let attempt=0;attempt<5;attempt++){
     while(incomingSyncBlocked()){
       if(!valid())throw new SyncPaused('Incoming sync paused. Local edits and the remote copy are retained.');
@@ -1444,23 +1453,30 @@ async function receiveIncomingSync(base:Workbook,result:SyncResult,config:SyncCo
     if(g!==generation||incomingSyncBlocked())continue;
     let applied=false;
     const operation=saving.then(async()=>{
+      await navigationSaving;
       if(g!==generation||pendingPhotoBlobs.size||incomingSyncBlocked()||!valid())return;
       rememberView();
-      const previousGeneration=savedGeneration;
-      book=reviewed.book;book.revision=Math.max(before.revision,book.revision)+1;
-      generation++;const acceptedGeneration=generation;
-      undo.splice(0,undo.length,...history.undo);redo.splice(0,redo.length,...history.redo);
-      engine=new Engine(book);displayedVersion++;
-      if(!allSheets(book).some(sheet=>sheet.id===sheetId)){sheetId=book.sheets[0].id;referenceId=undefined;}
-      restoreView();render({preserveViewport:true});groupManager?.refresh();
+      const incoming=reviewed.book,wasBusy=busy,wasInert=root.inert;
+      incoming.revision=Math.max(before.revision,incoming.revision)+1;
+      busy=true;root.inert=true;
       try{
-        state=await store.acceptSync(state.version,config,result,book,history,reviewed.changed?{pendingLabel:'Review incoming nutrition changes'}:undefined);
-        savedGeneration=acceptedGeneration;compactionWrites=0;applied=true;
+        renderStatus();
+        const accepted=await store.acceptSync(state.version,config,result,incoming,history,reviewed.changed?{pendingLabel:'Review incoming nutrition changes'}:undefined);
+        applied=true;
+        state=accepted;book=clone(accepted.book);
+        generation++;savedGeneration=generation;compactionWrites=0;
+        undo.splice(0,undo.length,...history.undo);redo.splice(0,redo.length,...history.redo);
+        engine=new Engine(book);displayedVersion++;
+        if(!allSheets(book).some(sheet=>sheet.id===sheetId)){sheetId=book.sheets[0].id;referenceId=undefined;}
+        restoreView();render({preserveViewport:true});groupManager?.refresh();
         channel?.postMessage({version:state.version});
       }catch(error){
-        savedGeneration=previousGeneration;fullSaveRequired=true;
+        if(applied){
+          incomingPublicationFailed=true;status='Incoming updates saved locally - editing and autosave paused';
+          throw new IncomingSyncViewError('Incoming updates were saved locally, but refreshing the view failed. The saved updates were not rolled back. Editing and autosave are paused; preserve any unsaved work before reopening this page.',{cause:error});
+        }
         throw error;
-      }
+      }finally{root.inert=incomingPublicationFailed||wasInert;busy=incomingPublicationFailed||wasBusy;renderStatus();}
     });
     saving=operation.catch(()=>{});await operation;
     if(applied)return;
@@ -1468,7 +1484,7 @@ async function receiveIncomingSync(base:Workbook,result:SyncResult,config:SyncCo
   throw Error('Local edits continued during incoming sync. Changes retained; automatic sync will retry.');
 }
 async function manualSave(automatic=false,progress?:(message:string,completed:number,total:number)=>void): Promise<void> {
-  if(automatic&&(!state?.sync||state.syncPaused||state.syncReview||!token||!navigator.onLine||privateSyncConflict||comparisonActive)){schedulePrivateSync();return;}
+  if(automatic&&(!state?.sync||legacyPrivateSync()||state.syncPaused||state.syncReview||!token||!navigator.onLine||privateSyncConflict||comparisonActive)){schedulePrivateSync();return;}
   if(busy){flash('Wait for the current save or sync to finish.');return;}
   if(!automatic&&!commitDraft())return;
   if(!automatic&&mealPanel?.tableMode)try{if(!mealPanel.commit())return;}catch(error){flash(error);return;}
@@ -1491,6 +1507,7 @@ async function manualSave(automatic=false,progress?:(message:string,completed:nu
       }
       return;
     }
+    if(legacyPrivateSync()){if(!automatic){status='Saved locally - move private sync to fnt-data.json';openSync();}return;}
     if(!token){if(!automatic)openSync();return;}
     if(!automatic&&state.syncPaused)await updateSyncMetadata({paused:false});
     const captured={...state,pending:[...state.pending]},config=state.sync,credential=token;
@@ -1498,7 +1515,7 @@ async function manualSave(automatic=false,progress?:(message:string,completed:nu
     await store.assertVersion(captured.version);
     progress?.('Checking private GitHub revision...',0,2);
     const originals=hasPendingContent(captured)?await store.originals():[],base=await store.syncBase(config,captured.remoteSha),attempt=await store.syncAttempt(config);
-    const result=await syncGitHub(captured,credential,fetch,originals,{base,attempt,beforeUpload:transfer=>store.rememberSyncAttempt(config,transfer),canUpload:()=>!state.syncReview&&!privateSyncConflict&&(!comparisonActive||!!progress)&&token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)});
+    const result=await syncGitHub(captured,credential,fetch,originals,{base,attempt,beforeUpload:transfer=>store.rememberSyncAttempt(config,transfer),canUpload:()=>!legacyPrivateSync()&&!state.syncReview&&!privateSyncConflict&&!privateCopyOpen&&(!comparisonActive||!!progress)&&token===credential&&JSON.stringify(state.sync)===JSON.stringify(config)});
     if(token!==credential||JSON.stringify(state.sync)!==JSON.stringify(config))throw Error('Sync connection changed during transfer. Local edits retained; acknowledgement not applied.');
     if(result.remote)await receiveIncomingSync(captured.book,result,config,credential,!!progress);
     else if(result.confirmed||result.sha!==state.remoteSha||result.acknowledged?.length){
@@ -1508,15 +1525,18 @@ async function manualSave(automatic=false,progress?:(message:string,completed:nu
     status=generation!==savedGeneration?'Unsaved changes - saving locally...':hasPendingContent(state)?'Saved locally — newer edits pending sync':'Synced with private repository';
     progress?.('Selected data synced with private GitHub.',2,2);
   } catch(e) {
+    if(e instanceof IncomingSyncViewError){status='Incoming updates saved locally - editing and autosave paused';flash(e);return;}
     if(token!==credentialAtStart||JSON.stringify(state.sync)!==JSON.stringify(connection)){
       status='Sync connection changed — local copy retained';
       flash('The previous sync response was not applied to this connection. Local edits were retained. An upload already sent may still have reached GitHub.');return;
     }
     if(e instanceof SyncPaused){status=generation!==savedGeneration?'NOT SAVED - download a backup':'Saved locally — sync paused';return;}
     if (e instanceof SyncConflict) {
+      if(privateCopyOpen){status='Incoming conflict deferred while choosing a whole copy';return;}
       try{
         if(e.base&&connection){
           while(incomingSyncBlocked()&&!comparisonActive){
+            if(privateCopyOpen){status='Incoming conflict deferred while choosing a whole copy';return;}
             status='Conflicting updates ready - finish the current edit to review';renderStatus();
             await new Promise(resolve=>setTimeout(resolve,200));
           }
@@ -1540,7 +1560,7 @@ async function manualSave(automatic=false,progress?:(message:string,completed:nu
         if(e.originalRemote!==e.remote)await store.checkpoint('Original remote before automatic conflict merge',e.originalRemote,e.originals,true);
         await store.checkpoint('Remote conflict - not applied',e.remote,e.originals,true,connection?{config:connection,sha:e.sha,local:e.local}:undefined);
         await store.checkpoint('Local conflict - not uploaded',book);
-      }catch(recoveryError){status='Sync conflict — recovery failed; saved locally';flash(recoveryError);return;}
+      }catch(recoveryError){status=recoveryError instanceof IncomingSyncViewError?'Incoming updates saved locally - editing and autosave paused':'Sync conflict — recovery failed; saved locally';flash(recoveryError);return;}
       status = 'Sync conflict — saved locally';
     } else status = generation!==savedGeneration?'NOT SAVED - download a backup':state.sync?'Sync failed - local copy retained':'Recovery checkpoint failed - local save retained';
     if(!comparisonActive||progress)flash(e);
@@ -1553,24 +1573,10 @@ function openConflict(conflict:SyncConflict):void {
   dialog('Sync conflict - choose deliberately',`<div class="menu"><button id="upload-local" ${state.sync&&token?'':'disabled'}>Upload local data to GitHub</button><button id="compare-conflict" class="primary">Compare versions or a backup</button></div><p>Both copies are in recovery. Upload creates a separate comparison snapshot; it does not resolve this conflict.</p><details class="file-imports"><summary>Choose a whole copy instead</summary><div class="menu"><button id="use-remote">Use remote version on this device</button><button id="keep-local">Keep local version and explicitly replace remote</button></div><p class="muted">These actions replace a whole copy. A new remote change still causes another conflict.</p></details>`,d=>{
     d.querySelector<HTMLButtonElement>('#upload-local')!.onclick=()=>{d.close();openSnapshotUpload(()=>openConflict(conflict));};
     d.querySelector<HTMLButtonElement>('#compare-conflict')!.onclick=()=>openComparison(conflict);
-    d.querySelector<HTMLButtonElement>('#use-remote')!.onclick=async()=>{
-      if(busy)return;
-      try{
-        const received=migrateDropdownData(conflict.remote);
-        state=await store.metadata(state.version,s=>({...s,book:clone(received.book),remoteSha:conflict.sha,pending:[{id:uid(),label:'Resolve sync conflicts using remote values',time:new Date().toISOString()}]}));
-        adoptSavedWorkbook();
-        await updateSyncMetadata({paused:false,review:false});privateSyncConflict=false;preservedSyncConflict=undefined;schedulePrivateSync(0);
-        error='';status='Remote choices saved locally - previous local version in recovery; sync pending';render();d.close();
-      }catch(e){flash(e);}
-    };
-    d.querySelector<HTMLButtonElement>('#keep-local')!.onclick=()=>{
-      d.close();confirmAction('Replace remote with local version?', 'The preserved remote version remains in recovery. This explicitly chooses your local workbook; the upload still checks the remote revision.',()=>{
-        void(async()=>{try{
-          await updateSyncMetadata({sha:conflict.sha,paused:false,review:false});privateSyncConflict=false;preservedSyncConflict=undefined;
-          changed('Confirm local copy for GitHub replacement',false,true);await manualSave();
-        }catch(e){flash(e);}})();
-      });
-    };
+    const useRemote=d.querySelector<HTMLButtonElement>('#use-remote')!,keepLocal=d.querySelector<HTMLButtonElement>('#keep-local')!;
+    useRemote.textContent='Use latest GitHub copy';keepLocal.textContent='Replace GitHub with this copy';
+    useRemote.onclick=()=>{d.close();void openWorkbookCopy('replace-local');};
+    keepLocal.onclick=()=>{d.close();void openWorkbookCopy('replace-remote');};
   });
 }
 function openSnapshotUpload(back:()=>void):void{
@@ -1851,6 +1857,10 @@ function renderSaveStatus():void{
   };
   if(el&&(privateSyncConflict||state?.syncReview)&&!busy&&draft===undefined)conflictLink(el);
   else if(el&&state?.sync&&!token&&status.startsWith('Saved')&&!busy&&draft===undefined)el.textContent+=' — sign in to resume private sync';
+  if(el&&legacyPrivateSync()&&!busy&&draft===undefined){
+    const migration=document.createElement('a');migration.href='#canonical-workbook';migration.textContent='Move sync to fnt-data.json (legacy automatic sync stopped)';
+    migration.onclick=event=>{event.preventDefault();void openWorkbookCopy('migrate-canonical');};el.append(' — ',migration);
+  }
   const alert = document.querySelector<HTMLElement>('#error');
   if (alert) {
     const message=alert.querySelector<HTMLElement>('.error-message')!;message.textContent=error;alert.hidden=!error;
@@ -1945,7 +1955,7 @@ function render(options?:{preserveViewport:boolean}): void {
   groupControls?.close();groupControls=undefined;
   closeCellDropdown?.();
   if(draft===undefined)closeExpandedEditor();
-  if(ensureTableSheetSpace(book)){const warning=error;changed('Add blank sheet space');error=warning;}
+  if(!openingExistingData&&ensureTableSheetSpace(book)){const warning=error;changed('Add blank sheet space');error=warning;}
   engine.beginPass();
   if(referenceId&&!activeReference())referenceId=book.references?.find(source=>!source.workbookOnly)?.id;
   if(activeReference()?.workbookOnly){
@@ -2819,7 +2829,7 @@ function refreshSelection(closeDropdown=true):void {
   const visited=tableAt(book,sheetId,sheet().rows[selected.r].id,sheet().columns[selected.c].id)?.id;
   if(visited!==lastVisitedTable){
     lastVisitedTable=visited;
-    if(visited){
+    if(visited&&!openingExistingData){
       const previous=book.tableActivity?.[visited]?.visits??0,id=book.id;
       recordTableVisit(book,visited);navigationDirty=true;
       navigationSaving=navigationSaving.then(async()=>{
@@ -4839,6 +4849,15 @@ async function exportBackup():Promise<void> {
 function openFile():void {
   dialog('Recovery',`<div class="menu file-menu"><button id="sync">Private GitHub sync</button><button id="upload-local" ${state.sync&&token?'':'disabled'}>Upload local data to GitHub</button><button id="compare-versions">Compare versions for merge conflict</button><button id="backup">Download independent full backup</button><button id="rename-workbook">Rename workbook</button><details class="file-imports"><summary>Import or restore</summary><label>Import Ingredients<input type="file" id="import-ingredients" accept=".xlsx"></label><label>Restore Fnt backup<input type="file" id="restore" accept=".json"></label><label>Replace workbook from Excel<input type="file" id="import" accept=".xlsx"></label></details><div class="file-actions" id="file-recovery-actions"><button id="history">Recovery checkpoints</button><button id="persist">Request persistent browser storage</button>${book.importReport?'<button id="original">Download unchanged original XLSX</button>':''}</div></div><p id="storage-info" class="muted" role="status"></p><p class="muted">${state.sync&&token?'Uploads create separate comparison copies, not sync replacements.':'Connect private GitHub sync to upload comparison copies.'} Imports and restores preserve recovery and disconnect sync. Keep full backups private.</p>`,d=>{
     d.classList.add('file-dialog');
+    const useLatest=document.createElement('button');useLatest.id='use-latest-github';useLatest.textContent='Use latest GitHub copy';
+    useLatest.onclick=()=>{d.close();void openWorkbookCopy('replace-local');};
+    const replaceGitHub=document.createElement('button');replaceGitHub.id='replace-github-copy';replaceGitHub.textContent='Replace GitHub with this copy';
+    replaceGitHub.onclick=()=>{d.close();void openWorkbookCopy('replace-remote');};
+    d.querySelector('#sync')!.after(useLatest,replaceGitHub);
+    if(legacyPrivateSync()){
+      const migrate=document.createElement('button');migrate.textContent='Use fnt-data.json on this device';
+      migrate.onclick=()=>{d.close();void openWorkbookCopy('migrate-canonical');};replaceGitHub.after(migrate);
+    }
     const recheck=document.createElement('button');recheck.id='recheck-sync';recheck.textContent='Recheck paused sync';
     recheck.disabled=!state.sync||!token||!state.syncReview;
     recheck.onclick=()=>{d.close();void recheckPausedSync();};
@@ -5045,12 +5064,109 @@ async function openHistory():Promise<void> {
     });
   }catch(e){flash(e);}
 }
+async function openWorkbookCopy(mode:PrivateWorkbookAction):Promise<void>{
+  if(busy||comparisonActive||privateCopyOpen){flash('Close the comparison and wait for the current operation before replacing a copy.');return;}
+  if(legacyPrivateSync())mode='migrate-canonical';
+  privateCopyOpen=true;
+  clearTimeout(privateSyncTimer);
+  let surface:HTMLDialogElement|undefined;
+  let replacementCommitted=false;
+  const pausePublication=(cause:unknown):Error=>{
+    incomingPublicationFailed=true;busy=true;root.inert=true;token='';
+    clearTimeout(saveTimer);clearTimeout(privateSyncTimer);
+    status='GitHub copy saved locally - editing and autosave paused';
+    return Error('The selected GitHub copy was saved locally, but refreshing the view failed. The saved copy was not rolled back; the previous local copy is retained in Recovery. Editing and autosave are paused. Preserve any unsaved work before reopening this page.',{cause});
+  };
+  const release=()=>{privateCopyOpen=false;busy=incomingPublicationFailed;renderStatus();schedulePrivateSync();};
+  try{
+    if(privateSyncFlight){status='Finishing current private sync before opening replacement controls...';renderStatus();}
+    await privateSyncFlight;
+    if(busy||comparisonActive)throw Error('The active operation changed. Close it before replacing a copy.');
+    if(!commitDraft()){privateCopyOpen=false;return;}
+    if(mealPanel?.tableMode&&!mealPanel.commit()){privateCopyOpen=false;return;}
+    busy=true;clearTimeout(privateSyncTimer);
+    await navigationSaving;await flush();
+    if(savedGeneration!==generation||pendingPhotoBlobs.size||navigationError)throw Error('Save all local edits, photos and navigation before replacing a copy.');
+    const capturedGeneration=generation,previousToken=token,migrating=mode==='migrate-canonical';
+    if(migrating&&!legacyPrivateSync())throw Error('This device no longer has a legacy sync destination. Reopen private sync to review its current source.');
+    let expected=state.version;
+    const ensureReady=async()=>{
+      await saving;await navigationSaving;
+      if(generation!==capturedGeneration||state.version!==expected||savedGeneration!==generation||pendingPhotoBlobs.size||navigationError)throw Error('The local copy changed during review. Close this dialog and read both copies again.');
+      await store.assertVersion(expected);
+    };
+    surface=openPrivateWorkbook<PrivateWorkbookSource>({
+      mode,config:state.sync,fixedPath:migrating?state.sync!.path:canonicalWorkbookPath,
+      canonical:migrating?{path:canonicalWorkbookPath,inspect:readCanonicalWorkbook}:undefined,
+      localTitle:book.title,dialog,ensureReady,inspect:async(config,credential)=>{
+        if(migrating?!(['owner','repo','branch','path'] as const).every(key=>state.sync?.[key]===config[key]):config.path!==canonicalWorkbookPath)throw Error('The saved filename migration source changed. Reopen private sync and read the selected files again.');
+        const source=await readPrivateWorkbook(config,credential);
+        if((['owner','repo','branch','path'] as const).some(key=>source.config[key]!==config[key]))throw Error('The saved legacy file was not found at its exact destination. A different filename cannot stand in for that source. Review the saved destination and recovery before continuing.');
+        return source;
+      },
+      initialize:async(source,credential,requested,legacy)=>{
+        await ensureReady();
+        const action=requested??mode;
+        try{
+        if(migrating&&legacy&&source.config.path===canonicalWorkbookPath){await store.preservePrivateWorkbook(legacy,expected);await ensureReady();}
+        if(action==='replace-local'){
+          const accepted=await store.usePrivateWorkbook(source,expected);
+          replacementCommitted=true;state=accepted;
+          token='';rememberPrivateSync=false;privateSyncConflict=false;preservedSyncConflict=undefined;
+          adoptSavedWorkbook();status=source.config.path===canonicalWorkbookPath?'Using fnt-data.json in this browser - prior copies in recovery; automatic sync paused':'Using the legacy GitHub copy locally - reopen filename migration to create fnt-data.json; automatic sync paused';
+        }else if(action==='migrate-canonical'){
+          const prepared=await store.prepareCanonicalMigration(source,expected);state=prepared.state;expected=state.version;
+          const canUpload=()=>surface?.open===true&&generation===capturedGeneration&&state.version===expected&&token===previousToken&&(['owner','repo','branch','path'] as const).every(key=>state.sync?.[key]===source.config[key]);
+          const result=await createCanonicalWorkbook(state,prepared.migration,credential,fetch,await store.originals(),{
+            assertCurrent:ensureReady,canUpload,
+            beforeUpload:async attempt=>{await ensureReady();if(!canUpload())throw Error('Filename migration context changed. Creation was not started.');await store.rememberSyncAttempt(prepared.migration.target,attempt);},
+          });
+          try{state=await store.finishCanonicalMigration(prepared.migration,result,expected);}
+          catch(reason){throw Error(`Creating fnt-data.json succeeded, but local confirmation failed. Do not retry blindly; read both files and local recovery. ${reason instanceof Error?reason.message:String(reason)}`);}
+          token='';rememberPrivateSync=false;privateSyncConflict=false;preservedSyncConflict=undefined;
+          status='This device now uses fnt-data.json - legacy file retained; automatic sync paused';
+        }else{
+          state=await store.preparePrivateReplacement(source,expected);expected=state.version;
+          const prepared=state,config=source.config;
+          const canUpload=()=>surface?.open===true&&generation===capturedGeneration&&state.version===expected&&token===previousToken&&(['owner','repo','branch','path'] as const).every(key=>state.sync?.[key]===config[key]);
+          const result=await syncGitHub(prepared,credential,fetch,await store.originals(),{
+            replaceRemote:{sha:source.sha,preserve:actual=>store.preservePrivateWorkbook(actual,prepared.version).then(()=>{})},
+            canUpload,
+            beforeUpload:async attempt=>{await ensureReady();if(!canUpload())throw Error('Replacement context changed. GitHub was not replaced by this request.');await store.rememberSyncAttempt(config,attempt);},
+          });
+          try{
+            const metadata=await store.syncMetadata(prepared.version,{sha:result.sha,acknowledged:result.acknowledged,confirmed:result.confirmed,originals:result.originals,paused:true,review:false});
+            state={...state,...metadata};
+          }catch(reason){
+            throw Error(`GitHub replacement succeeded, but local confirmation failed. Do not retry blindly; inspect GitHub and local recovery. ${reason instanceof Error?reason.message:String(reason)}`);
+          }
+          token='';rememberPrivateSync=false;privateSyncConflict=false;preservedSyncConflict=undefined;
+          status='GitHub replaced with this browser copy - displaced GitHub copy in recovery; automatic sync paused';
+        }
+        channel?.postMessage({version:state.version});
+        }catch(reason){
+          if(replacementCommitted)throw pausePublication(reason);
+          throw reason;
+        }
+      },
+      opened:()=>{
+        try{render();}
+        catch(reason){if(!replacementCommitted)throw reason;flash(pausePublication(reason));}
+      },
+    });
+    surface.addEventListener('close',release,{once:true});
+  }catch(reason){
+    status='Copy replacement could not start - local data retained';flash(reason);release();
+  }
+}
 function openSync(options?:{readOnly:boolean;complete:(connected:boolean)=>void}):void {
-  const cfg=githubFormDefaults(state.sync),pathNote=state.sync&&cfg.path!==state.sync.path?`<p class="muted" id="sync-path-note">Saved destination: ${esc(state.sync.path)}. The renamed default is ${esc(cfg.path)}. Connecting updates this device's destination; it does not rename or delete files on GitHub.</p>`:'';
+  const cfg=state.sync?clone(state.sync):githubFormDefaults(),pathNote=state.sync?`<p class="muted" id="sync-path-note">Saved destination: ${esc(state.sync.owner)}/${esc(state.sync.repo)}, branch ${esc(state.sync.branch)}, path ${esc(state.sync.path)}. Editing these fields does not change the saved destination until you explicitly connect. It does not rename or delete files on GitHub.</p>`:'';
   dialog('Optional private GitHub sync',`<p>Opt-in only. This uploads workbook data to the private repository you choose. Never use your website source or a public repository. Existing remote files are not overwritten on conflict.</p><form id="sync-form"><label>Personal repository owner<input id="sync-owner" value="${esc(cfg?.owner)}" required autocomplete="off"></label><label>Private data repository<input id="sync-repo" value="${esc(cfg?.repo)}" required></label><label>Existing branch<input id="sync-branch" value="${esc(cfg?.branch??'main')}" required></label><label>JSON path<input id="sync-path" value="${esc(cfg.path)}" required></label>${pathNote}<label>Fine-grained token: Contents read/write, only this data repository<input id="sync-token" type="password" autocomplete="off" required></label><label class="inline"><input id="sync-remember" type="checkbox" ${rememberPrivateSync?'checked':''}>Remember on this trusted device</label><p class="muted">Unchecked: token stays in this tab's memory; sign in again after reloading. Checked: token is stored in this browser's IndexedDB, separately from workbook data, never in backups or Git. Anyone with access to this browser or malicious app code could read it. Use only a fine-grained token restricted to this data repository. Disconnect forgets it on this device.</p><p class="muted">Saved edits batch after about two seconds. Clean visible authenticated tabs check remote revisions about every ten seconds; startup/resume/reconnection may also check. Compatible changes merge automatically by stable identity, including offline edits after reconnect. Incoming updates wait for the current editor or dialog to close and require local edits and photos to be saved first. Manual nutrition is preserved for review when incoming source values change. Toolbar layout and navigation preferences stay local to each device. Incompatible changes preserve both copies and pause uploads for submitted comparison decisions. Save syncs immediately unless review is unresolved. GitHub must already contain the branch. Large files may exceed the Contents API limit.</p><button class="primary">Connect & sync now</button><button id="disconnect" type="button">Disconnect</button></form>`,d=>{
     let connected=false,connecting=false;
     const actions=document.createElement('div');actions.className='button-row';
     const connect=d.querySelector<HTMLButtonElement>('.primary')!;
+    d.querySelector<HTMLInputElement>('#sync-path')!.readOnly=true;
+    connect.disabled=legacyPrivateSync()&&!options?.readOnly;
     connect.before(actions);actions.append(connect,d.querySelector<HTMLButtonElement>('#disconnect')!);
     const readStatus=document.createElement('p');readStatus.setAttribute('role','status');
     if(options?.readOnly){
@@ -5060,11 +5176,25 @@ function openSync(options?:{readOnly:boolean;complete:(connected:boolean)=>void}
       d.addEventListener('close',()=>options.complete(connected));
     }
     if(!options?.readOnly){const compare=document.createElement('button');compare.type='button';compare.id='sync-compare';compare.textContent='Compare copies';compare.onclick=()=>openComparison();actions.append(compare);}
+    if(!options?.readOnly){
+      for(const [mode,label]of [['replace-local','Use latest GitHub copy'],['replace-remote','Replace GitHub with this copy']] as const){
+        const replace=document.createElement('button');replace.type='button';replace.textContent=label;
+        replace.onclick=()=>{d.close();void openWorkbookCopy(mode);};actions.append(replace);
+      }
+      if(legacyPrivateSync()){
+        const migrate=document.createElement('button');migrate.type='button';migrate.textContent='Use fnt-data.json on this device';
+        migrate.onclick=()=>{d.close();void openWorkbookCopy('migrate-canonical');};actions.append(migrate);
+        const explanation=document.createElement('p');explanation.className='muted';explanation.textContent='This saved legacy destination is unchanged. Automatic sync is stopped until you explicitly move this device to fnt-data.json. Read both files with the migration control; reconnecting here cannot silently switch files.';actions.before(explanation);
+      }
+    }
     d.querySelector('form')!.onsubmit=async e=>{
       e.preventDefault();if(connecting)return;await flush();if(savedGeneration!==generation)return;
       const read=(id:string)=>d.querySelector<HTMLInputElement>(id)!.value.trim();
       const next={owner:read('#sync-owner'),repo:read('#sync-repo'),branch:read('#sync-branch'),path:read('#sync-path')};
       try{
+        const sameSaved=state.sync&&(['owner','repo','branch','path'] as const).every(key=>state.sync?.[key]===next[key]);
+        if(next.path!==canonicalWorkbookPath&&!(options?.readOnly&&sameSaved))throw Error('Workbook sync now uses fnt-data.json. Complete the filename migration before reconnecting this device.');
+        if(legacyPrivateSync()&&!options?.readOnly)throw Error('Read both files with Use fnt-data.json on this device before changing the saved destination.');
         const remember=d.querySelector<HTMLInputElement>('#sync-remember')!.checked,nextToken=read('#sync-token');
         if(options?.readOnly){
           connecting=true;d.querySelector<HTMLButtonElement>('.primary')!.disabled=true;readStatus.textContent='Verifying private GitHub access...';
@@ -5077,7 +5207,7 @@ function openSync(options?:{readOnly:boolean;complete:(connected:boolean)=>void}
         if(options?.readOnly){connected=true;d.close();renderStatus();return;}
         privateSyncConflict=false;d.close();await manualSave();
       }catch(e){if(options?.readOnly)readStatus.textContent=e instanceof Error?e.message:String(e);else flash(e);}
-      finally{connecting=false;d.querySelector<HTMLButtonElement>('.primary')!.disabled=false;}
+      finally{connecting=false;d.querySelector<HTMLButtonElement>('.primary')!.disabled=legacyPrivateSync()&&!options?.readOnly;}
     };
     d.querySelector<HTMLButtonElement>('#disconnect')!.onclick=async()=>{
       try{await flush();await store.rememberSyncToken();state=await store.metadata(state.version,s=>({...s,sync:undefined,remoteSha:undefined}));token='';rememberPrivateSync=false;clearTimeout(privateSyncTimer);status='Disconnected - local only';renderStatus();d.close();}catch(e){flash(e);}
@@ -5234,7 +5364,7 @@ window.addEventListener('pageshow',()=>schedulePrivateSync(0));
 channel?.addEventListener('message',e=>{if(state&&e.data.version>state.version){error='Another tab saved newer changes. Download a backup of this tab before reloading; further saves are blocked by revision checks.';renderStatus();}});
 async function start():Promise<void> {
   root.innerHTML='<main class="startup"><p>Opening your local workbook...</p></main>';
-  const publishedStarter=import.meta.env.PROD||import.meta.env.VITE_FNT_SYNTHETIC_STARTER!=='true';
+  const publishedStarter=!existingDataOnly&&(import.meta.env.PROD||import.meta.env.VITE_FNT_SYNTHETIC_STARTER!=='true');
   let stage='opening local storage';
   try{
     store=await Store.open(undefined,()=>{
@@ -5242,7 +5372,7 @@ async function start():Promise<void> {
     });stage='loading the saved workbook';const loaded=await store.load();
     if(loaded){
       state=loaded;book=clone(state.book);
-      if(!book.catalogMigrations?.includes(dropdownCatalog.id)||!book.catalogMigrations.includes(dropdownFormatMigration)||!book.catalogMigrations.includes(dropdownGroupMigration)){
+      if(!existingDataOnly&&(!book.catalogMigrations?.includes(dropdownCatalog.id)||!book.catalogMigrations.includes(dropdownFormatMigration)||!book.catalogMigrations.includes(dropdownGroupMigration))){
         const before=await store.backup(state),result=seedDropdownCatalog(book,book.catalogMigrations?.includes(dropdownCatalog.id)?new Set():await verifiedCatalogOrigins(before));
         if(result.changed){
           state=await store.save(result.book,state.version,'Add original Dropdowns catalogs',true,undefined,{recoveryArchive:stringifyArchive(before)});
@@ -5264,32 +5394,47 @@ async function start():Promise<void> {
         }catch(e){error=`Published testing data could not be updated; your existing workbook was retained. ${String(e)}`;}
       }
     }else{
+      if(existingDataOnly){
+        root.innerHTML='<main class="startup"><h1>No saved workbook at this address</h1><p role="alert">This local preview opens existing data only. No demo, published workbook or private copy has been loaded, and private sync has not been connected.</p><p>Workbook data belongs to its original address and browser profile. Open the address and profile where you saved it; do not clear site data.</p><button type="button" class="primary" data-open-private-workbook>Open existing private workbook</button></main>';
+        root.querySelector<HTMLButtonElement>('[data-open-private-workbook]')!.onclick=()=>openPrivateWorkbook<PrivateWorkbookSource>({
+          dialog,fixedPath:canonicalWorkbookPath,
+          ensureReady:async()=>{if(await store.load())throw Error('A workbook is already saved at this address. Nothing was replaced. Open its existing data or use recovery.');},
+          inspect:async(config,credential)=>{
+            if(config.path!==canonicalWorkbookPath)throw Error('Private workbook sync uses fnt-data.json.');
+            return readPrivateWorkbook(config,credential);
+          },
+          initialize:async source=>{await store.initializePrivateWorkbook(source);},
+          opened:()=>{store.close();void start();},
+        });
+        return;
+      }
       if(publishedStarter){
         stage='loading the published testing workbook';const snapshot=await loadPublishedTesting();book=snapshot.book;
         state=await store.save(book,0,'Load published testing workbook',false,undefined,{localOnly:true,publishedSnapshot:snapshot.id});
       }else{book=seedDropdownCatalog(createDemo()).book;state=await store.save(book,0,'Create starter workbook with original Dropdowns catalogs');}
     }
     stage='moving supporting data into DD storage';
-    const migrated=migrateDropdownData(book);
+    const migrated=existingDataOnly?{changed:false,book}:migrateDropdownData(book);
     if(migrated.changed){
       const before=await store.backup(state);
       state=await store.save(migrated.book,state.version,'Move dropdown records into DD storage',true,undefined,{recoveryArchive:stringifyArchive(before)});
       book=clone(state.book);for(const entry of undo)if('book'in entry)entry.book=migrateDropdownData(entry.book).book;
       channel?.postMessage({version:state.version});
     }
-    if(state.sync){
+    if(state.sync&&!existingDataOnly){
       try{token=await store.syncToken(state.sync)??'';rememberPrivateSync=!!token;}
       catch(e){error=String(e);}
     }
     const savedUndo=await store.undoHistory(state.version,book.id);
     if(savedUndo){undo.splice(0,undo.length,...savedUndo.undo);redo.splice(0,redo.length,...savedUndo.redo);}
     let remembered:string|null=null;try{remembered=sessionStorage.getItem('fnt-current-sheet');}catch(e){error=`Selected-tab preference unavailable: ${String(e)}`;}
-    stage='rendering the spreadsheet';engine=new Engine(book);sheetId=book.sheets.some(s=>s.id===remembered)?remembered!:book.sheets[0].id;const view=restoreView(remembered);if(referenceId&&!workbookView){const s=book.sheets.find(s=>!s.supporting)??book.sheets[0];workbookView={sheet:s.id,selected:{r:0,c:0},anchor:{r:0,c:0},kind:'cells',scroll:0,left:0};}status=state.sync?`Saved locally - ${state.pending.length} pending changes`:'Saved in this browser — local only (not synced)';
-    const defaults=book.sheets.filter(s=>!s.pagination&&paginationDefault(book,s));
+    stage='rendering the spreadsheet';engine=new Engine(book);sheetId=book.sheets.some(s=>s.id===remembered)?remembered!:book.sheets[0].id;const view=restoreView(remembered);if(referenceId&&!workbookView){const s=book.sheets.find(s=>!s.supporting)??book.sheets[0];workbookView={sheet:s.id,selected:{r:0,c:0},anchor:{r:0,c:0},kind:'cells',scroll:0,left:0};}status=existingDataOnly?'Saved locally - existing-data-only preview; private sync is not connected':state.sync?`Saved locally - ${state.pending.length} pending changes`:'Saved in this browser — local only (not synced)';
+    const defaults=existingDataOnly?[]:book.sheets.filter(s=>!s.pagination&&paginationDefault(book,s));
     if(defaults.length){for(const s of defaults)s.pagination=paginationDefault(book,s);changed('Initialize Master date pages',false,false,capturePatch(book,defaults.map(s=>['sheets',book.sheets.indexOf(s),'pagination'])));}
     renderRestoredView(view);
     await navigationSaving;
-    try{if(sessionStorage.getItem(`fnt-comparison:${book.id}`))openComparison();}catch(error){flash(`Could not restore the open comparison: ${String(error)}`);}
+    openingExistingData=false;
+    try{if(!existingDataOnly&&sessionStorage.getItem(`fnt-comparison:${book.id}`))openComparison();}catch(error){flash(`Could not restore the open comparison: ${String(error)}`);}
     if('serviceWorker'in navigator&&import.meta.env.PROD){
       navigator.serviceWorker.addEventListener('message',e=>{
         if(e.data?.type!=='fnt-update-ready'||!Array.isArray(e.data.files))return;
