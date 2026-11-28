@@ -7,6 +7,11 @@ import {sameSharedWorkbook} from '../src/sync-merge';
 import {applyUndo,structuralUndo,type UndoHistory} from '../src/undo-history';
 import {addDraftFood,captureData} from '../src/food-capture';
 import {nutritionReviewRows,resolveNutritionReview} from '../src/ingredient-edit';
+import {prepareSyncRecheck} from '../src/sync-recheck';
+import type {StoredComparisonReview,ComparisonReviewView} from '../src/comparison-host';
+import {inspectPhoto,decodePhotoArchives} from '../src/food-photos';
+import {parseArchive} from '../src/archive';
+import type {Backup} from '../src/storage';
 
 const config={owner:'example',repo:'private',branch:'main',path:'coauthoring.json'};
 function fixture():Workbook{
@@ -176,6 +181,161 @@ describe('shared-ancestor private sync',()=>{
       expect((await store.history()).some(copy=>copy.label==='Before incoming sync changes'&&cell(copy.book,2,2)===undefined)).toBe(true);
       await expect(store.acceptSync(saved.version,config,result,after)).rejects.toThrow('Another tab');
     }finally{store.close();}
+  });
+});
+
+describe('explicit paused sync recheck',()=>{
+  async function paused(){
+    const name=uid(),store=await Store.open(name),base=fixture(),local=clone(base),endpoint=new Endpoint(base),sha='a'.repeat(40);
+    edit(local,1,0,2);edit(endpoint.book,1,1,30);endpoint.sha='newer-remote';endpoint.snapshots.set(sha,base);
+    const saved=await store.save(local,0,'Phone edit');
+    let current=await store.metadata(saved.version,s=>({...s,sync:config,remoteSha:sha,syncPaused:true,syncReview:true}));
+    const view:ComparisonReviewView={choices:[],history:[[]],category:'all',specific:'',region:0,context:'',firstCell:false,linked:true,choiceScope:'all',keepScope:'all',latest:[],uploads:{}};
+    const id=uid(),review:StoredComparisonReview={left:{book:clone(local),kind:'Local',label:'Old local'},right:{book:clone(base),kind:'GitHub',label:'Old remote'},view,baseRevision:local.revision,sync:{config,path:config.path,sha:'old-review-sha'}};
+    await store.saveComparisonReview(id,review,true);
+    const newer=clone(current.book);edit(newer,2,2,44);const food=addDraftFood(newer,45000);food.values={food:'New phone draft',calories:'123'};
+    current=await store.save(newer,current.version,'Later phone panel edit');
+    return{name,store,base,endpoint,current,id,review};
+  }
+  it('previews the current phone edits using exact legacy ancestry, without upload, acknowledgement or changing the old review',async()=>{
+    const f=await paused();
+    try{
+      const preview=await prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch);
+      expect(preview.plan.conflicts).toEqual([]);expect(preview.reviewId).not.toBe(f.id);
+      expect(cell(preview.plan.local)).toBe(2);expect(cell(preview.plan.local,1,1)).toBe(30);expect(cell(preview.plan.local,2,2)).toBe(44);
+      expect(preview.plan.local.foodCapture!.foods[0].values).toEqual({food:'New phone draft',calories:'123'});
+      expect(f.endpoint.blobReads).toBe(1);expect(f.endpoint.attempts).toBe(0);
+      expect(await f.store.load()).toEqual(f.current);expect(await f.store.comparisonReview(f.id)).toEqual(f.review);
+      await f.store.stageSyncRecheck(preview);
+      expect(await f.store.load()).toEqual(f.current);expect(await f.store.comparisonReview(f.id)).toEqual(f.review);
+      expect(await f.store.comparisonReview(preview.reviewId)).toEqual(preview.review);
+      expect((await f.store.history()).some(copy=>copy.label==='Before paused sync recheck'&&!!copy.backup)).toBe(true);
+      f.store.close();
+      const reopened=await Store.open(f.name);
+      try{
+        expect(await reopened.comparisonReview(f.id)).toEqual(f.review);
+        expect(await reopened.syncRecheckHistory(f.current.book.id)).toEqual([{id:f.id,time:expect.any(String)}]);
+        expect((await reopened.load())!.syncReview).toBe(true);expect((await reopened.load())!.pending).toEqual(f.current.pending);
+      }finally{reopened.close();}
+    }finally{f.store.close();}
+  });
+  it('keeps only the real same-cell collision in the new alternatives and retains disjoint edits in both',async()=>{
+    const f=await paused();edit(f.endpoint.book,1,0,3);
+    try{
+      const preview=await prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch);
+      expect(preview.plan.conflicts).toHaveLength(1);
+      expect(cell(preview.plan.local)).toBe(2);expect(cell(preview.plan.remote)).toBe(3);
+      for(const copy of [preview.plan.local,preview.plan.remote]){expect(cell(copy,1,1)).toBe(30);expect(cell(copy,2,2)).toBe(44);expect(copy.foodCapture!.foods[0].values.calories).toBe('123');}
+      expect(preview.review.view).toBeUndefined();expect(await f.store.comparisonReview(f.id)).toEqual(f.review);expect(f.endpoint.attempts).toBe(0);
+    }finally{f.store.close();}
+  });
+  it.each([
+    {local:2,remote:3,conflicts:1},
+    {local:2,remote:3,conflicts:1,emptyPending:true},
+    {local:4,remote:5,conflicts:1},
+    {local:2,remote:5,conflicts:1},
+    {local:2,remote:2,conflicts:0},
+    {local:3,remote:3,conflicts:0},
+  ])('does not silently resolve an existing conflict whose remote head is already the saved base ($local/$remote)',async next=>{
+    const f=await paused();
+    try{
+      edit(f.endpoint.book,1,0,3);
+      const merged=await mergeForSync(f.base,f.current.book,f.endpoint.book);
+      f.current=await f.store.save(merged.local,f.current.version,'Preserve provisional conflict variant');
+      f.current={...f.current,...await f.store.syncMetadata(f.current.version,{sha:f.endpoint.sha,confirmed:f.endpoint.book})};
+      await f.store.checkpoint('Remote conflict - not applied',merged.remote,[],true,{config,sha:f.endpoint.sha,local:merged.local});
+      if(next.local!==2){const current=clone(f.current.book);edit(current,1,0,next.local);f.current=await f.store.save(current,f.current.version,'Later same-cell phone edit');}
+      if(next.remote!==3){edit(f.endpoint.book,1,0,next.remote);f.endpoint.sha='even-newer-head';}
+      if('emptyPending'in next)f.current=await f.store.metadata(f.current.version,s=>({...s,pending:[]}));
+      const preview=await prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch);
+      expect(preview.plan.conflicts).toHaveLength(next.conflicts);
+      expect(cell(preview.plan.local)).toBe(next.local);expect(cell(preview.plan.remote)).toBe(next.remote);
+      for(const copy of [preview.plan.local,preview.plan.remote]){expect(cell(copy,1,1)).toBe(30);expect(cell(copy,2,2)).toBe(44);expect(copy.foodCapture!.foods[0].values.calories).toBe('123');}
+      expect(await f.store.load()).toEqual(f.current);expect(await f.store.comparisonReview(f.id)).toEqual(f.review);expect(f.endpoint.attempts).toBe(0);
+    }finally{f.store.close();}
+  });
+  it('retains exact local photo bytes, original attachments and Undo through failed and successful staging',async()=>{
+    const f=await paused();
+    try{
+      const photo=await inspectPhoto(uid(),new Blob([new Uint8Array([137,80,78,71,13,10,26,10,0])],{type:'image/png'}));
+      const book=clone(f.current.book),history={undo:[structuralUndo(f.base,book)],redo:[]},original={id:'synthetic-xlsx',name:'Invented original.xlsx',data:'AA=='};
+      captureData(book).photos.push({id:photo.id,name:'Invented.png',date:45000,digest:photo.digest,mime:photo.mime,bytes:photo.bytes});
+      f.current=await f.store.save(book,f.current.version,'Attach synthetic original',false,original,{photos:[photo],undoHistory:history});
+      const preview=await prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch);
+      expect(await decodePhotoArchives((parseArchive(preview.backup) as Backup).photos!)).toEqual([photo]);
+      const failure=vi.spyOn(IDBObjectStore.prototype,'put').mockImplementationOnce(()=>{throw Error('Synthetic recovery write failure');});
+      try{await expect(f.store.stageSyncRecheck(preview)).rejects.toThrow('recovery write failure');}finally{failure.mockRestore();}
+      expect(await f.store.photo(photo.id,photo)).toEqual(photo);expect(await f.store.originals()).toEqual([original]);
+      expect(await f.store.undoHistory(f.current.version,book.id)).toEqual(history);expect(await f.store.load()).toEqual(f.current);
+      await f.store.stageSyncRecheck(preview);
+      expect(await f.store.photo(photo.id,photo)).toEqual(photo);expect(await f.store.originals()).toEqual([original]);
+      expect(await f.store.undoHistory(f.current.version,book.id)).toEqual(history);
+      const recovery=(await f.store.history()).find(copy=>copy.label==='Before paused sync recheck')!;
+      expect(await decodePhotoArchives((parseArchive(recovery.backup!) as Backup).photos!)).toEqual([photo]);
+      expect((await f.store.history()).find(copy=>copy.label==='GitHub source - paused sync recheck')!.book).toEqual(f.endpoint.book);
+    }finally{f.store.close();}
+  });
+  it('retains a missing-photo review without staging an incomplete recovery copy',async()=>{
+    const f=await paused();
+    try{
+      const photo=await inspectPhoto(uid(),new Blob([new Uint8Array([137,80,78,71,13,10,26,10,1])],{type:'image/png'})),book=clone(f.current.book);
+      captureData(book).photos.push({id:photo.id,name:'Unavailable.png',date:45000,digest:photo.digest,mime:photo.mime,bytes:photo.bytes});
+      f.current=await f.store.save(book,f.current.version,'Synthetic reference without original');
+      await expect(prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch)).rejects.toThrow('photo originals are missing');
+      expect(await f.store.load()).toEqual(f.current);expect(await f.store.comparisonReview(f.id)).toEqual(f.review);expect(await f.store.history()).toEqual([]);
+      expect(f.endpoint.attempts).toBe(0);
+    }finally{f.store.close();}
+  });
+  it('preserves everything when the ancestor is unavailable or the active editor/photo/connection guard changes',async()=>{
+    const f=await paused();
+    try{
+      f.endpoint.snapshots.clear();
+      await expect(prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch)).rejects.toThrow('ancestor could not be verified');
+      f.endpoint.snapshots.set(f.current.remoteSha!,f.base);
+      let active=true;
+      const fetcher:typeof fetch=async(input,init)=>{const response=await f.endpoint.fetch(input,init);if(String(input).includes('/contents/'))active=false;return response;};
+      await expect(prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>active,fetcher)).rejects.toThrow('changed during recheck');
+      expect(await f.store.load()).toEqual(f.current);expect(await f.store.comparisonReview(f.id)).toEqual(f.review);
+      expect(await f.store.history()).toEqual([]);expect(f.endpoint.attempts).toBe(0);
+    }finally{f.store.close();}
+  });
+  it.each(['choices','history'] as const)('does not recheck or reset existing %s, including undone decisions',async kind=>{
+    const f=await paused();
+    try{
+      if(kind==='choices')f.review.view!.choices=[{key:'old-decision',side:'left'}];
+      else f.review.view!.history=[[{key:'old-decision',side:'right'}],[]];
+      await f.store.saveComparisonReview(f.id,f.review,true);
+      await expect(prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch)).rejects.toThrow('decisions or decision history');
+      expect(f.endpoint.blobReads).toBe(0);expect(await f.store.comparisonReview(f.id)).toEqual(f.review);expect(await f.store.load()).toEqual(f.current);
+    }finally{f.store.close();}
+  });
+  it.each(['workbook','review','sources','quota'] as const)('atomically refuses stale %s staging without replacing the old review or committing partial recovery',async reason=>{
+    const f=await paused();
+    try{
+      const preview=await prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch);
+      let restore=()=>{};
+      if(reason==='workbook')f.current=await f.store.metadata(f.current.version,s=>({...s,sync:{...config,path:'new.json'}}));
+      if(reason==='review'){f.review.view!.history.push([{key:'late-decision',side:'left'}]);await f.store.saveComparisonReview(f.id,f.review,true);}
+      if(reason==='sources'){edit(f.review.right!.book,3,2,88);await f.store.saveComparisonReview(f.id,f.review,true);}
+      if(reason==='quota'){const failure=vi.spyOn(IDBObjectStore.prototype,'put').mockImplementationOnce(()=>{throw new DOMException('Synthetic quota failure','QuotaExceededError');});restore=()=>failure.mockRestore();}
+      try{await expect(f.store.stageSyncRecheck(preview)).rejects.toThrow(reason==='workbook'?'Another tab':reason==='review'?'decisions or decision history':reason==='sources'?'original comparison changed':'quota failure');}finally{restore();}
+      expect(await f.store.comparisonReview(f.id)).toEqual(f.review);expect(await f.store.comparisonReview(preview.reviewId)).toBeUndefined();
+      expect(await f.store.history()).toEqual([]);expect(await f.store.load()).toEqual(f.current);expect(f.endpoint.attempts).toBe(0);
+    }finally{f.store.close();}
+  });
+  it('refuses to overwrite an original attachment changed after preflight without a workbook version change',async()=>{
+    const f=await paused();
+    try{
+      const original={id:'synthetic-xlsx',name:'Original.xlsx',data:'AA=='};
+      await f.store.checkpoint('Independent original fixture',f.current.book,[original],true);
+      const preview=await prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch);
+      const newer={...original,data:'AQ=='};
+      await f.store.checkpoint('Later original fixture',f.current.book,[newer],true);
+      await expect(f.store.stageSyncRecheck(preview)).rejects.toThrow('original attachment changed');
+      expect(await f.store.originals()).toEqual([newer]);expect(await f.store.load()).toEqual(f.current);
+      expect(await f.store.comparisonReview(f.id)).toEqual(f.review);expect(await f.store.comparisonReview(preview.reviewId)).toBeUndefined();
+      expect((await f.store.history()).some(copy=>copy.label==='Before paused sync recheck')).toBe(false);expect(f.endpoint.attempts).toBe(0);
+    }finally{f.store.close();}
   });
 });
 

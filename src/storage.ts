@@ -10,6 +10,8 @@ import {validateFoodCapture} from './food-capture';
 import {validateConverterState} from './nutrition-converter';
 import {validateConverterReceipt} from './nutrition-apply';
 import {decodePhotoArchives,encodePhotoArchives,inspectPhoto,referencedPhotoIds,validatePhotoArchives,type PhotoArchive,type PhotoBlob} from './food-photos';
+import type {SyncRecheck} from './sync-recheck';
+import {assertUndecidedReview} from './comparison-host';
 
 export interface Pending { id: string; label: string; time: string }
 export interface SyncConfig { owner: string; repo: string; branch: string; path: string }
@@ -507,6 +509,51 @@ export class Store {
     const tx=this.db.transaction('state','readwrite'),done=complete(tx),store=tx.objectStore('state');
     store.delete(`comparison:sources:${id}`);store.delete(`comparison:view:${id}`);await done;
   }
+  async syncRecheckHistory(book:string):Promise<{id:string;time:string}[]>{
+    return await request(this.db.transaction('state').objectStore('state').get(`comparison:rechecks:${book}`))??[];
+  }
+  async stageSyncRecheck(preview:SyncRecheck):Promise<void>{
+    const {state:expected,previousId,previous,storedPrevious,reviewId,review,plan,backup}=clone(preview);
+    validateBook(review.left.book);validateBook(review.right!.book);
+    const tx=this.db.transaction(['state','history','originals'],'readwrite'),done=complete(tx),store=tx.objectStore('state');
+    let failure:unknown;
+    const fail=(error:unknown)=>{failure=error;tx.abort();};
+    readState(store,current=>{
+      try{
+        if(!current||JSON.stringify(current)!==JSON.stringify(expected))throw Error('Another tab changed the paused workbook. Recheck was not staged.');
+        const sources=store.get(`comparison:sources:${previousId}`),view=store.get(`comparison:view:${previousId}`),history=store.get(`comparison:rechecks:${expected.book.id}`),attachments=tx.objectStore('originals').getAll();
+        let remaining=4;
+        const stage=()=>{
+          if(--remaining)return;
+          try{
+            const existing=sources.result?{...sources.result,view:view.result}:undefined;
+            assertUndecidedReview(existing);
+            if(JSON.stringify(existing)!==JSON.stringify(storedPrevious))throw Error('The original comparison changed during recheck. Its sources and decisions were retained.');
+            const originals=new Map((attachments.result as Original[]).map(original=>[original.id,original]));
+            for(const original of plan.originals){
+              const prior=originals.get(original.id);
+              if(prior&&(prior.name!==original.name||prior.data!==original.data))throw Error('An original attachment changed during recheck. Both sources were retained; nothing was applied.');
+            }
+            const time=new Date().toISOString(),putReview=(id:string,snapshot:import('./comparison-host').StoredComparisonReview)=>{
+              const {view,...copies}=snapshot;store.put(copies,`comparison:sources:${id}`);
+              if(view)store.put(view,`comparison:view:${id}`);
+            };
+            if(!existing)putReview(previousId,previous);
+            putReview(reviewId,review);
+            store.put([...(history.result??[]),{id:previousId,time}],`comparison:rechecks:${expected.book.id}`);
+            const checkpoints=tx.objectStore('history');
+            checkpoints.put({id:uid(),label:'Before paused sync recheck',time,book:expected.book,backup} satisfies Checkpoint);
+            checkpoints.put({id:uid(),label:'Paused review left source - before recheck',time,book:previous.left.book} satisfies Checkpoint);
+            if(previous.right)checkpoints.put({id:uid(),label:'Paused review right source - before recheck',time,book:previous.right.book} satisfies Checkpoint);
+            checkpoints.put({id:uid(),label:'GitHub source - paused sync recheck',time,book:plan.originalRemote} satisfies Checkpoint);
+            for(const original of plan.originals)tx.objectStore('originals').put(original);
+          }catch(error){fail(error);}
+        };
+        sources.onsuccess=stage;view.onsuccess=stage;history.onsuccess=stage;attachments.onsuccess=stage;
+      }catch(error){fail(error);}
+    },fail);
+    try{await done;}catch(error){throw failure??error;}
+  }
   async undoHistory(version:number,book:string):Promise<UndoHistory|undefined>{
     const saved=await request(this.db.transaction('state').objectStore('state').get('undo')) as {version:number;book:string;history:UndoHistory}|undefined;
     if(!saved||saved.version!==version||saved.book!==book)return;
@@ -716,19 +763,21 @@ export class SyncConflict extends Error {
   constructor(public remote: Workbook, public sha: string,public originals:Original[]=[],public local?:Workbook,public base?:Workbook,public originalRemote:Workbook=remote,public conflicts:string[]=[]) { super('Concurrent incompatible changes found. Both versions are preserved in recovery. Review the conflicting changes before syncing.'); }
 }
 export class SyncPaused extends Error {}
-export interface SyncResult{sha:string;remote?:Workbook;confirmed?:Workbook;originals?:Original[];readPath?:string;acknowledged?:string[]}
+export interface SyncPlan{sha:string;local:Workbook;remote:Workbook;originalRemote:Workbook;originals:Original[];conflicts:string[];base?:Workbook}
+export interface SyncResult{sha:string;remote?:Workbook;confirmed?:Workbook;originals?:Original[];readPath?:string;acknowledged?:string[];plan?:SyncPlan}
 export async function mergeForSync(base:Workbook,local:Workbook,remote:Workbook):Promise<SyncMerge&{unchangedLocal:boolean;unchangedRemote:boolean}>{
   return await runSyncCodec({kind:'merge',base,local,remote},{snapshots:true}) as SyncMerge&{unchangedLocal:boolean;unchangedRemote:boolean};
 }
-export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[],options?:{readOnly?:boolean;canUpload?:()=>boolean;base?:Workbook;attempt?:SyncAttempt;beforeUpload?:(attempt:SyncAttempt)=>Promise<void>}): Promise<SyncResult> {
+export async function syncGitHub(state: LocalState, token: string, fetcher: typeof fetch = fetch, originals:Original[]=[],options?:{readOnly?:boolean;planOnly?:boolean;canUpload?:()=>boolean;base?:Workbook;attempt?:SyncAttempt;beforeUpload?:(attempt:SyncAttempt)=>Promise<void>}): Promise<SyncResult> {
   const captured={...state,pending:clone(state.pending),sync:state.sync?clone(state.sync):undefined};
   captured.book=await runSyncCodec({kind:'capture',book:state.book}) as Workbook;
-  return privateSync(captured,token,fetcher,originals,options?.readOnly===true,options?.canUpload,options?.base,options?.attempt,options?.beforeUpload);
+  if(options?.readOnly&&options.planOnly)throw Error('Choose either a remote read or a merge preflight.');
+  return privateSync(captured,token,fetcher,originals,options?.readOnly===true,options?.canUpload,options?.base,options?.attempt,options?.beforeUpload,options?.planOnly===true);
 }
-async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[],readOnly:boolean,canUpload?:()=>boolean,base?:Workbook,previousAttempt?:SyncAttempt,beforeUpload?:(attempt:SyncAttempt)=>Promise<void>):Promise<SyncResult>{
+async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,originals:Original[],readOnly:boolean,canUpload?:()=>boolean,base?:Workbook,previousAttempt?:SyncAttempt,beforeUpload?:(attempt:SyncAttempt)=>Promise<void>,planOnly=false):Promise<SyncResult>{
   return withPrivateGitHub(state.sync,token,fetcher,async({root,headers,request,contentURL,config:cfg})=>{
   const url = `${root}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}`;
-  const captured=state.book,pendingIds=state.pending.map(operation=>operation.id);
+  const captured=state.book,pendingIds=state.pending.map(operation=>operation.id),pendingContent=hasPendingContent(state)||planOnly&&state.syncReview;
   let ancestor=base;
   for(let attempt=0;attempt<3;attempt++){
   let readPath=cfg.path,response=await request(url,{headers,cache:'no-store',redirect:'error'});
@@ -744,7 +793,7 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
     let data = await response.json() as {sha:string;content:string;encoding?:string;size?:number};
     sha = data.sha;
     if(typeof sha!=='string'||!sha)throw Error('GitHub did not return a file revision. Nothing overwritten.');
-    if(!readOnly&&sha===state.remoteSha&&!hasPendingContent(state)&&ancestor)return{sha};
+    if(!readOnly&&!planOnly&&sha===state.remoteSha&&!pendingContent&&ancestor)return{sha};
     {
       if(data.encoding==='none'||(!data.content&&data.size)){
         const blob=await request(`${root}/git/blobs/${encodeURIComponent(sha)}`,{headers,cache:'no-store',redirect:'error'});
@@ -770,6 +819,7 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
         byId.set(original.id,original);
       }
       attachments=[...byId.values()];
+      if(planOnly&&remote.id!==captured.id)throw Error('GitHub contains a different workbook. The paused review and both copies were retained.');
       if(sha===state.remoteSha)ancestor=remote;
       else if(previousAttempt){
         for(const candidate of [previousAttempt,...(previousAttempt.ancestor?[previousAttempt.ancestor]:[])]){
@@ -778,9 +828,13 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
           }
         }
       }
-      if(!hasPendingContent(state)||!ancestor){
+      if(!pendingContent||!ancestor){
         const equivalent=await runSyncCodec({kind:'equal',local:captured,remote},{snapshots:true}) as boolean;
-        if(!hasPendingContent(state))return{sha,...(!equivalent?{remote:withDevicePreferences(remote,captured)}:{}),confirmed:remote,originals:attachments,acknowledged:pendingIds};
+        if(planOnly&&(!pendingContent||equivalent)){
+          book=equivalent?captured:withDevicePreferences(remote,captured);
+          return{sha,plan:{sha,local:book,remote:book,originalRemote:remote,originals:attachments,conflicts:[]}};
+        }
+        if(!pendingContent)return{sha,...(!equivalent?{remote:withDevicePreferences(remote,captured)}:{}),confirmed:remote,originals:attachments,acknowledged:pendingIds};
         if(equivalent)return{sha,confirmed:remote,originals:attachments,acknowledged:pendingIds};
       }
       if(!ancestor&&state.remoteSha&&/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(state.remoteSha)&&captured.id===remote.id){
@@ -795,13 +849,14 @@ async function privateSync(state:LocalState,token:string,fetcher:typeof fetch,or
       }
       if(!ancestor)throw new SyncConflict(remote,sha,remoteOriginals);
       const merged=await mergeForSync(ancestor,captured,remote);
+      if(planOnly)return{sha,plan:{sha,local:merged.local,remote:merged.remote,originalRemote:remote,originals:attachments,conflicts:merged.conflicts,base:ancestor}};
       if(merged.conflicts.length)throw new SyncConflict(merged.remote,sha,attachments,merged.local,ancestor,remote,merged.conflicts);
       book=merged.local;changed=!merged.unchangedLocal;
       if(merged.unchangedRemote)return{sha,...(!merged.unchangedLocal?{remote:book}:{}),confirmed:remote,originals:attachments,acknowledged:pendingIds};
     }
   } else if (response.status !== 404) throw Error(`Cannot read sync file (${response.status}). Local edits retained.`);
   else if (!readOnly&&state.remoteSha) throw Error('Remote file was removed. Local edits retained; refusing to recreate it silently.');
-  if(readOnly)throw Error(`No saved GitHub workbook exists at ${readPath}${readPath!==cfg.path?` (saved destination: ${cfg.path})`:''}. Check the path in Recovery > Private GitHub sync. Comparison did not upload anything.`);
+  if(readOnly||planOnly)throw Error(`No saved GitHub workbook exists at ${readPath}${readPath!==cfg.path?` (saved destination: ${cfg.path})`:''}. Check the path in Recovery > Private GitHub sync. Comparison did not upload anything.`);
   if(state.syncReview||canUpload&&!canUpload())throw new SyncPaused('Sync paused for comparison review. No upload was made.');
   validateOriginals(book,attachments);
   const device=previousAttempt?.device??uid(),transfer:SyncAttempt={id:uid(),device,book,...(proven?{ancestor:proven}:{})};

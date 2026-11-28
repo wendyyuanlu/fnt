@@ -1072,6 +1072,22 @@ Incompatible changes preserve both alternatives and
 pause uploads for explicit comparison. Opening comparison or finding a conflict
 persistently pauses uploads across reloads until a decision is submitted.
 Save alone cannot bypass an unresolved review.
+**Recovery > Recheck paused sync** explicitly prepares a new merge against the
+latest GitHub revision and a verified shared ancestor. Preflight never uploads,
+acknowledges pending edits or replaces the workbook. It uses the current saved
+workbook, including edits made after the old comparison opened. Reviews with
+choices or decision-bearing Undo history cannot be reinterpreted by recheck.
+The exact old sources and review remain available read-only under **Recovery >
+Preserved paused reviews**; a complete pre-recheck archive and the newly read
+GitHub source are also retained in recovery checkpoints. Missing ancestry,
+unsaved photos, storage failures or stale local/connection/review state leave
+the original review paused and unchanged.
+Compatible changes require an explicit **Confirm merged workbook and sync**;
+real collisions open a fresh review containing only the incompatible choices,
+with compatible changes included on both sides. Both use the normal guarded
+comparison submission path, including a fresh remote revision check, recovery,
+nutrition review and Undo. Closing an unapplied connected review preserves its
+sources and choices rather than deleting them.
 The compact **Compare** button and linked conflict/status message open the
 comparison directly with this device and the exact preserved GitHub revision.
 That conflicting revision remains available after reload; newer remote revisions

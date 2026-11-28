@@ -1,7 +1,8 @@
 import './style.css';
 import {mountWorkbookComparison} from './sync-comparison';
 import {mergeComparison} from './comparison-merge';
-import type {ComparisonSource} from './comparison-host';
+import type {ComparisonSource,ComparisonHost} from './comparison-host';
+import {prepareSyncRecheck,type SyncRecheck} from './sync-recheck';
 import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,deleteComparisonSnapshot,listComparisonCommits,readComparisonCommit,snapshotDate,type ComparisonSnapshot,type ComparisonCommit} from './github-snapshots';
 import {githubFormDefaults} from './github-client';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
@@ -1623,7 +1624,39 @@ async function openSyncComparison():Promise<void>{
     openComparison(conflict);
   }catch(error){flash(error);}
 }
-function openComparison(conflict?:SyncConflict):void{
+async function recheckPausedSync():Promise<void>{
+  if(busy||comparisonActive||privateSyncFlight){flash('Close the comparison and wait for the current save or sync before rechecking.');return;}
+  try{
+    if(!commitDraft()||mealPanel?.commit()===false)return;
+    const wasInert=root.inert;busy=true;root.inert=true;
+    let preview:SyncRecheck;
+    try{
+      await navigationSaving;await flush();
+      if(savedGeneration!==generation||pendingPhotoBlobs.size)throw Error('Save local edits and photo originals before rechecking paused sync.');
+      const g=generation,credential=token,config=JSON.stringify(state.sync);
+      const canContinue=()=>generation===g&&savedGeneration===g&&draft===undefined&&!pendingPhotoBlobs.size&&token===credential&&JSON.stringify(state.sync)===config&&!comparisonActive;
+      status='Rechecking paused sync - no upload or workbook replacement';renderStatus();
+      const previousId=sessionStorage.getItem(`fnt-comparison:${book.id}`)??undefined;
+      const current=await store.load();
+      if(!current||current.version!==state.version||current.book.revision!==book.revision)throw Error('Another tab changed the saved workbook. Recheck again after saving.');
+      preview=await prepareSyncRecheck(store,current,credential,previousId,canContinue);
+      if(!canContinue())throw Error('The local workbook or connection changed. Recheck again; nothing was replaced.');
+      await store.stageSyncRecheck(preview);
+      if(!canContinue())throw Error('The local workbook or connection changed. The previous review is preserved; recheck again.');
+    }finally{root.inert=wasInert;busy=false;renderStatus();}
+    status=preview.plan.conflicts.length?'Recheck ready - review only overlapping changes':'Recheck ready - compatible changes await confirmation';renderStatus();
+    openComparison(new SyncConflict(preview.plan.remote,preview.plan.sha,preview.plan.originals,preview.plan.local),{reviewId:preview.reviewId,recheck:preview});
+  }catch(error){status='Sync remains paused - recheck not applied';flash(error);renderStatus();}
+}
+async function openPreservedSyncReviews():Promise<void>{
+  try{
+    const entries=await store.syncRecheckHistory(book.id);
+    dialog('Preserved paused reviews',`<p>These are read-only copies of the sources and decisions retained before rechecking. Opening one does not replace your workbook or upload anything.</p><div class="menu">${entries.map((entry,i)=>`<button data-preserved-review="${i}">${esc(new Date(entry.time).toLocaleString())}</button>`).join('')||'<p>No paused reviews have been rechecked yet.</p>'}</div>`,d=>{
+      d.querySelectorAll<HTMLButtonElement>('[data-preserved-review]').forEach(button=>button.onclick=()=>{d.close();openComparison(undefined,{reviewId:entries[Number(button.dataset.preservedReview)].id,readOnly:true});});
+    });
+  }catch(error){flash(error);}
+}
+function openComparison(conflict?:SyncConflict,options?:{reviewId?:string;readOnly?:boolean;recheck?:SyncRecheck}):void{
   if(comparisonActive)return;
   if(busy){flash('Wait for the current save or sync to finish before comparing.');return;}
   if(!commitDraft())return;
@@ -1631,24 +1664,25 @@ function openComparison(conflict?:SyncConflict):void{
   const captured={...state,book:clone(book),pending:clone(state.pending)},capturedGeneration=generation;
   const reviewKey=`fnt-comparison:${book.id}`;
   let reviewId:string=uid(),reviewRevision=captured.book.revision;
-  try{reviewId=sessionStorage.getItem(reviewKey)||reviewId;sessionStorage.setItem(reviewKey,reviewId);}catch(error){flash(`Could not remember the open comparison for refresh: ${String(error)}`);}
+  try{reviewId=options?.reviewId||sessionStorage.getItem(reviewKey)||reviewId;if(!options?.readOnly)sessionStorage.setItem(reviewKey,reviewId);}catch(error){flash(`Could not remember the open comparison for refresh: ${String(error)}`);}
   let reviewWrites=Promise.resolve(),savedReview:import('./comparison-host').StoredComparisonReview|undefined,reviewClosed=false;
   let config=state.sync,credential=token;
   let applied=false,remoteHead=conflict&&config?{path:config.path,sha:conflict.sha}:undefined;
   const source=(copy:Workbook,kind:string,label:string,revision?:string):ComparisonSource=>({
     book:clone(copy),kind,label,revision,freshness:`Comparison copy captured: ${new Date().toLocaleString()}.`,
   });
-  const local=source(captured.book,'This device','Current local workbook');
+  const local=source(options?.recheck?.plan.local??captured.book,'This device',options?.recheck?'Rechecked local choice with compatible changes':'Current local workbook');
   const view=document.createElement('section');view.className='comparison-view';view.setAttribute('aria-label','Compare versions');
   const wasInert=root.inert;comparisonActive=true;root.inert=true;
   clearTimeout(privateSyncTimer);
-  const pause=config?updateSyncMetadata({paused:true,review:true}):Promise.resolve();
+  const pause=config&&!options?.readOnly?updateSyncMetadata({paused:true,review:true}):Promise.resolve();
   void pause.catch(error=>flash(error));
   document.querySelectorAll<HTMLDialogElement>('dialog[open]').forEach(dialog=>dialog.close());
   document.body.classList.add('comparison-open');document.body.append(view);
   let files:ComparisonSnapshot[]=[];
   const commits=new Map<string,ComparisonCommit>();
-  const dispose=mountWorkbookComparison(view,{
+  let dispose=()=>{};
+  const host:ComparisonHost={
     local,
     remote:conflict?source(conflict.remote,'GitHub','Preserved sync-conflict copy',conflict.sha):undefined,
     review:{
@@ -1662,6 +1696,7 @@ function openComparison(conflict?:SyncConflict):void{
         return savedReview;
       },
       save:review=>{
+        if(options?.readOnly)return Promise.resolve();
         if(reviewClosed)return Promise.resolve();
         // Only the captured device source can rebase a saved review.
         if(review.left.book===local.book||review.right?.book===local.book)reviewRevision=captured.book.revision;
@@ -1717,13 +1752,14 @@ function openComparison(conflict?:SyncConflict):void{
       },
     },
     syncDestination:()=>config&&credential&&remoteHead?`${config.owner}/${config.repo} · ${remoteHead.path}${remoteHead.path!==config.path?' (also updates your saved sync path)':''}`:undefined,
-    apply:async request=>{
+    apply:options?.readOnly?undefined:async request=>{
       await pause;await privateSyncFlight;
       if(applied||busy)throw Error('This comparison has already been applied or another operation is running.');
+      if(options?.recheck&&(token!==credential||JSON.stringify(state.sync)!==JSON.stringify(options.recheck.config)))throw Error('The sync connection changed after recheck. Nothing was replaced; recheck again.');
       if(capturedGeneration!==generation||JSON.stringify(book)!==JSON.stringify(captured.book))throw Error('The local workbook changed after comparison opened. Close and compare again; your newer edits were not replaced.');
       if(reviewRevision!==captured.book.revision)throw Error('The local workbook changed since this comparison was saved. Your choices were retained. Use the computer icon to compare the current local copy, or close and compare again before applying.');
       request.progress?.('Checking selected changes and formula dependencies...',0,6);
-      const selected=await mergeComparison(request.left,request.right,request.choices);
+      const selected=options?.recheck&&!options.recheck.plan.conflicts.length?clone(options.recheck.plan.local):await mergeComparison(request.left,request.right,request.choices);
       const {book:merged}=await runSyncCodec({kind:'nutrition',before:captured.book,after:selected},{snapshots:true}) as {book:Workbook;changed:boolean};
       if(request.sync&&(!config||!credential||!remoteHead))throw Error('Read the current GitHub copy before applying and syncing.');
       busy=true;status='Validating selection and saving recovery copies...';renderStatus();
@@ -1732,7 +1768,7 @@ function openComparison(conflict?:SyncConflict):void{
       try{
         request.progress?.('Checking saved local and GitHub revisions...',1,6);
         await flush();
-        if(savedGeneration!==generation||capturedGeneration!==generation)throw Error('Local changes could not be saved or changed during comparison. Nothing was replaced.');
+        if(savedGeneration!==generation||capturedGeneration!==generation||pendingPhotoBlobs.size)throw Error('Local changes or photo originals could not be saved or changed during comparison. Nothing was replaced.');
         const current=await store.load();
         if(!current||current.version!==state.version)throw Error('Another tab changed this workbook. Close and compare again; nothing was replaced.');
         const target=request.sync?{config:{...config!,path:remoteHead!.path},sha:remoteHead!.sha}:undefined;
@@ -1770,13 +1806,32 @@ function openComparison(conflict?:SyncConflict):void{
     },
     close:()=>{
       reviewClosed=true;
-      try{sessionStorage.removeItem(reviewKey);}catch(error){flash(`Could not clear the open-comparison preference: ${String(error)}`);}
-      void reviewWrites.then(()=>store.clearComparisonReview(reviewId)).catch(error=>flash(`Could not clear the saved comparison review: ${String(error)}`));
+      if(!options?.readOnly&&(applied||!config)){
+        try{sessionStorage.removeItem(reviewKey);}catch(error){flash(`Could not clear the open-comparison preference: ${String(error)}`);}
+        void reviewWrites.then(()=>store.clearComparisonReview(reviewId)).catch(error=>flash(`Could not clear the saved comparison review: ${String(error)}`));
+      }
       dispose();view.remove();root.inert=wasInert;comparisonActive=false;document.body.classList.remove('comparison-open');
       root.querySelector<HTMLButtonElement>('[data-action="file"]')?.focus();
       if(!applied)schedulePrivateSync();
     },
-  });
+  };
+  if(options?.recheck&&!options.recheck.plan.conflicts.length){
+    const preview=options.recheck;
+    const surface=dialog('Compatible sync merge ready',`<p>No overlapping changes require a decision. Compatible local and GitHub changes can be combined automatically.</p><p>Nothing has been uploaded or replaced. Confirming saves the merged workbook, preserves Undo and recovery copies, and then syncs with GitHub. The previous comparison remains under Recovery &gt; Preserved paused reviews.</p><p data-recheck-progress role="status"></p><div class="button-row"><button type="button" class="primary" data-confirm-recheck>Confirm merged workbook and sync</button><button type="button" data-cancel-recheck>Not now</button></div>`,d=>{
+      const confirm=d.querySelector<HTMLButtonElement>('[data-confirm-recheck]')!,cancel=d.querySelector<HTMLButtonElement>('[data-cancel-recheck]')!,message=d.querySelector<HTMLElement>('[data-recheck-progress]')!;
+      confirm.onclick=async()=>{
+        confirm.disabled=true;cancel.disabled=true;d.querySelector<HTMLButtonElement>('.close')!.disabled=true;
+        try{
+          await host.apply!({left:preview.plan.local,right:preview.plan.remote,choices:[],sync:true,progress:text=>{message.textContent=text;}});
+          d.close();
+        }catch(error){message.textContent=String(error);confirm.disabled=false;cancel.disabled=false;d.querySelector<HTMLButtonElement>('.close')!.disabled=false;}
+      };
+      cancel.onclick=()=>d.close();
+      d.addEventListener('cancel',event=>{if(confirm.disabled)event.preventDefault();});
+      d.addEventListener('close',()=>host.close(),{once:true});
+    });
+    dispose=()=>surface.remove();
+  }else dispose=mountWorkbookComparison(view,host);
 }
 function renderSaveStatus():void{
   for(const [action,entries]of [['undo',undo],['redo',redo]] as const){
@@ -4784,6 +4839,12 @@ async function exportBackup():Promise<void> {
 function openFile():void {
   dialog('Recovery',`<div class="menu file-menu"><button id="sync">Private GitHub sync</button><button id="upload-local" ${state.sync&&token?'':'disabled'}>Upload local data to GitHub</button><button id="compare-versions">Compare versions for merge conflict</button><button id="backup">Download independent full backup</button><button id="rename-workbook">Rename workbook</button><details class="file-imports"><summary>Import or restore</summary><label>Import Ingredients<input type="file" id="import-ingredients" accept=".xlsx"></label><label>Restore Fnt backup<input type="file" id="restore" accept=".json"></label><label>Replace workbook from Excel<input type="file" id="import" accept=".xlsx"></label></details><div class="file-actions" id="file-recovery-actions"><button id="history">Recovery checkpoints</button><button id="persist">Request persistent browser storage</button>${book.importReport?'<button id="original">Download unchanged original XLSX</button>':''}</div></div><p id="storage-info" class="muted" role="status"></p><p class="muted">${state.sync&&token?'Uploads create separate comparison copies, not sync replacements.':'Connect private GitHub sync to upload comparison copies.'} Imports and restores preserve recovery and disconnect sync. Keep full backups private.</p>`,d=>{
     d.classList.add('file-dialog');
+    const recheck=document.createElement('button');recheck.id='recheck-sync';recheck.textContent='Recheck paused sync';
+    recheck.disabled=!state.sync||!token||!state.syncReview;
+    recheck.onclick=()=>{d.close();void recheckPausedSync();};
+    d.querySelector('#compare-versions')!.after(recheck);
+    const preserved=document.createElement('button');preserved.id='preserved-sync-reviews';preserved.textContent='Preserved paused reviews';
+    preserved.onclick=()=>{d.close();void openPreservedSyncReviews();};recheck.after(preserved);
     d.querySelector<HTMLButtonElement>('#upload-local')!.onclick=()=>{d.close();openSnapshotUpload(openFile);};
     d.querySelector<HTMLButtonElement>('#compare-versions')!.onclick=()=>{d.close();openComparison();};
     d.querySelector<HTMLButtonElement>('#rename-workbook')!.onclick=()=>{d.close();askText('Rename workbook',book.title,name=>mutateMetadata('Rename workbook',()=>{book.title=name;},[['title']],false,false));};

@@ -9,6 +9,7 @@ const config={owner:'example',repo:'private',branch:'main',path:'coauthoring.jso
 class ControlledGitHub{
   book:Workbook;sha='baseline';operations:string[]=[];receipts:Record<string,string>={};writes=0;
   holdRead=false;started=false;release?:()=>void;
+  snapshots=new Map<string,Workbook>();
   constructor(){
     const sheet=blankSheet('Coauthoring fixture',40,5);
     this.book={schema:1,id:uid(),title:'Synthetic coauthoring',revision:0,sheets:[sheet],tables:[],names:[],pickerSources:{},dropdownData:{sheets:[],tables:[]}};
@@ -24,6 +25,11 @@ class ControlledGitHub{
   }
   attach(context:BrowserContext){return context.route('https://api.github.com/**',route=>this.route(route));}
   private async route(route:Route){
+    if(route.request().url().includes('/git/blobs/')){
+      const sha=route.request().url().split('/git/blobs/')[1],book=this.snapshots.get(sha);
+      await route.fulfill(book?{json:{sha,encoding:'base64',content:encode64(JSON.stringify({format:'fnt-sync-v1',book,operations:[]}))}}:{status:404,json:{message:'No synthetic ancestor'}});
+      return;
+    }
     if(!route.request().url().includes('/contents/')){await route.fulfill({json:{private:true,has_pages:false}});return;}
     if(route.request().method()==='PUT'){
       const request=route.request().postDataJSON() as {sha?:string;content:string};
@@ -164,6 +170,172 @@ async function edit(page:Page,r:number,c:number,value:string,mobile:boolean){
 const value=(state:LocalState,r=1,c=0)=>{const s=state.book.sheets[0];return s.cells[key(s.rows[r].id,s.columns[c].id)]?.value;};
 const pending=(state:LocalState)=>state.pending.filter(operation=>operation.label!=='Visit table');
 async function sync(page:Page){await page.bringToFront();await page.keyboard.press('Control+s');}
+test.describe('paused review recheck',()=>{
+  async function seed(page:Page,collision=false){
+    const endpoint=new ControlledGitHub();await endpoint.attach(page.context());await install(page,endpoint);
+    const base=clone(endpoint.book),sha='a'.repeat(40);
+    endpoint.snapshots.set(sha,base);endpoint.edit(1,1,30);
+    if(collision)endpoint.edit(1,0,3);
+    const previous=await page.evaluate(async({base,config,sha,collision,remote,remoteSha})=>{
+      const module='/src/storage.ts',{Store,mergeForSync}=await import(/* @vite-ignore */module) as typeof import('../../src/storage'),store=await Store.open();
+      const model='/src/model.ts',{clone,key,uid}=await import(/* @vite-ignore */model) as typeof import('../../src/model');
+      try{
+        const current=(await store.load())!,book=clone(base),sheet=book.sheets[0];
+        sheet.cells[key(sheet.rows[1].id,sheet.columns[0].id)]={value:2};book.revision++;
+        const id=uid(),review={left:{book:clone(book),kind:'Local',label:'Preserved old phone'},right:{book:clone(base),kind:'GitHub',label:'Preserved old GitHub'},baseRevision:book.revision,sync:{config,path:config.path,sha:'old-review'}};
+        await store.saveComparisonReview(id,review,true);
+        sheet.cells[key(sheet.rows[2].id,sheet.columns[2].id)]={value:44};book.revision++;
+        const merged=collision?await mergeForSync(base,book,remote):undefined;
+        const saved=await store.save(merged?.local??book,current.version,'Later phone edit');
+        const connected=await store.metadata(saved.version,s=>({...s,sync:config,remoteSha:collision?remoteSha:sha,syncPaused:true,syncReview:true}));
+        if(merged){
+          await store.syncMetadata(connected.version,{sha:remoteSha,confirmed:remote});
+          await store.checkpoint('Remote conflict - not applied',merged.remote,[],true,{config,sha:remoteSha,local:merged.local});
+        }
+        sessionStorage.setItem(`fnt-comparison:${book.id}`,id);
+        return{id,review};
+      }finally{store.close();}
+    },{base,config,sha,collision,remote:clone(endpoint.book),remoteSha:endpoint.sha});
+    await page.reload();
+    const comparison=page.frameLocator('iframe.comparison-frame');
+    await expect(comparison.locator('#left-source')).toHaveText('Preserved old phone');
+    await expect(comparison.locator('#selection-progress')).toContainText('0 of 1 chosen');
+    await comparison.getByRole('button',{name:'Back to workbook',exact:true}).click();await expect(page.locator('.comparison-view')).toHaveCount(0);
+    return{endpoint,previous};
+  }
+  async function original(page:Page,id:string){
+    return page.evaluate(async id=>{
+      const module='/src/storage.ts',{Store}=await import(/* @vite-ignore */module) as typeof import('../../src/storage'),store=await Store.open();
+      try{return await store.comparisonReview(id);}finally{store.close();}
+    },id);
+  }
+  async function recheck(page:Page){
+    await page.getByRole('button',{name:'Recovery',exact:true}).click();
+    await page.getByRole('button',{name:'Recheck paused sync',exact:true}).click();
+  }
+  async function gateInitialSave(page:Page,fail:boolean){
+    await page.evaluate(async fail=>{
+      const module='/src/storage.ts',{Store}=await import(/* @vite-ignore */module) as typeof import('../../src/storage');
+      const save=Store.prototype.save,changes=Store.prototype.saveChanges;
+      let release!:()=>void;
+      const wait=new Promise<void>(resolve=>{release=resolve;});
+      const gate=async()=>{
+        document.documentElement.dataset.recheckInitialSave='entered';
+        if(fail)throw new DOMException('Synthetic initial recheck save failure','QuotaExceededError');
+        await wait;
+      };
+      Store.prototype.save=async function(...args){await gate();return save.apply(this,args);};
+      Store.prototype.saveChanges=async function(...args){await gate();return changes.apply(this,args);};
+      document.addEventListener('release-recheck-initial-save',()=>{
+        Store.prototype.save=save;Store.prototype.saveChanges=changes;release();
+        delete document.documentElement.dataset.recheckInitialSave;
+      },{once:true});
+    },fail);
+    await page.locator('td[data-r="2"][data-c="2"]').click();
+    await page.locator('#formula').fill('45');await page.locator('#formula').press('Enter');
+  }
+  test('initial held flush locks the workbook before yielding and does not let a second save clear ownership',async({page})=>{
+    const {endpoint,previous}=await seed(page),old=await original(page,previous.id),writes=endpoint.writes;
+    await gateInitialSave(page,false);
+    try{
+      await recheck(page);
+      await expect(page.locator('html')).toHaveAttribute('data-recheck-initial-save','entered');
+      await expect(page.locator('#app')).toHaveJSProperty('inert',true);
+      await page.keyboard.press('Control+s');
+      await expect(page.locator('#error')).toContainText('Wait for the current save or sync');
+      await expect(page.locator('#app')).toHaveJSProperty('inert',true);
+      expect(endpoint.writes).toBe(writes);expect(await original(page,previous.id)).toEqual(old);
+    }finally{await page.evaluate(()=>document.dispatchEvent(new Event('release-recheck-initial-save')));}
+    const preview=page.getByRole('dialog',{name:'Compatible sync merge ready',exact:true});
+    await expect(preview).toBeVisible();await preview.getByRole('button',{name:'Not now',exact:true}).click();
+    await expect(page.locator('#app')).toHaveJSProperty('inert',false);
+    expect(value(await local(page),2,2)).toBe(45);expect((await local(page)).syncReview).toBe(true);
+    expect(endpoint.writes).toBe(writes);expect(await original(page,previous.id)).toEqual(old);
+  });
+  test('initial local save failure unlocks the workbook without claiming saved or applying the recheck',async({page})=>{
+    const {endpoint,previous}=await seed(page),old=await original(page,previous.id),writes=endpoint.writes;
+    await gateInitialSave(page,true);
+    try{
+      await recheck(page);
+      await expect(page.locator('#save-state')).toContainText('Sync remains paused - recheck not applied');
+      await expect(page.locator('#app')).toHaveJSProperty('inert',false);
+      await expect(page.locator('#error')).toContainText('Save local edits and photo originals');
+      await expect(page.getByRole('dialog',{name:'Compatible sync merge ready',exact:true})).toHaveCount(0);
+      expect(value(await local(page),2,2)).toBe(44);expect((await local(page)).syncReview).toBe(true);
+      expect(endpoint.writes).toBe(writes);expect(await original(page,previous.id)).toEqual(old);
+    }finally{await page.evaluate(()=>document.dispatchEvent(new Event('release-recheck-initial-save')));}
+    await page.keyboard.press('Control+s');await expect.poll(async()=>value(await local(page),2,2)).toBe(45);
+  });
+  test('compatible preview makes no upload, survives cancellation, preserves the old review and explicitly confirms through normal sync',async({page})=>{
+    const {endpoint,previous}=await seed(page),writes=endpoint.writes,old=await original(page,previous.id);
+    await sync(page);expect(endpoint.writes).toBe(writes);expect((await local(page)).syncReview).toBe(true);
+    await recheck(page);
+    const preview=page.getByRole('dialog',{name:'Compatible sync merge ready',exact:true});
+    await expect(preview).toBeVisible();expect(endpoint.writes).toBe(writes);
+    expect(value(await local(page),1,1)).toBe(10);expect(value(await local(page),2,2)).toBe(44);
+    await preview.getByRole('button',{name:'Not now',exact:true}).click();
+    expect((await local(page)).syncReview).toBe(true);expect(await original(page,previous.id)).toEqual(old);
+    await recheck(page);await expect(preview).toBeVisible();
+    await preview.getByRole('button',{name:'Confirm merged workbook and sync',exact:true}).click();
+    await expect(preview).toHaveCount(0);await expect(page.locator('#save-state')).toHaveText('Synced with private repository');
+    const result=await local(page);
+    expect(value(result)).toBe(2);expect(value(result,1,1)).toBe(30);expect(value(result,2,2)).toBe(44);
+    expect(result.syncReview).toBe(false);expect(endpoint.writes).toBe(writes+1);
+    expect(await original(page,previous.id)).toEqual(old);
+    await page.reload();await expect(page.locator('#save-state')).toHaveText('Synced with private repository');
+    expect(await original(page,previous.id)).toEqual(old);
+    await page.getByRole('button',{name:'Recovery',exact:true}).click();await page.getByRole('button',{name:'Preserved paused reviews',exact:true}).click();
+    const archived=page.getByRole('dialog',{name:'Preserved paused reviews',exact:true});await archived.locator('[data-preserved-review="0"]').click();
+    const comparison=page.frameLocator('iframe.comparison-frame');await expect(comparison.locator('#left-source')).toHaveText('Preserved old phone');
+    await comparison.getByRole('button',{name:'Back to workbook',exact:true}).click();expect((await local(page)).syncReview).toBe(false);
+    await page.context().setOffline(true);
+    await page.keyboard.press('Control+z');await expect.poll(async()=>value(await local(page),1,1)).toBe(10);
+    expect(value(await local(page))).toBe(2);expect(value(await local(page),2,2)).toBe(44);
+    await page.keyboard.press('Control+y');await expect.poll(async()=>value(await local(page),1,1)).toBe(30);
+    expect(await original(page,previous.id)).toEqual(old);await page.context().setOffline(false);
+  });
+  test('changed GitHub revision rejects confirmation without replacing the workbook or the preserved review',async({page})=>{
+    const {endpoint,previous}=await seed(page),old=await original(page,previous.id);
+    await recheck(page);const preview=page.getByRole('dialog',{name:'Compatible sync merge ready',exact:true});await expect(preview).toBeVisible();
+    endpoint.edit(1,0,3);const writes=endpoint.writes;
+    await preview.getByRole('button',{name:'Confirm merged workbook and sync',exact:true}).click();
+    await expect(preview.locator('[data-recheck-progress]')).toContainText('GitHub changed');
+    expect(endpoint.writes).toBe(writes);expect(value(await local(page))).toBe(2);expect(value(await local(page),1,1)).toBe(10);
+    expect((await local(page)).syncReview).toBe(true);expect(await original(page,previous.id)).toEqual(old);
+    await preview.getByRole('button',{name:'Not now',exact:true}).click();
+  });
+  test('failed apply recovery cannot upload or replace the workbook and keeps the original review available',async({page})=>{
+    const {endpoint,previous}=await seed(page),old=await original(page,previous.id),writes=endpoint.writes;
+    await recheck(page);const preview=page.getByRole('dialog',{name:'Compatible sync merge ready',exact:true});await expect(preview).toBeVisible();
+    await page.evaluate(()=>{
+      const original=IDBObjectStore.prototype.put;
+      document.addEventListener('restore-recheck-recovery',()=>{IDBObjectStore.prototype.put=original;},{once:true});
+      IDBObjectStore.prototype.put=function(...args:Parameters<IDBObjectStore['put']>){if(this.name==='history')throw new DOMException('Synthetic apply-recovery quota failure','QuotaExceededError');return original.apply(this,args);};
+    });
+    try{
+      await preview.getByRole('button',{name:'Confirm merged workbook and sync',exact:true}).click();
+      await expect(preview.locator('[data-recheck-progress]')).toContainText('Synthetic apply-recovery quota failure');
+      expect(endpoint.writes).toBe(writes);expect(value(await local(page),1,1)).toBe(10);expect(value(await local(page),2,2)).toBe(44);
+      expect((await local(page)).syncReview).toBe(true);expect(await original(page,previous.id)).toEqual(old);
+    }finally{await page.evaluate(()=>document.dispatchEvent(new Event('restore-recheck-recovery')));}
+    await preview.getByRole('button',{name:'Not now',exact:true}).click();
+  });
+  test('a genuine collision opens a new focused review, retains later edits, and preserves both the old review and new decisions across reload',async({page})=>{
+    const {endpoint,previous}=await seed(page,true),old=await original(page,previous.id),writes=endpoint.writes;
+    await recheck(page);
+    const comparison=page.frameLocator('iframe.comparison-frame');
+    await expect(comparison.locator('#left-source')).toHaveText('Rechecked local choice with compatible changes');
+    await expect(comparison.locator('#selection-progress')).toContainText('0 of 1 chosen');expect(endpoint.writes).toBe(writes);
+    await comparison.locator('#keep-right button').click();
+    await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
+    await page.reload();await expect(comparison.locator('#selection-progress')).toContainText('1 of 1 chosen');
+    expect(await original(page,previous.id)).toEqual(old);
+    await comparison.locator('#submit-decision').click();await comparison.locator('#apply-sync').check();await comparison.locator('#apply-selection').click();
+    await expect(page.locator('.comparison-view')).toHaveCount(0);await expect(page.locator('#save-state')).toHaveText('Synced with private repository');
+    const result=await local(page);expect(value(result)).toBe(3);expect(value(result,1,1)).toBe(30);expect(value(result,2,2)).toBe(44);
+    expect(await original(page,previous.id)).toEqual(old);expect(endpoint.writes).toBe(writes+1);
+  });
+});
 test.describe('independent device coauthoring',()=>{
   let endpoint:ControlledGitHub,other:BrowserContext,computer:Page;
   test.beforeEach(async({page,browser})=>{

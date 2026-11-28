@@ -1,0 +1,70 @@
+import {clone,uid} from './model';
+import {stringifyArchive} from './archive';
+import {Store,SyncConflict,syncGitHub,mergeForSync,validateBackup,type LocalState,type SyncPlan} from './storage';
+import {assertUndecidedReview,type StoredComparisonReview} from './comparison-host';
+import {runSyncCodec} from './sync-processing';
+export interface SyncRecheck {
+  state:LocalState;
+  config:NonNullable<LocalState['sync']>;
+  plan:SyncPlan;
+  previousId:string;
+  previous:StoredComparisonReview;
+  storedPrevious?:StoredComparisonReview;
+  reviewId:string;
+  review:StoredComparisonReview;
+  backup:string;
+}
+export async function prepareSyncRecheck(store:Store,state:LocalState,token:string,reviewId:string|undefined,canContinue:()=>boolean,fetcher:typeof fetch=fetch):Promise<SyncRecheck>{
+  const captured=clone(state),config=captured.sync;
+  if(!config||!token||!captured.syncReview)throw Error('Connect private sync and open the paused review before rechecking.');
+  const unchanged=async()=>{
+    const current=await store.load();
+    if(!canContinue()||!current||current.version!==captured.version||JSON.stringify(current)!==JSON.stringify(captured)){
+      throw Error('The local workbook or sync connection changed during recheck. Nothing was replaced; recheck again after saving.');
+    }
+  };
+  await unchanged();
+  const storedPrevious=reviewId?await store.comparisonReview(reviewId):undefined;
+  if(reviewId&&!storedPrevious)throw Error('The saved comparison could not be found. Open the paused comparison before rechecking.');
+  assertUndecidedReview(storedPrevious);
+  const preserved=await store.syncConflict(config);
+  const previous=storedPrevious??{
+    left:{book:clone(preserved?.local??captured.book),kind:'This device',label:'Preserved local source before recheck'},
+    right:preserved?{book:preserved.book,kind:'GitHub',label:'Preserved paused sync source',revision:preserved.sha}:undefined,
+    baseRevision:captured.book.revision,
+    sync:preserved?{config,path:config.path,sha:preserved.sha}:undefined,
+  };
+  const [base,attempt,originals]=await Promise.all([store.syncBase(config,captured.remoteSha),store.syncAttempt(config),store.originals()]);
+  let plan:SyncPlan;
+  try{
+    const result=await syncGitHub(captured,token,fetcher,originals,{base,attempt,planOnly:true});
+    if(!result.plan)throw Error('Recheck did not return a merge preview. The paused review was retained.');
+    plan=result.plan;
+  }catch(error){
+    if(error instanceof SyncConflict)throw Error('A shared sync ancestor could not be verified. The original review remains unchanged; neither copy was uploaded or replaced.');
+    throw error;
+  }
+  if(preserved?.local&&preserved.sha===captured.remoteSha){
+    if(!base)throw Error('The previous unresolved conflict has no verified remote baseline. Continue the preserved review; recheck did not choose either side.');
+    // The conflict head is a confirmed remote baseline, not a resolution of the old alternatives.
+    const carried=await mergeForSync(preserved.local,plan.local,preserved.book);
+    const updated=await mergeForSync(base,carried.remote,plan.originalRemote);
+    const equal=await runSyncCodec({kind:'equal',local:plan.local,remote:updated.remote},{snapshots:true}) as boolean;
+    plan={...plan,remote:updated.remote,conflicts:equal?[]:['preserved-unresolved-review']};
+  }
+  await unchanged();
+  const archive=await store.backup(captured);
+  validateBackup(archive);
+  if(archive.missingPhotos?.length)throw Error('Local photo originals are missing. Recheck retained the paused review; retrieve a complete photo backup before applying changes.');
+  const backup=stringifyArchive(archive);
+  await unchanged();
+  return{
+    state:captured,config,plan,previousId:reviewId??uid(),previous:clone(previous),storedPrevious,
+    reviewId:uid(),backup,
+    review:{
+      left:{book:plan.local,kind:'This device',label:'Rechecked local choice with compatible changes'},
+      right:{book:plan.remote,kind:'GitHub',label:'Rechecked GitHub choice with compatible changes',revision:plan.sha},
+      baseRevision:captured.book.revision,sync:{config,path:config.path,sha:plan.sha},
+    },
+  };
+}
