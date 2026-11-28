@@ -219,6 +219,21 @@ describe('explicit paused sync recheck',()=>{
       }finally{reopened.close();}
     }finally{f.store.close();}
   });
+  it('preflights and stages without stringifying complete states or saved reviews for equality',async()=>{
+    const f=await paused(),stringify=JSON.stringify;
+    const guarded=vi.spyOn(JSON,'stringify').mockImplementation((value,replacer,space)=>{
+      if(!replacer&&value&&typeof value==='object'&&('pending'in value&&'book'in value||'baseRevision'in value&&'left'in value))throw new RangeError('Invalid string length');
+      return stringify(value,replacer,space);
+    });
+    try{
+      const preview=await prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch);
+      await f.store.stageSyncRecheck(preview);
+      expect(await f.store.load()).toEqual(f.current);
+      expect(await f.store.comparisonReview(f.id)).toEqual(f.review);
+      expect(await f.store.comparisonReview(preview.reviewId)).toEqual(preview.review);
+      expect(f.endpoint.attempts).toBe(0);
+    }finally{guarded.mockRestore();f.store.close();}
+  });
   it('keeps only the real same-cell collision in the new alternatives and retains disjoint edits in both',async()=>{
     const f=await paused();edit(f.endpoint.book,1,0,3);
     try{

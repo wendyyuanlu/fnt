@@ -1,11 +1,11 @@
 import { clone, uid, type Workbook } from './model';
-import { compressArchive, decompressArchive, stringifyArchive } from './archive';
+import { ArchiveEncoder, compressArchive, decompressArchive, stringifyArchive } from './archive';
 import {validateHypotheticalStyle} from './hypothetical';
 import {applyUndo,type History,type UndoHistory} from './undo-history';
 import {githubFormDefaults,withPrivateGitHub} from './github-client';
 import {validateMealLog} from './meal-log';
 import {runSyncCodec} from './sync-processing';
-import {withDevicePreferences,type SyncMerge} from './sync-merge';
+import {syncEqual,withDevicePreferences,type SyncMerge} from './sync-merge';
 import {validateFoodCapture} from './food-capture';
 import {validateConverterState} from './nutrition-converter';
 import {validateConverterReceipt} from './nutrition-apply';
@@ -530,7 +530,7 @@ export class Store {
     const fail=(error:unknown)=>{failure=error;tx.abort();};
     readState(store,current=>{
       try{
-        if(!current||JSON.stringify(current)!==JSON.stringify(expected))throw Error('Another tab changed the paused workbook. Its recovery backup was not staged.');
+        if(!current||!syncEqual(current,expected))throw Error('Another tab changed the paused workbook. Its recovery backup was not staged.');
         tx.objectStore('history').put({id,label:'Before paused sync recheck',time:new Date().toISOString(),book:expected.book,backup} satisfies Checkpoint);
         store.put({book:expected.book.id,version:expected.version,revision:expected.book.revision},`comparison:backup:${id}`);
       }catch(error){fail(error);}
@@ -546,7 +546,7 @@ export class Store {
     const fail=(error:unknown)=>{failure=error;tx.abort();};
     readState(store,current=>{
       try{
-        if(!current||JSON.stringify(current)!==JSON.stringify(expected))throw Error('Another tab changed the paused workbook. Recheck was not staged.');
+        if(!current||!syncEqual(current,expected))throw Error('Another tab changed the paused workbook. Recheck was not staged.');
         const sources=store.get(`comparison:sources:${previousId}`),view=store.get(`comparison:view:${previousId}`),history=store.get(`comparison:rechecks:${expected.book.id}`),attachments=tx.objectStore('originals').getAll();
         const backup=store.get(`comparison:backup:${backupId}`),checkpoint=tx.objectStore('history').getKey(backupId);
         let remaining=6;
@@ -556,7 +556,7 @@ export class Store {
             if(checkpoint.result===undefined||backup.result?.book!==expected.book.id||backup.result?.version!==expected.version||backup.result?.revision!==expected.book.revision)throw Error('The full pre-recheck backup is unavailable for this saved workbook. The original review remains unchanged.');
             const existing=sources.result?{...sources.result,view:view.result}:undefined;
             assertUndecidedReview(existing);
-            if(JSON.stringify(existing)!==JSON.stringify(storedPrevious))throw Error('The original comparison changed during recheck. Its sources and decisions were retained.');
+            if(!syncEqual(existing,storedPrevious))throw Error('The original comparison changed during recheck. Its sources and decisions were retained.');
             const originals=new Map((attachments.result as Original[]).map(original=>[original.id,original]));
             for(const original of plan.originals){
               const prior=originals.get(original.id);
@@ -754,7 +754,8 @@ export class Store {
     validateBackup({...archive,state:{...archive.state,book:validationBook}});
     if(requirePhotos&&archive.missingPhotos?.length)throw Error('Local photo originals are missing. Recheck retained the paused review; retrieve a complete photo backup before applying changes.');
     const validatePhoto=backupPhotoValidator(validationBook,archive.missingPhotos);
-    const parts:BlobPart[]=['{"format":"fnt-backup","version":1,"state":',new Blob([JSON.stringify(archive.state)]),',"originals":',new Blob([JSON.stringify(archive.originals)]),',"photos":['];
+    const encoder=new ArchiveEncoder();
+    const parts:BlobPart[]=['{"format":"fnt-backup","version":1,"state":',new Blob([encoder.stringify(archive.state)]),',"originals":',new Blob([encoder.stringify(archive.originals)]),',"photos":['];
     for(const [index,photo]of photos.entries()){
       const [encoded]=await encodePhotoArchives([photo]);
       validatePhotoArchives([encoded]);validatePhoto(encoded);
@@ -764,7 +765,7 @@ export class Store {
     parts.push(']');
     if(archive.missingPhotos)parts.push(',"missingPhotos":',JSON.stringify(archive.missingPhotos));
     parts.push('}');
-    return new Blob(parts,{type:'application/json'});
+    return encoder.finishBlob(parts);
   }
   async restore(backup: Backup, expected: number): Promise<LocalState> {
     validateBackup(backup);

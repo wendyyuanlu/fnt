@@ -1087,7 +1087,10 @@ reading and merging GitHub. Preview staging carries only its verified checkpoint
 identity, not another in-memory copy of every photo and attachment. The archive
 is assembled as immutable Blob parts, encoding one photo at a time rather than
 retaining one giant base64 JSON string. Recovery reads both these Blob archives
-and existing string checkpoints. If planning
+and existing string checkpoints. Blob archives retain the same formula-template
+packing as independent backups, so repeated formulas are not expanded in every
+cell. Recheck state/review guards compare structural values without allocating
+whole-workbook JSON strings. If planning
 or staging fails, this extra full recovery checkpoint remains available; no
 partial review or workbook replacement is committed.
 The eventual comparison confirmation uses the same incremental full-archive

@@ -1,4 +1,4 @@
-const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/main-PlUTnaN4.js","assets/icons-QzLREKbS.js","assets/main-Bc3DfHYS.css"])))=>i.map(i=>d[i]);
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/main-DhPJuHOT.js","assets/icons-D7Q9SjrS.js","assets/main-Bc3DfHYS.css"])))=>i.map(i=>d[i]);
 import{_ as t}from"./preload-helper-DO0sjJph.js";const s=`<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fnt - Visual comparison prototype</title><link rel="stylesheet" href="style.css"></head>
@@ -91,4 +91,4 @@ import{_ as t}from"./preload-helper-DO0sjJph.js";const s=`<!doctype html>
 </main>
 <script type="module" src="./main.ts"><\/script>
 </body></html>
-`,i=new DOMParser().parseFromString(s,"text/html").body;i.querySelectorAll("script").forEach(e=>e.remove());for(const e of i.attributes)document.body.setAttribute(e.name,e.value);document.body.dataset.production="true";document.body.replaceChildren(...i.childNodes);t(()=>import("./main-PlUTnaN4.js"),__vite__mapDeps([0,1,2])).then(()=>{var e,a;(a=(e=navigator.serviceWorker)==null?void 0:e.controller)==null||a.postMessage({type:"fnt-shell-loaded",file:import.meta.url})}).catch(e=>{const a=document.querySelector("#error");a.hidden=!1,a.textContent=`Comparison could not be opened. Your workbook is unchanged. ${String(e)}`,document.body.dataset.loading="false"});
+`,i=new DOMParser().parseFromString(s,"text/html").body;i.querySelectorAll("script").forEach(e=>e.remove());for(const e of i.attributes)document.body.setAttribute(e.name,e.value);document.body.dataset.production="true";document.body.replaceChildren(...i.childNodes);t(()=>import("./main-DhPJuHOT.js"),__vite__mapDeps([0,1,2])).then(()=>{var e,a;(a=(e=navigator.serviceWorker)==null?void 0:e.controller)==null||a.postMessage({type:"fnt-shell-loaded",file:import.meta.url})}).catch(e=>{const a=document.querySelector("#error");a.hidden=!1,a.textContent=`Comparison could not be opened. Your workbook is unchanged. ${String(e)}`,document.body.dataset.loading="false"});

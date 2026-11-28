@@ -1,5 +1,5 @@
 import { expect,it } from 'vitest';
-import { compressArchive,decompressArchive,parseArchive,stringifyArchive } from '../src/archive';
+import { ArchiveEncoder,compressArchive,decompressArchive,parseArchive,readArchive,stringifyArchive } from '../src/archive';
 import { Engine,flatten } from '../src/formula';
 import { createDemo, getCell } from '../src/model';
 import { validateBook } from '../src/storage';
@@ -12,4 +12,13 @@ it('roundtrips identity-bound formulas through independent and compressed sync a
 });
 it('rejects missing formula templates',()=>{
   expect(()=>parseArchive('{"format":"fnt-packed-v1","asts":[],"data":{"formula":{"$ast":0}}}')).toThrow('Missing archived formula');
+});
+it('shares formula templates across Blob parts and reads the established packed format',async()=>{
+  const encoder=new ArchiveEncoder(),formula={kind:'literal' as const,value:'Synthetic formula'};
+  const left=encoder.stringify({formula}),right=encoder.stringify({formula:structuredClone(formula)});
+  const blob=encoder.finishBlob(['{"left":',new Blob([left]),',"right":',new Blob([right]),'}']);
+  const restored=await readArchive(blob) as {left:{formula:unknown};right:{formula:unknown}};
+  expect(restored).toEqual({left:{formula},right:{formula}});
+  expect(restored.left.formula).toBe(restored.right.formula);
+  expect(JSON.parse(await blob.text()).asts).toHaveLength(1);
 });

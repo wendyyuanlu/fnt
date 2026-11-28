@@ -3,6 +3,7 @@ import {mountWorkbookComparison} from './sync-comparison';
 import {mergeComparison} from './comparison-merge';
 import type {ComparisonSource,ComparisonHost} from './comparison-host';
 import {prepareSyncRecheck,type SyncRecheck} from './sync-recheck';
+import {syncEqual} from './sync-merge';
 import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,readComparisonSnapshot,deleteComparisonSnapshot,listComparisonCommits,readComparisonCommit,snapshotDate,type ComparisonSnapshot,type ComparisonCommit} from './github-snapshots';
 import {githubFormDefaults} from './github-client';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
@@ -1757,7 +1758,7 @@ function openComparison(conflict?:SyncConflict,options?:{reviewId?:string;readOn
       await pause;await privateSyncFlight;
       if(applied||busy)throw Error('This comparison has already been applied or another operation is running.');
       if(options?.recheck&&(token!==credential||JSON.stringify(state.sync)!==JSON.stringify(options.recheck.config)))throw Error('The sync connection changed after recheck. Nothing was replaced; recheck again.');
-      if(capturedGeneration!==generation||JSON.stringify(book)!==JSON.stringify(captured.book))throw Error('The local workbook changed after comparison opened. Close and compare again; your newer edits were not replaced.');
+      if(capturedGeneration!==generation||!syncEqual(book,captured.book))throw Error('The local workbook changed after comparison opened. Close and compare again; your newer edits were not replaced.');
       if(reviewRevision!==captured.book.revision)throw Error('The local workbook changed since this comparison was saved. Your choices were retained. Use the computer icon to compare the current local copy, or close and compare again before applying.');
       request.progress?.('Checking selected changes and formula dependencies...',0,6);
       const selected=options?.recheck&&!options.recheck.plan.conflicts.length?clone(options.recheck.plan.local):await mergeComparison(request.left,request.right,request.choices);
@@ -1786,7 +1787,7 @@ function openComparison(conflict?:SyncConflict,options?:{reviewId?:string;readOn
         await store.checkpoint('Comparison right source - before apply',request.right,[],true);
         merged.revision=Math.max(book.revision,merged.revision)+1;
         const inverse:History=merged.id===book.id?structuralUndo(book,merged):{book:clone(book)},history={undo:[...clone(undo),inverse].slice(-undoLimit),redo:[]};
-        if(capturedGeneration!==generation||JSON.stringify(book)!==JSON.stringify(captured.book))throw Error('The local workbook changed while recovery was being saved. Nothing was replaced.');
+        if(capturedGeneration!==generation||!syncEqual(book,captured.book))throw Error('The local workbook changed while recovery was being saved. Nothing was replaced.');
         status='Saving selected workbook and undo history...';renderStatus();
         request.progress?.(status,4,6);
         state=await store.save(merged,state.version,'Apply comparison selections',true,undefined,{recoveryArchive,undoHistory:history,comparisonSync:target,pauseSync:!request.sync});

@@ -1,19 +1,29 @@
 import { gzipSync, gunzipSync, strFromU8, strToU8 } from 'fflate';
 import type { Ast } from './formula';
 
+export class ArchiveEncoder {
+  private templates:Ast[]=[];
+  private ids=new Map<Ast,number>();
+  private signatures=new Map<string,number>();
+  stringify(value:unknown):string {
+    return JSON.stringify(value,(key,v:unknown)=>{
+      if(key!=='formula'||!v||typeof v!=='object')return v;
+      const ast=v as Ast;let index=this.ids.get(ast);
+      if(index===undefined){
+        const signature=JSON.stringify(ast);index=this.signatures.get(signature);
+        if(index===undefined){index=this.templates.length;this.templates.push(ast);this.signatures.set(signature,index);}
+        this.ids.set(ast,index);
+      }
+      return{$ast:index};
+    });
+  }
+  private header():string{return`{"format":"fnt-packed-v1","asts":${JSON.stringify(this.templates)},"data":`;}
+  finish(body:string):string{return`${this.header()}${body}}`;}
+  finishBlob(parts:BlobPart[]):Blob{return new Blob([this.header(),...parts,'}'],{type:'application/json'});}
+}
 export function stringifyArchive(value:unknown):string {
-  const templates:Ast[]=[],ids=new Map<Ast,number>(),signatures=new Map<string,number>();
-  const body=JSON.stringify(value,(key,v:unknown)=>{
-    if(key!=='formula'||!v||typeof v!=='object')return v;
-    const ast=v as Ast;let index=ids.get(ast);
-    if(index===undefined){
-      const signature=JSON.stringify(ast);index=signatures.get(signature);
-      if(index===undefined){index=templates.length;templates.push(ast);signatures.set(signature,index);}
-      ids.set(ast,index);
-    }
-    return{$ast:index};
-  });
-  return`{"format":"fnt-packed-v1","asts":${JSON.stringify(templates)},"data":${body}}`;
+  const encoder=new ArchiveEncoder(),body=encoder.stringify(value);
+  return encoder.finish(body);
 }
 export function parseArchive(source:string):unknown {
   const parsed=JSON.parse(source);

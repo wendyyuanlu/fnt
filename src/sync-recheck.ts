@@ -2,6 +2,7 @@ import {clone,uid} from './model';
 import {Store,SyncConflict,syncGitHub,mergeForSync,type LocalState,type SyncPlan} from './storage';
 import {assertUndecidedReview,type StoredComparisonReview} from './comparison-host';
 import {runSyncCodec} from './sync-processing';
+import {syncEqual} from './sync-merge';
 export interface SyncRecheck {
   state:LocalState;
   config:NonNullable<LocalState['sync']>;
@@ -19,7 +20,7 @@ export async function prepareSyncRecheck(store:Store,state:LocalState,token:stri
   if(!config||!token||!captured.syncReview)throw Error('Connect private sync and open the paused review before rechecking.');
   const unchanged=async()=>{
     const current=await store.load();
-    if(!canContinue()||!current||current.version!==captured.version||JSON.stringify(current)!==JSON.stringify(captured)){
+    if(!canContinue()||!current||current.version!==captured.version||!syncEqual(current,captured)){
       throw Error('The local workbook or sync connection changed during recheck. Nothing was replaced; recheck again after saving.');
     }
   };

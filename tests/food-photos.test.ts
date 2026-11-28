@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import {describe,expect,it} from 'vitest';
 import {captureData} from '../src/food-capture';
 import {decodePhotoArchives,inspectPhoto,photoByteLimit,validatePhotoArchives} from '../src/food-photos';
-import {createDemo,uid} from '../src/model';
+import {blankSheet,createDemo,key,uid} from '../src/model';
 import {Store,validateBackup} from '../src/storage';
 import {capturePatch} from '../src/undo-history';
 import {readArchive} from '../src/archive';
@@ -28,6 +28,27 @@ describe.each([1,2,3])('independent photo persistence, repetition %i',()=>{
   });
 
   describe('incremental full photo archives',()=>{
+    it('packs repeated formulas without expanding them into the full recovery state string',async()=>{
+      const store=await Store.open(uid());
+      try{
+        const book=createDemo(),sheet=blankSheet('Repeated formula recovery',128,2);
+        const formula={kind:'literal' as const,value:'Synthetic repeated formula '.repeat(1024)};
+        for(const row of sheet.rows)sheet.cells[key(row.id,sheet.columns[0].id)]={formula};
+        book.sheets.push(sheet);
+        const photo=await inspectPhoto(uid(),image());
+        captureData(book).photos.push({id:photo.id,name:'Stored.png',date:45000,digest:photo.digest,mime:photo.mime,bytes:photo.bytes});
+        const original={id:uid(),name:'Original.xlsx',data:'AA=='};
+        const state=await store.save(book,0,'Repeated synthetic formulas',false,original,{photos:[photo]});
+        const rawStateBytes=new TextEncoder().encode(JSON.stringify(state)).byteLength,blob=await store.backupBlob(state,state.book,true);
+        expect(blob.size).toBeLessThan(rawStateBytes/8);
+        const archive=await readArchive(blob) as Backup;
+        validateBackup(archive);
+        expect(archive.state).toEqual(state);expect(archive.originals).toEqual([original]);
+        expect(await decodePhotoArchives(archive.photos!)).toEqual([photo]);
+        const restored=archive.state.book.sheets.at(-1)!;
+        expect(restored.cells[key(sheet.rows[0].id,sheet.columns[0].id)].formula).toBe(restored.cells[key(sheet.rows[1].id,sheet.columns[0].id)].formula);
+      }finally{store.close();}
+    });
     it('uses linear metadata reads across many present and missing photo references',async()=>{
       const store=await Store.open(uid());
       try{
