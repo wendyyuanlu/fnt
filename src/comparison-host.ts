@@ -35,7 +35,7 @@ export interface StoredComparisonReview extends ComparisonReview {
   baseRevision:number;
   sync?:{config:import('./storage').SyncConfig;path:string;sha:string};
 }
-export function assertUndecidedReview(review?:StoredComparisonReview):void{
+export function assertUndecidedReview(review?:Pick<StoredComparisonReview,'view'>):void{
   if(review?.view&&(review.view.choices.length||review.view.history.some(choices=>choices.length))){
     throw Error('This review has decisions or decision history. Recheck did not reset or reinterpret them. Continue the preserved review instead.');
   }

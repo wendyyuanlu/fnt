@@ -7,11 +7,11 @@ import {comparisonDeviceName,uploadComparisonSnapshot,listComparisonSnapshots,re
 import {githubFormDefaults} from './github-client';
 import { allSheets,allTables,addRow,addTableRows, addTableColumns, adjacentTableForCell, tableMembershipGaps, blankSheet, clone, columnIndex,createTranslationContext, createDemo, deleteColumn, deleteRows, duplicateSheet, expandAdjacentTable, fillCells, getCell, groupMoveTarget, hypotheticalTagDescendants, insertColumn, insertSheetRows, isFault, key, letters, move, moveColumns, moveRows, moveIntoGroup, moveTargetGroups, outlineMembers, renameColumn, replaceTables, setInput, setHypotheticalTag, summaryMoveMembers, tableAt, translate, uid, uniqueName, type Cell, type Group, type ReferenceSource, type Sheet, type Workbook } from './model';
 import { compile, displayFormula, Engine, scalar, type Ast } from './formula';
-import { Store, SyncConflict, SyncPaused, syncGitHub,mergeForSync, hasPendingContent,validateBook,validateBackup,validateBookMetadata,validateCellChanges, type Backup, type LocalState,type SyncResult,type SyncConfig } from './storage';
+import { Store, SyncConflict, SyncPaused, syncGitHub,mergeForSync, hasPendingContent,validateBook,validateBookMetadata,validateCellChanges, type Backup, type LocalState,type SyncResult,type SyncConfig } from './storage';
 import {applyUndo,capturePatch,editSnapshot,patchDifference,structuralUndo,undoLimit,type History,type Patch,type UndoHistory} from './undo-history';
 import {runSyncCodec} from './sync-processing';
 import {cachedCellText,dateFormatContext} from './display-values';
-import { parseArchive, stringifyArchive,compressArchive } from './archive';
+import { parseArchive,readArchive,stringifyArchive } from './archive';
 import { parseTsv,serializeTsv } from './clipboard';
 import { cutCells, shiftCells } from './cell-operations';
 import { displayExcelDate,excelDate,excelDateText,parseDateInput } from './dates';
@@ -1639,8 +1639,9 @@ async function recheckPausedSync():Promise<void>{
       const previousId=sessionStorage.getItem(`fnt-comparison:${book.id}`)??undefined;
       const current=await store.load();
       if(!current||current.version!==state.version||current.book.revision!==book.revision)throw Error('Another tab changed the saved workbook. Recheck again after saving.');
-      preview=await prepareSyncRecheck(store,current,credential,previousId,canContinue);
+      preview=await prepareSyncRecheck(store,current,credential,previousId,canContinue,fetch,message=>{status=message;renderStatus();});
       if(!canContinue())throw Error('The local workbook or connection changed. Recheck again; nothing was replaced.');
+      status='Rechecking paused sync - preserving preview and previous review (no upload)';renderStatus();
       await store.stageSyncRecheck(preview);
       if(!canContinue())throw Error('The local workbook or connection changed. The previous review is preserved; recheck again.');
     }finally{root.inert=wasInert;busy=false;renderStatus();}
@@ -1778,8 +1779,7 @@ function openComparison(conflict?:SyncConflict,options?:{reviewId?:string;readOn
         }
         status='Saving complete pre-apply backup...';renderStatus();
         request.progress?.(status,2,6);
-        const before=await store.backup({...state,book:clone(book)});
-        validateBackup({...before,state:{...before.state,book:merged}});
+        const recoveryArchive=await store.backupBlob({...state,book:clone(book)},merged);
         status='Saving both comparison sources...';renderStatus();
         request.progress?.(status,3,6);
         await store.checkpoint('Comparison left source - before apply',request.left,[],true);
@@ -1789,7 +1789,6 @@ function openComparison(conflict?:SyncConflict,options?:{reviewId?:string;readOn
         if(capturedGeneration!==generation||JSON.stringify(book)!==JSON.stringify(captured.book))throw Error('The local workbook changed while recovery was being saved. Nothing was replaced.');
         status='Saving selected workbook and undo history...';renderStatus();
         request.progress?.(status,4,6);
-        const recoveryArchive=JSON.stringify({format:'fnt-compressed-v1',payload:compressArchive(before)});
         state=await store.save(merged,state.version,'Apply comparison selections',true,undefined,{recoveryArchive,undoHistory:history,comparisonSync:target,pauseSync:!request.sync});
         saved=true;applied=true;
         compactionWrites=0;fullSaveRequired=false;scopedChanges.length=0;
@@ -4821,7 +4820,7 @@ function openFind():void {
     mode(false);syncScope();draw();input.focus();
   });
 }
-function download(name:string,data:string,type='application/json'):void {
+function download(name:string,data:string|Blob,type='application/json'):void {
   const url=URL.createObjectURL(new Blob([data],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
 }
 async function exportBackup():Promise<void> {
@@ -5037,7 +5036,7 @@ async function openHistory():Promise<void> {
         if(busy||!commitDraft())return;busy=true;status='Restoring checkpoint locally';renderStatus();
         try{
           await flush();if(savedGeneration!==generation)throw Error('Save failed. Restore cancelled.');
-          const checkpoint=history[Number(el.dataset.checkpoint)],backup=checkpoint.backup?parseArchive(checkpoint.backup) as Backup:await store.backup({...state,book:clone(checkpoint.book)});
+          const checkpoint=history[Number(el.dataset.checkpoint)],backup=checkpoint.backup?await readArchive(checkpoint.backup) as Backup:await store.backup({...state,book:clone(checkpoint.book)});
           state=await store.restore(normalizedBackup(backup),state.version);token='';adoptSavedWorkbook();status='Checkpoint restored locally - sync disconnected; full pre-restore archive in recovery'+(backup.missingPhotos?.length?`; restored archive excludes ${backup.missingPhotos.length} photo originals - check the photo gallery`: '');channel?.postMessage({version:state.version});render();d.close();
         }catch(e){status='Checkpoint restore failed - previous workbook retained';flash(e);}
         finally{busy=false;renderStatus();}

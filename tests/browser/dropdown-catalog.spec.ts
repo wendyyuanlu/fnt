@@ -57,8 +57,8 @@ test('older saved profile receives catalogs once with full recovery and existing
   await choose(page,'SnackCountry');await expect(page.locator(records+' td').first()).toHaveText('Keep custom value');
   await choose(page,'SnackCountry_2');await expect.poll(()=>values(page)).toEqual(['Taiwan','Japan','Canada','USA']);
   const proof=await page.evaluate(async()=>{
-    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{parseArchive}=await import(p+'archive.ts') as typeof import('../../src/archive'),store=await Store.open();
-    try{const state=(await store.load())!,history=await store.history();return{state,prior:parseArchive(history.find(h=>h.label==='Before Add original Dropdowns catalogs')!.backup!)};}finally{store.close();}
+    const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{readArchive}=await import(p+'archive.ts') as typeof import('../../src/archive'),store=await Store.open();
+    try{const state=(await store.load())!,history=await store.history();return{state,prior:await readArchive(history.find(h=>h.label==='Before Add original Dropdowns catalogs')!.backup!)};}finally{store.close();}
   });
   expect(proof.state.book.id).toBe(old.book.id);expect(proof.state.book.sheets.slice(0,4)).toEqual(old.book.sheets.slice(0,4));expect(proof.state.pending.slice(0,old.pending.length)).toEqual(old.pending);
   expect(proof.state.pending.slice(old.pending.length).map(p=>p.label).filter(label=>label!=='Visit table')).toEqual(['Add original Dropdowns catalogs','Move dropdown records into DD storage']);

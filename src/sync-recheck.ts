@@ -1,6 +1,5 @@
 import {clone,uid} from './model';
-import {stringifyArchive} from './archive';
-import {Store,SyncConflict,syncGitHub,mergeForSync,validateBackup,type LocalState,type SyncPlan} from './storage';
+import {Store,SyncConflict,syncGitHub,mergeForSync,type LocalState,type SyncPlan} from './storage';
 import {assertUndecidedReview,type StoredComparisonReview} from './comparison-host';
 import {runSyncCodec} from './sync-processing';
 export interface SyncRecheck {
@@ -12,9 +11,10 @@ export interface SyncRecheck {
   storedPrevious?:StoredComparisonReview;
   reviewId:string;
   review:StoredComparisonReview;
-  backup:string;
+  backupId:string;
 }
-export async function prepareSyncRecheck(store:Store,state:LocalState,token:string,reviewId:string|undefined,canContinue:()=>boolean,fetcher:typeof fetch=fetch):Promise<SyncRecheck>{
+export async function prepareSyncRecheck(store:Store,state:LocalState,token:string,reviewId:string|undefined,canContinue:()=>boolean,fetcher:typeof fetch=fetch,progress?:(message:string)=>void):Promise<SyncRecheck>{
+  progress?.('Rechecking paused sync - checking saved state (no upload)');
   const captured=clone(state),config=captured.sync;
   if(!config||!token||!captured.syncReview)throw Error('Connect private sync and open the paused review before rechecking.');
   const unchanged=async()=>{
@@ -24,6 +24,11 @@ export async function prepareSyncRecheck(store:Store,state:LocalState,token:stri
     }
   };
   await unchanged();
+  if(reviewId)await store.assertUndecidedComparisonReview(reviewId);
+  progress?.('Rechecking paused sync - saving a full local recovery backup (no upload)');
+  const backupId=await store.preserveSyncRecheckBackup(captured);
+  await unchanged();
+  progress?.('Rechecking paused sync - reading GitHub and comparing saved changes (no upload)');
   const storedPrevious=reviewId?await store.comparisonReview(reviewId):undefined;
   if(reviewId&&!storedPrevious)throw Error('The saved comparison could not be found. Open the paused comparison before rechecking.');
   assertUndecidedReview(storedPrevious);
@@ -53,14 +58,9 @@ export async function prepareSyncRecheck(store:Store,state:LocalState,token:stri
     plan={...plan,remote:updated.remote,conflicts:equal?[]:['preserved-unresolved-review']};
   }
   await unchanged();
-  const archive=await store.backup(captured);
-  validateBackup(archive);
-  if(archive.missingPhotos?.length)throw Error('Local photo originals are missing. Recheck retained the paused review; retrieve a complete photo backup before applying changes.');
-  const backup=stringifyArchive(archive);
-  await unchanged();
   return{
     state:captured,config,plan,previousId:reviewId??uid(),previous:clone(previous),storedPrevious,
-    reviewId:uid(),backup,
+    reviewId:uid(),backupId,
     review:{
       left:{book:plan.local,kind:'This device',label:'Rechecked local choice with compatible changes'},
       right:{book:plan.remote,kind:'GitHub',label:'Rechecked GitHub choice with compatible changes',revision:plan.sha},

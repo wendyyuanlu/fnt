@@ -38,6 +38,9 @@ export function parseArchive(source:string):unknown {
   };
   return restore(parsed.data);
 }
+export async function readArchive(source:string|Blob):Promise<unknown>{
+  return parseArchive(typeof source==='string'?source:await source.text());
+}
 export function bytes64(bytes:Uint8Array):string {
   let binary='';for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));return btoa(binary);
 }

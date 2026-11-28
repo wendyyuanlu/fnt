@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import {readFileSync} from 'node:fs';
 import {describe,expect,it,vi} from 'vitest';
 import {clone,createDemo,key,uid,type Workbook} from '../src/model';
-import {parseArchive,stringifyArchive} from '../src/archive';
+import {parseArchive,readArchive,stringifyArchive} from '../src/archive';
 import {request,Store,validateBook,validateBookMetadata,validateCellChanges,type Backup} from '../src/storage';
 import {applyUndo,type History,type UndoHistory} from '../src/undo-history';
 import {addDraftFood,captureData,newNutritionBatch} from '../src/food-capture';
@@ -254,7 +254,7 @@ describe('transactional workbook change journal',()=>{
     const restored=await store.restore(backup,next.version);
     expect(restored.book.title).toBe('Backed up');expect(restored.pending.map(p=>p.id)).toEqual(expect.arrayContaining(next.pending.map(p=>p.id)));
     const recovery=(await store.history()).find(h=>h.label==='Before backup restore')!;
-    expect(recovery.book.title).toBe('After backup');expect((parseArchive(recovery.backup!) as Backup).state.pending).toEqual(next.pending);
+    expect(recovery.book.title).toBe('After backup');expect((await readArchive(recovery.backup!) as Backup).state.pending).toEqual(next.pending);
     expect(await store.undoHistory(restored.version,book.id)).toBeUndefined();expect(await store.load()).toEqual(restored);store.close();
   });
 

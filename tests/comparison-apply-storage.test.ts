@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import {expect,it} from 'vitest';
 import {clone,createDemo,uid} from '../src/model';
 import {Store} from '../src/storage';
-import {compressArchive,parseArchive} from '../src/archive';
+import {compressArchive,readArchive} from '../src/archive';
 import {applyUndo,structuralUndo} from '../src/undo-history';
 
 it('atomically preserves pre-apply recovery and undo while pausing the existing private connection across reopen',async()=>{
@@ -22,7 +22,7 @@ it('atomically preserves pre-apply recovery and undo while pausing the existing 
       expect(loaded.book.title).toBe('Selected workbook');
       const history=await reopened.history();
       expect(history.some(entry=>entry.book.title===left.title&&!!entry.backup)).toBe(true);
-      expect(parseArchive(history.find(entry=>entry.backup)!.backup!)).toEqual(before);
+      expect(await readArchive(history.find(entry=>entry.backup)!.backup!)).toEqual(before);
       expect(history.filter(entry=>entry.label.endsWith('source'))).toHaveLength(2);
       const undo=(await reopened.undoHistory(loaded.version,loaded.book.id))!;expect(undo.undo).toHaveLength(1);
       expect(applyUndo(loaded.book,undo.undo[0]).book).toEqual(left);

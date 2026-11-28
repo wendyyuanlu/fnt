@@ -10,7 +10,7 @@ import {nutritionReviewRows,resolveNutritionReview} from '../src/ingredient-edit
 import {prepareSyncRecheck} from '../src/sync-recheck';
 import type {StoredComparisonReview,ComparisonReviewView} from '../src/comparison-host';
 import {inspectPhoto,decodePhotoArchives} from '../src/food-photos';
-import {parseArchive} from '../src/archive';
+import {readArchive} from '../src/archive';
 import type {Backup} from '../src/storage';
 
 const config={owner:'example',repo:'private',branch:'main',path:'coauthoring.json'};
@@ -259,10 +259,16 @@ describe('explicit paused sync recheck',()=>{
     try{
       const photo=await inspectPhoto(uid(),new Blob([new Uint8Array([137,80,78,71,13,10,26,10,0])],{type:'image/png'}));
       const book=clone(f.current.book),history={undo:[structuralUndo(f.base,book)],redo:[]},original={id:'synthetic-xlsx',name:'Invented original.xlsx',data:'AA=='};
+      const sheet=book.sheets[0];
+      sheet.cells[key(sheet.rows[3].id,sheet.columns[0].id)]={formula:{kind:'ref',sheet:sheet.id,row:sheet.rows[1].id,column:sheet.columns[0].id,absRow:false,absCol:false},format:{bold:true}};
       captureData(book).photos.push({id:photo.id,name:'Invented.png',date:45000,digest:photo.digest,mime:photo.mime,bytes:photo.bytes});
       f.current=await f.store.save(book,f.current.version,'Attach synthetic original',false,original,{photos:[photo],undoHistory:history});
       const preview=await prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch);
-      expect(await decodePhotoArchives((parseArchive(preview.backup) as Backup).photos!)).toEqual([photo]);
+      const savedBackup=(await f.store.history()).find(copy=>copy.id===preview.backupId)!;
+      const archive=await readArchive(savedBackup.backup!) as Backup;
+      expect(archive.state.book).toEqual(book);expect(archive.originals).toEqual([original]);
+      expect(await decodePhotoArchives(archive.photos!)).toEqual([photo]);
+      expect(JSON.stringify(preview)).not.toContain(archive.photos![0].data);
       const failure=vi.spyOn(IDBObjectStore.prototype,'put').mockImplementationOnce(()=>{throw Error('Synthetic recovery write failure');});
       try{await expect(f.store.stageSyncRecheck(preview)).rejects.toThrow('recovery write failure');}finally{failure.mockRestore();}
       expect(await f.store.photo(photo.id,photo)).toEqual(photo);expect(await f.store.originals()).toEqual([original]);
@@ -271,7 +277,7 @@ describe('explicit paused sync recheck',()=>{
       expect(await f.store.photo(photo.id,photo)).toEqual(photo);expect(await f.store.originals()).toEqual([original]);
       expect(await f.store.undoHistory(f.current.version,book.id)).toEqual(history);
       const recovery=(await f.store.history()).find(copy=>copy.label==='Before paused sync recheck')!;
-      expect(await decodePhotoArchives((parseArchive(recovery.backup!) as Backup).photos!)).toEqual([photo]);
+      expect(await decodePhotoArchives((await readArchive(recovery.backup!) as Backup).photos!)).toEqual([photo]);
       expect((await f.store.history()).find(copy=>copy.label==='GitHub source - paused sync recheck')!.book).toEqual(f.endpoint.book);
     }finally{f.store.close();}
   });
@@ -296,7 +302,7 @@ describe('explicit paused sync recheck',()=>{
       const fetcher:typeof fetch=async(input,init)=>{const response=await f.endpoint.fetch(input,init);if(String(input).includes('/contents/'))active=false;return response;};
       await expect(prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>active,fetcher)).rejects.toThrow('changed during recheck');
       expect(await f.store.load()).toEqual(f.current);expect(await f.store.comparisonReview(f.id)).toEqual(f.review);
-      expect(await f.store.history()).toEqual([]);expect(f.endpoint.attempts).toBe(0);
+      expect(await f.store.history()).toHaveLength(2);expect((await f.store.history()).every(copy=>copy.label==='Before paused sync recheck'&&!!copy.backup)).toBe(true);expect(f.endpoint.attempts).toBe(0);
     }finally{f.store.close();}
   });
   it.each(['choices','history'] as const)('does not recheck or reset existing %s, including undone decisions',async kind=>{
@@ -320,7 +326,7 @@ describe('explicit paused sync recheck',()=>{
       if(reason==='quota'){const failure=vi.spyOn(IDBObjectStore.prototype,'put').mockImplementationOnce(()=>{throw new DOMException('Synthetic quota failure','QuotaExceededError');});restore=()=>failure.mockRestore();}
       try{await expect(f.store.stageSyncRecheck(preview)).rejects.toThrow(reason==='workbook'?'Another tab':reason==='review'?'decisions or decision history':reason==='sources'?'original comparison changed':'quota failure');}finally{restore();}
       expect(await f.store.comparisonReview(f.id)).toEqual(f.review);expect(await f.store.comparisonReview(preview.reviewId)).toBeUndefined();
-      expect(await f.store.history()).toEqual([]);expect(await f.store.load()).toEqual(f.current);expect(f.endpoint.attempts).toBe(0);
+      expect(await f.store.history()).toEqual([expect.objectContaining({id:preview.backupId,label:'Before paused sync recheck',backup:expect.any(Blob)})]);expect(await f.store.load()).toEqual(f.current);expect(f.endpoint.attempts).toBe(0);
     }finally{f.store.close();}
   });
   it('refuses to overwrite an original attachment changed after preflight without a workbook version change',async()=>{
@@ -334,7 +340,43 @@ describe('explicit paused sync recheck',()=>{
       await expect(f.store.stageSyncRecheck(preview)).rejects.toThrow('original attachment changed');
       expect(await f.store.originals()).toEqual([newer]);expect(await f.store.load()).toEqual(f.current);
       expect(await f.store.comparisonReview(f.id)).toEqual(f.review);expect(await f.store.comparisonReview(preview.reviewId)).toBeUndefined();
-      expect((await f.store.history()).some(copy=>copy.label==='Before paused sync recheck')).toBe(false);expect(f.endpoint.attempts).toBe(0);
+      expect((await f.store.history()).some(copy=>copy.id===preview.backupId&&!!copy.backup)).toBe(true);expect(f.endpoint.attempts).toBe(0);
+    }finally{f.store.close();}
+  });
+  it('durably saves the complete recovery archive before the first network read',async()=>{
+    const f=await paused(),network=vi.fn(f.endpoint.fetch);
+    try{
+      const read:typeof fetch=async(input,init)=>{
+        const checkpoints=await f.store.history();
+        expect(checkpoints).toHaveLength(1);
+        const backup=await readArchive(checkpoints[0].backup!) as Backup;
+        expect(backup.state).toEqual(f.current);
+        return network(input,init);
+      };
+      const preview=await prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,read);
+      expect(network).toHaveBeenCalled();expect(preview.backupId).toBe((await f.store.history())[0].id);
+      expect(await f.store.load()).toEqual(f.current);expect(await f.store.comparisonReview(f.id)).toEqual(f.review);
+    }finally{f.store.close();}
+  });
+  it('does not read GitHub or change a review when the early recovery write fails',async()=>{
+    const f=await paused(),network=vi.fn(f.endpoint.fetch);
+    try{
+      const failure=vi.spyOn(IDBObjectStore.prototype,'put').mockImplementationOnce(()=>{throw new DOMException('Synthetic early backup quota failure','QuotaExceededError');});
+      try{await expect(prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,network)).rejects.toThrow('early backup quota failure');}finally{failure.mockRestore();}
+      expect(network).not.toHaveBeenCalled();expect(await f.store.history()).toEqual([]);
+      expect(await f.store.load()).toEqual(f.current);expect(await f.store.comparisonReview(f.id)).toEqual(f.review);
+    }finally{f.store.close();}
+  });
+  it('refuses staging without its verified durable full backup and keeps the original backup recoverable',async()=>{
+    const f=await paused();
+    try{
+      const preview=await prepareSyncRecheck(f.store,f.current,'invented',f.id,()=>true,f.endpoint.fetch),id=preview.backupId;
+      preview.backupId=uid();
+      await expect(f.store.stageSyncRecheck(preview)).rejects.toThrow('full pre-recheck backup is unavailable');
+      expect(await f.store.load()).toEqual(f.current);expect(await f.store.comparisonReview(f.id)).toEqual(f.review);
+      expect(await f.store.comparisonReview(preview.reviewId)).toBeUndefined();expect(await f.store.syncRecheckHistory(f.current.book.id)).toEqual([]);
+      f.store.close();const reopened=await Store.open(f.name);
+      try{expect((await readArchive((await reopened.history()).find(copy=>copy.id===id)!.backup!) as Backup).state).toEqual(f.current);}finally{reopened.close();}
     }finally{f.store.close();}
   });
 });

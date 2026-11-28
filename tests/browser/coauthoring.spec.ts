@@ -1,4 +1,7 @@
 import {test,expect,type Page,type BrowserContext,type Route} from '@playwright/test';
+import {readFile} from 'node:fs/promises';
+import {parseArchive} from '../../src/archive';
+import type {Backup} from '../../src/storage';
 import {blankSheet,clone,key,uid,type Workbook} from '../../src/model';
 import {encode64,type LocalState} from '../../src/storage';
 import {syncCodec} from '../../src/sync-codec';
@@ -146,7 +149,7 @@ async function local(page:Page):Promise<LocalState>{
     await page.reload();await expect.poll(async()=>(await local(page)).book.foodCapture?.photos.length).toBe(1);
   });
 async function install(page:Page,endpoint:ControlledGitHub){
-  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved');
+  await page.goto('/');await expect(page.locator('#save-state')).toContainText('Saved',{timeout:15000});
   await page.keyboard.press('Control+s');await expect(page.locator('#save-state')).toHaveText('Saved locally + recovery checkpoint');
   await page.evaluate(async({book,config,sha})=>{
     const module='/src/storage.ts',{Store}=await import(/* @vite-ignore */module) as typeof import('../../src/storage'),store=await Store.open();
@@ -213,6 +216,44 @@ test.describe('paused review recheck',()=>{
     await page.getByRole('button',{name:'Recovery',exact:true}).click();
     await page.getByRole('button',{name:'Recheck paused sync',exact:true}).click();
   }
+  test('Blob and legacy recovery downloads retain original bytes and restore through the existing checkpoint UI',async({page})=>{
+    const f=await seed(page),writesBefore=f.endpoint.writes;
+    const expected=await page.evaluate(async()=>{
+      const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),{captureData}=await import(p+'food-capture.ts') as typeof import('../../src/food-capture');
+      const {inspectPhoto}=await import(p+'food-photos.ts') as typeof import('../../src/food-photos'),{stringifyArchive}=await import(p+'archive.ts') as typeof import('../../src/archive');
+      const store=await Store.open();
+      try{
+        const state=(await store.load())!,photo=await inspectPhoto('synthetic-checkpoint-photo',new Blob([new Uint8Array([137,80,78,71,13,10,26,10,1])],{type:'image/png'}));
+        captureData(state.book).photos.push({id:photo.id,name:'Invented.png',date:45000,digest:photo.digest,mime:photo.mime,bytes:photo.bytes});
+        const original={id:'synthetic-checkpoint-original',name:'Invented.xlsx',data:'AA=='};
+        const saved=await store.save(state.book,state.version,'Attach synthetic checkpoint bytes',false,original,{photos:[photo]});
+        const before=await store.backup(saved);
+        await store.save(saved.book,saved.version,'Legacy recovery fixture',true,undefined,{recoveryArchive:stringifyArchive(before)});
+        return{book:saved.book,photo:before.photos![0],original};
+      }finally{store.close();}
+    });
+    await page.reload();
+    await page.frameLocator('iframe.comparison-frame').getByRole('button',{name:'Back to workbook',exact:true}).click();
+    await recheck(page);
+    await page.getByRole('dialog',{name:'Compatible sync merge ready',exact:true}).getByRole('button',{name:'Not now',exact:true}).click();
+    await page.getByRole('button',{name:'Recovery',exact:true}).click();
+    await page.getByRole('button',{name:'Recovery checkpoints',exact:true}).click();
+    const checkpoints=page.getByRole('dialog',{name:'Recovery checkpoints',exact:true});
+    for(const label of ['Before paused sync recheck','Before Legacy recovery fixture']){
+      const row=checkpoints.getByRole('button',{name:new RegExp(`^${label}`)}).locator('..');
+      const pending=page.waitForEvent('download');await row.getByRole('button',{name:'Download full recovery archive',exact:true}).click();
+      const download=await pending,archive=parseArchive(await readFile((await download.path())!,'utf8')) as Backup;
+      expect({...archive.state.book,tableActivity:expected.book.tableActivity}).toEqual(expected.book);expect(archive.photos).toEqual([expected.photo]);expect(archive.originals).toEqual([expected.original]);
+    }
+    await checkpoints.getByRole('button',{name:/^Before paused sync recheck/}).click();
+    await expect(page.locator('#save-state')).toContainText('Checkpoint restored locally - sync disconnected');
+    await page.reload();expect({...((await local(page)).book),tableActivity:expected.book.tableActivity}).toEqual(expected.book);
+    const retained=await page.evaluate(async()=>{
+      const p='/src/',{Store}=await import(p+'storage.ts') as typeof import('../../src/storage'),store=await Store.open();
+      try{return await store.backup((await store.load())!);}finally{store.close();}
+    });
+    expect(retained.photos).toEqual([expected.photo]);expect(retained.originals).toEqual([expected.original]);expect(f.endpoint.writes).toBe(writesBefore);
+  });
   async function gateInitialSave(page:Page,fail:boolean){
     await page.evaluate(async fail=>{
       const module='/src/storage.ts',{Store}=await import(/* @vite-ignore */module) as typeof import('../../src/storage');

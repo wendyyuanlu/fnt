@@ -1082,6 +1082,16 @@ Preserved paused reviews**; a complete pre-recheck archive and the newly read
 GitHub source are also retained in recovery checkpoints. Missing ancestry,
 unsaved photos, storage failures or stale local/connection/review state leave
 the original review paused and unchanged.
+The complete local archive is saved durably before loading the old sources or
+reading and merging GitHub. Preview staging carries only its verified checkpoint
+identity, not another in-memory copy of every photo and attachment. The archive
+is assembled as immutable Blob parts, encoding one photo at a time rather than
+retaining one giant base64 JSON string. Recovery reads both these Blob archives
+and existing string checkpoints. If planning
+or staging fails, this extra full recovery checkpoint remains available; no
+partial review or workbook replacement is committed.
+The eventual comparison confirmation uses the same incremental full-archive
+path, retaining its pre-apply metadata, photo and original-package validation.
 Compatible changes require an explicit **Confirm merged workbook and sync**;
 real collisions open a fresh review containing only the incompatible choices,
 with compatible changes included on both sides. Both use the normal guarded

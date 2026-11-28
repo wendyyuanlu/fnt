@@ -5,7 +5,7 @@ import {decodePhotoArchives,inspectPhoto,photoByteLimit,validatePhotoArchives} f
 import {createDemo,uid} from '../src/model';
 import {Store,validateBackup} from '../src/storage';
 import {capturePatch} from '../src/undo-history';
-import {parseArchive} from '../src/archive';
+import {readArchive} from '../src/archive';
 import type {Backup} from '../src/storage';
 
 const image=(last=0)=>new Blob([new Uint8Array([137,80,78,71,13,10,26,10,last])],{type:'image/png'});
@@ -25,6 +25,45 @@ describe.each([1,2,3])('independent photo persistence, repetition %i',()=>{
       expect(await store.undoHistory(receipt.version,book.id)).toEqual(history);
       expect(JSON.stringify(await store.undoHistory(receipt.version,book.id))).not.toContain('"blob"');
     }finally{store.close();}
+  });
+
+  describe('incremental full photo archives',()=>{
+    it('uses linear metadata reads across many present and missing photo references',async()=>{
+      const store=await Store.open(uid());
+      try{
+        const book=createDemo(),photos=await Promise.all(Array.from({length:64},(_,i)=>inspectPhoto(uid(),image(i))));
+        const metadata=captureData(book).photos;
+        metadata.push(...photos.map(photo=>({id:photo.id,name:'Stored.png',date:45000,digest:photo.digest,mime:photo.mime,bytes:photo.bytes})));
+        metadata.push(...photos.map(photo=>({id:uid(),name:'Missing.png',date:45000,digest:photo.digest,mime:photo.mime,bytes:photo.bytes})));
+        const state=await store.save(book,0,'Many synthetic photo references',false,undefined,{photos}),validationBook=structuredClone(state.book);
+        let metadataReads=0;
+        for(const photo of validationBook.foodCapture!.photos){
+          const id=photo.id;
+          Object.defineProperty(photo,'id',{enumerable:true,get:()=>{metadataReads++;return id;}});
+        }
+        const blob=await store.backupBlob(state,validationBook);
+        expect(metadataReads).toBeLessThanOrEqual(16*(metadata.length+photos.length));
+        const archive=await readArchive(blob) as Backup;
+        expect(archive.state).toEqual(state);expect(archive.photos).toHaveLength(photos.length);
+        expect(archive.missingPhotos).toEqual(metadata.slice(photos.length).map(photo=>photo.id));
+        expect((await decodePhotoArchives(archive.photos!)).sort((a,b)=>a.id.localeCompare(b.id))).toEqual([...photos].sort((a,b)=>a.id.localeCompare(b.id)));
+        await expect(store.backupBlob(state,state.book,true)).rejects.toThrow('photo originals are missing');
+        expect(await store.load()).toEqual(state);expect(await store.history()).toEqual([]);
+      }finally{store.close();}
+    });
+    it.each(['digest','bytes','mime'] as const)('retains per-photo %s conflict validation before any state write',async field=>{
+      const store=await Store.open(uid());
+      try{
+        const book=createDemo(),photo=await inspectPhoto(uid(),image());
+        captureData(book).photos.push({id:photo.id,name:'Stored.png',date:45000,digest:photo.digest,mime:photo.mime,bytes:photo.bytes});
+        const state=await store.save(book,0,'Synthetic photo',false,undefined,{photos:[photo]}),merged=structuredClone(state.book),metadata=merged.foodCapture!.photos[0];
+        if(field==='digest')metadata.digest='0'.repeat(64);
+        else if(field==='bytes')metadata.bytes++;
+        else metadata.mime='image/jpeg';
+        await expect(store.backupBlob(state,merged)).rejects.toThrow('Photo backup conflicts with workbook metadata');
+        expect(await store.load()).toEqual(state);expect(await store.history()).toEqual([]);
+      }finally{store.close();}
+    });
   });
   it('inserts neither a stale photo nor its metadata and preserves both on an identity collision',async()=>{
     const store=await Store.open(uid());
@@ -99,7 +138,7 @@ describe.each([1,2,3])('independent photo persistence, repetition %i',()=>{
       const incoming=await source.save(createDemo(),0,'Incoming workbook');
       await destination.restore(await source.backup(incoming),state.version);
       const checkpoint=(await destination.history()).find(entry=>entry.label==='Before backup restore')!;
-      const recovery=parseArchive(checkpoint.backup!) as Backup;
+      const recovery=await readArchive(checkpoint.backup!) as Backup;
       expect(()=>validateBackup(recovery)).not.toThrow();expect(recovery.state.book).toEqual(book);
       expect(await decodePhotoArchives(recovery.photos!)).toEqual([photo]);expect(recovery.missingPhotos).toEqual([]);
     }finally{source.close();destination.close();}

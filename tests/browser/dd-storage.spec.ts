@@ -41,8 +41,8 @@ test('DD owns the real records, edits existing links, and retains full pre-migra
   await saved(page);await page.reload();
   await expect(page.locator('td[data-r="1"][data-c="0"] .cell-value')).toHaveText('Edited synthetic type');
   const recovery=await page.evaluate(async()=>{
-    const path='/src/storage.ts',archivePath='/src/archive.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),{parseArchive}=await import(/* @vite-ignore */archivePath) as typeof import('../../src/archive'),store=await Store.open();
-    try{const entry=(await store.history()).find(entry=>entry.label==='Before Move dropdown records into DD storage')!;const backup=parseArchive(entry.backup!) as import('../../src/storage').Backup;return{tableIds:backup.state.book.tables.map(table=>table.id),dd:backup.state.book.dropdownData};}finally{store.close();}
+    const path='/src/storage.ts',archivePath='/src/archive.ts',{Store}=await import(/* @vite-ignore */path) as typeof import('../../src/storage'),{readArchive}=await import(/* @vite-ignore */archivePath) as typeof import('../../src/archive'),store=await Store.open();
+    try{const entry=(await store.history()).find(entry=>entry.label==='Before Move dropdown records into DD storage')!;const backup=await readArchive(entry.backup!) as import('../../src/storage').Backup;return{tableIds:backup.state.book.tables.map(table=>table.id),dd:backup.state.book.dropdownData};}finally{store.close();}
   });
   expect(recovery.tableIds).toContain(ids.table);expect(recovery.dd).toBeUndefined();
 });

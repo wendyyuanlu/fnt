@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it,vi } from 'vitest';
 import { createDemo, uid } from '../src/model';
 import { encode64, Store, SyncConflict, syncGitHub,validateBook, type LocalState } from '../src/storage';
-import { parseArchive,stringifyArchive } from '../src/archive';
+import { parseArchive,readArchive,stringifyArchive } from '../src/archive';
 import {getHypotheticalStyle} from '../src/hypothetical';
 
 describe('recoverable local storage',()=>{
@@ -230,7 +230,7 @@ describe('recoverable local storage',()=>{
     const result=await store.save(imported,configured.version,'Ingredients import',true,{id:'original',name:'invented.xlsx',data:'aW52ZW50ZWQ='},{localOnly:true,recoveryArchive:recovery});
     expect(result.sync).toBeUndefined();expect(result.remoteSha).toBeUndefined();
     expect(result.pending[0].id).toBe(first.pending[0].id);
-    const h=(await store.history())[0],backup=parseArchive(h.backup!) as {state:LocalState};
+    const h=(await store.history())[0],backup=await readArchive(h.backup!) as {state:LocalState};
     expect(backup.state.sync).toEqual(configured.sync);expect(backup.state.book.id).toBe(first.book.id);
     expect((await store.backup(result)).originals).toHaveLength(1);
     const fail=vi.spyOn(IDBObjectStore.prototype,'put').mockImplementationOnce(()=>{throw new DOMException('Quota exceeded','QuotaExceededError');});
@@ -258,7 +258,7 @@ describe('recoverable local storage',()=>{
     const restored=await store.restore(incoming,configured.version);
     expect(restored.sync).toBeUndefined();expect(restored.remoteSha).toBeUndefined();
     expect(restored.pending.map(p=>p.id)).toEqual(expect.arrayContaining([first.pending[0].id,'incoming']));
-    const archive=parseArchive((await store.history())[0].backup!) as typeof incoming;
+    const archive=await readArchive((await store.history())[0].backup!) as typeof incoming;
     expect(archive.state).toEqual(configured);expect(archive.originals.map(o=>o.id)).toEqual(['old']);
     const history=(await store.history()).length;
     const fail=vi.spyOn(IDBObjectStore.prototype,'put').mockImplementationOnce(()=>{throw new DOMException('Quota exceeded','QuotaExceededError');});

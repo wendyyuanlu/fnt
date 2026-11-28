@@ -27,7 +27,7 @@ export interface LocalState {
   publishedSnapshot?:string;
 }
 export const hasPendingContent=(state:LocalState):boolean=>state.pending.some(operation=>operation.label!=='Visit table');
-export interface Checkpoint { id: string; label: string; time: string; book: Workbook; backup?: string }
+export interface Checkpoint { id: string; label: string; time: string; book: Workbook; backup?: string|Blob }
 export interface Backup {
   format: 'fnt-backup'; version: 1; state: LocalState;
   originals: { id: string; name: string; data: string }[];
@@ -41,11 +41,15 @@ export function validateBackup(backup:Backup):void {
   validateOriginals(backup.state.book,backup.originals);
   if(backup.photos!==undefined)validatePhotoArchives(backup.photos);
   if(backup.missingPhotos!==undefined&&(!Array.isArray(backup.missingPhotos)||backup.missingPhotos.some(id=>typeof id!=='string'||!/^[\w.-]{1,128}$/.test(id))||new Set(backup.missingPhotos).size!==backup.missingPhotos.length))throw Error('Invalid missing-photo manifest.');
-  const metadata=new Map(backup.state.book.foodCapture?.photos.map(photo=>[photo.id,photo]));
-  for(const photo of backup.photos??[]){
+  const validatePhoto=backupPhotoValidator(backup.state.book,backup.missingPhotos);
+  for(const photo of backup.photos??[])validatePhoto(photo);
+}
+function backupPhotoValidator(book:Workbook,missing?:readonly string[]):(photo:PhotoArchive)=>void{
+  const metadata=new Map(book.foodCapture?.photos.map(photo=>[photo.id,photo])),missingPhotos=new Set(missing);
+  return photo=>{
     const expected=metadata.get(photo.id);
-    if(backup.missingPhotos?.includes(photo.id)||expected&&(expected.digest!==photo.digest||expected.bytes!==photo.bytes||expected.mime!==photo.mime))throw Error('Photo backup conflicts with workbook metadata.');
-  }
+    if(missingPhotos.has(photo.id)||expected&&(expected.digest!==photo.digest||expected.bytes!==photo.bytes||expected.mime!==photo.mime))throw Error('Photo backup conflicts with workbook metadata.');
+  };
 }
 type Original=Backup['originals'][number];
 interface Navigation {visits:Record<string,number>;pending:Pending[]}
@@ -512,8 +516,30 @@ export class Store {
   async syncRecheckHistory(book:string):Promise<{id:string;time:string}[]>{
     return await request(this.db.transaction('state').objectStore('state').get(`comparison:rechecks:${book}`))??[];
   }
+  async assertUndecidedComparisonReview(id:string):Promise<void>{
+    const tx=this.db.transaction('state'),done=complete(tx),store=tx.objectStore('state');
+    const source=store.getKey(`comparison:sources:${id}`),view=store.get(`comparison:view:${id}`);
+    await done;
+    if(source.result===undefined)throw Error('The saved comparison could not be found. Open the paused comparison before rechecking.');
+    assertUndecidedReview({view:view.result});
+  }
+  async preserveSyncRecheckBackup(expected:LocalState):Promise<string>{
+    const backup=await this.backupBlob(expected,expected.book,true),id=uid();
+    const tx=this.db.transaction(['state','history'],'readwrite'),done=complete(tx),store=tx.objectStore('state');
+    let failure:unknown;
+    const fail=(error:unknown)=>{failure=error;tx.abort();};
+    readState(store,current=>{
+      try{
+        if(!current||JSON.stringify(current)!==JSON.stringify(expected))throw Error('Another tab changed the paused workbook. Its recovery backup was not staged.');
+        tx.objectStore('history').put({id,label:'Before paused sync recheck',time:new Date().toISOString(),book:expected.book,backup} satisfies Checkpoint);
+        store.put({book:expected.book.id,version:expected.version,revision:expected.book.revision},`comparison:backup:${id}`);
+      }catch(error){fail(error);}
+    },fail);
+    try{await done;}catch(error){throw failure??error;}
+    return id;
+  }
   async stageSyncRecheck(preview:SyncRecheck):Promise<void>{
-    const {state:expected,previousId,previous,storedPrevious,reviewId,review,plan,backup}=clone(preview);
+    const {state:expected,previousId,previous,storedPrevious,reviewId,review,plan,backupId}=clone(preview);
     validateBook(review.left.book);validateBook(review.right!.book);
     const tx=this.db.transaction(['state','history','originals'],'readwrite'),done=complete(tx),store=tx.objectStore('state');
     let failure:unknown;
@@ -522,10 +548,12 @@ export class Store {
       try{
         if(!current||JSON.stringify(current)!==JSON.stringify(expected))throw Error('Another tab changed the paused workbook. Recheck was not staged.');
         const sources=store.get(`comparison:sources:${previousId}`),view=store.get(`comparison:view:${previousId}`),history=store.get(`comparison:rechecks:${expected.book.id}`),attachments=tx.objectStore('originals').getAll();
-        let remaining=4;
+        const backup=store.get(`comparison:backup:${backupId}`),checkpoint=tx.objectStore('history').getKey(backupId);
+        let remaining=6;
         const stage=()=>{
           if(--remaining)return;
           try{
+            if(checkpoint.result===undefined||backup.result?.book!==expected.book.id||backup.result?.version!==expected.version||backup.result?.revision!==expected.book.revision)throw Error('The full pre-recheck backup is unavailable for this saved workbook. The original review remains unchanged.');
             const existing=sources.result?{...sources.result,view:view.result}:undefined;
             assertUndecidedReview(existing);
             if(JSON.stringify(existing)!==JSON.stringify(storedPrevious))throw Error('The original comparison changed during recheck. Its sources and decisions were retained.');
@@ -542,14 +570,13 @@ export class Store {
             putReview(reviewId,review);
             store.put([...(history.result??[]),{id:previousId,time}],`comparison:rechecks:${expected.book.id}`);
             const checkpoints=tx.objectStore('history');
-            checkpoints.put({id:uid(),label:'Before paused sync recheck',time,book:expected.book,backup} satisfies Checkpoint);
             checkpoints.put({id:uid(),label:'Paused review left source - before recheck',time,book:previous.left.book} satisfies Checkpoint);
             if(previous.right)checkpoints.put({id:uid(),label:'Paused review right source - before recheck',time,book:previous.right.book} satisfies Checkpoint);
             checkpoints.put({id:uid(),label:'GitHub source - paused sync recheck',time,book:plan.originalRemote} satisfies Checkpoint);
             for(const original of plan.originals)tx.objectStore('originals').put(original);
           }catch(error){fail(error);}
         };
-        sources.onsuccess=stage;view.onsuccess=stage;history.onsuccess=stage;attachments.onsuccess=stage;
+        sources.onsuccess=stage;view.onsuccess=stage;history.onsuccess=stage;attachments.onsuccess=stage;backup.onsuccess=stage;checkpoint.onsuccess=stage;
       }catch(error){fail(error);}
     },fail);
     try{await done;}catch(error){throw failure??error;}
@@ -560,7 +587,7 @@ export class Store {
     if(!saved.history||!Array.isArray(saved.history.undo)||!Array.isArray(saved.history.redo))throw Error('Saved undo history is damaged. Export a backup before continuing.');
     return saved.history;
   }
-  async save(book: Workbook, expected: number, label: string, checkpoint = false, original?: {id:string;name:string;data:string}, options?:{localOnly?:boolean;recoveryArchive?:string;publishedSnapshot?:string;undoHistory?:UndoHistory;comparisonSync?:{config:SyncConfig;sha:string};pauseSync?:boolean;photos?:PhotoBlob[]}): Promise<LocalState> {
+  async save(book: Workbook, expected: number, label: string, checkpoint = false, original?: {id:string;name:string;data:string}, options?:{localOnly?:boolean;recoveryArchive?:string|Blob;publishedSnapshot?:string;undoHistory?:UndoHistory;comparisonSync?:{config:SyncConfig;sha:string};pauseSync?:boolean;photos?:PhotoBlob[]}): Promise<LocalState> {
     const snapshot=clone(book),attachments=await this.verifiedPhotos(options?.photos??[]);
     const tx = this.db.transaction(attachments.length?['state','history','originals','photos']:['state','history','originals'],'readwrite'), done = complete(tx);
     const store = tx.objectStore('state');
@@ -699,7 +726,7 @@ export class Store {
     };
     try{await done;}catch(error){throw failure??error;}return result;
   }
-  async backup(state: LocalState,additionalPhotos:readonly PhotoBlob[]=[]): Promise<Backup> {
+  private async backupParts(state:LocalState,additionalPhotos:readonly PhotoBlob[]=[]):Promise<{archive:Backup;photos:PhotoBlob[]}>{
     const tx=this.db.transaction(['state','originals','photos']),done=complete(tx),store=tx.objectStore('state'),originals=tx.objectStore('originals').getAll(),photos=tx.objectStore('photos').getAll();
     let result:Backup|undefined,failure:unknown;
     readState(store,(current,head)=>{
@@ -714,8 +741,30 @@ export class Store {
     },e=>{failure=e;tx.abort();});
     try{await done;}catch(e){throw failure??e;}
     const required=referencedPhotoIds(result!.state.book),all=new Map([...(photos.result as PhotoBlob[]),...additionalPhotos].map(photo=>[photo.id,photo])),available=[...all.values()].filter(photo=>required.has(photo.id)),found=new Set(available.map(photo=>photo.id));
-    if(required.size){result!.photos=await encodePhotoArchives(available);result!.missingPhotos=[...required].filter(id=>!found.has(id));}
-    return result!;
+    if(required.size)result!.missingPhotos=[...required].filter(id=>!found.has(id));
+    return{archive:result!,photos:available};
+  }
+  async backup(state: LocalState,additionalPhotos:readonly PhotoBlob[]=[]): Promise<Backup> {
+    const {archive,photos}=await this.backupParts(state,additionalPhotos);
+    if(archive.missingPhotos)archive.photos=await encodePhotoArchives(photos);
+    return archive;
+  }
+  async backupBlob(state:LocalState,validationBook=state.book,requirePhotos=false):Promise<Blob>{
+    const {archive,photos}=await this.backupParts(state);
+    validateBackup({...archive,state:{...archive.state,book:validationBook}});
+    if(requirePhotos&&archive.missingPhotos?.length)throw Error('Local photo originals are missing. Recheck retained the paused review; retrieve a complete photo backup before applying changes.');
+    const validatePhoto=backupPhotoValidator(validationBook,archive.missingPhotos);
+    const parts:BlobPart[]=['{"format":"fnt-backup","version":1,"state":',new Blob([JSON.stringify(archive.state)]),',"originals":',new Blob([JSON.stringify(archive.originals)]),',"photos":['];
+    for(const [index,photo]of photos.entries()){
+      const [encoded]=await encodePhotoArchives([photo]);
+      validatePhotoArchives([encoded]);validatePhoto(encoded);
+      if(index)parts.push(',');
+      parts.push(new Blob([JSON.stringify(encoded)]));
+    }
+    parts.push(']');
+    if(archive.missingPhotos)parts.push(',"missingPhotos":',JSON.stringify(archive.missingPhotos));
+    parts.push('}');
+    return new Blob(parts,{type:'application/json'});
   }
   async restore(backup: Backup, expected: number): Promise<LocalState> {
     validateBackup(backup);
